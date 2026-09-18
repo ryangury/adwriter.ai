@@ -1,0 +1,43 @@
+# Secrets and credentials
+credentials.py
+*_session.json
+acvmax_session.json
+aip_session.json
+reconvision_session.json
+
+# Databases (large, contain PII)
+*.db
+*.db.bak-*
+
+# Logs
+*.log
+
+# Scraper / vision debug and cache directories
+scraper_debug/
+carfax_cache/
+sticker_cache/
+recon_cache/
+
+# Python
+__pycache__/
+*.pyc
+adwriter-env/
+
+# Live/runtime data
+last_inventory_snapshot.json
+ad_history.json
+ad_history_backup*.json
+ad_history.json.bak-*
+ipacket_daily_count.json
+non_mb_sticker_daily_count.json
+vision_processed.json
+orchestrator.lock
+reprice_queue.json
+
+# Misc tooling
+nssm.exe
+ms-playwright/
+.claude/
+
+# Stray artifact (redirect response accidentally saved as a file)
+/-w

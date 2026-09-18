@@ -1,0 +1,1067 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mercedes-Benz of Durham Ad Writer</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --text: #1a1a1a;
+    --muted: #6b7280;
+    --line: #e5e7eb;
+    --accent: #00263e;      /* MB deep navy */
+    --ok: #15803d;
+    --fail: #b91c1c;
+    --card: #f9fafb;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.5;
+  }
+  .wrap {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 32px 20px 64px;
+  }
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+  }
+  header h1 {
+    font-size: 1.4rem;
+    font-weight: 650;
+    margin: 0 0 4px;
+    color: var(--accent);
+  }
+  header p {
+    margin: 0 0 24px;
+    color: var(--muted);
+    font-size: 0.9rem;
+  }
+  .signout {
+    flex: none;
+    font-size: 0.85rem;
+    color: var(--muted);
+    text-decoration: none;
+    border: 1px solid var(--line);
+    padding: 5px 12px;
+    border-radius: 8px;
+    white-space: nowrap;
+  }
+  .signout:hover { color: var(--text); }
+  form {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px;
+    background: var(--card);
+  }
+  label {
+    display: block;
+    font-size: 0.8rem;
+    font-weight: 600;
+    margin-bottom: 6px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .field { flex: 1 1 220px; }
+  input[type="text"] {
+    width: 100%;
+    padding: 10px 12px;
+    font-size: 1rem;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #fff;
+    color: var(--text);
+  }
+  input[type="text"]:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  button {
+    align-self: flex-end;
+    padding: 10px 22px;
+    font-size: 1rem;
+    font-weight: 600;
+    border: 0;
+    border-radius: 8px;
+    background: var(--accent);
+    color: #fff;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.55; cursor: default; }
+
+  .btn-row { display: flex; gap: 10px; align-self: flex-end; }
+  .btn-secondary {
+    background: #fff;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+  }
+
+  .lookup-badge { margin-top: 8px; min-height: 22px; }
+  .badge-onfile {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    padding: 3px 10px;
+    border-radius: 999px;
+    background: var(--ok);
+    color: #fff;
+  }
+
+  .banner-onfile {
+    border: 1px solid #b45309;
+    background: #fffbeb;
+    color: #92400e;
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-bottom: 16px;
+    font-weight: 600;
+  }
+
+  #results { margin-top: 28px; }
+  #results:empty { display: none; }
+
+  .loading {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 18px;
+    font-weight: 600;
+  }
+  .spinner {
+    width: 20px; height: 20px;
+    border: 3px solid var(--line);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    flex: none;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  ul.steps { list-style: none; margin: 0 0 22px; padding: 0; }
+  ul.steps li {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 0;
+    font-size: 0.92rem;
+    color: var(--muted);
+  }
+  ul.steps li .dot {
+    width: 16px; height: 16px; flex: none;
+    border-radius: 50%;
+    border: 2px solid var(--line);
+  }
+  ul.steps li.active { color: var(--text); }
+  ul.steps li.active .dot { border-color: var(--accent); border-top-color: transparent; animation: spin 0.8s linear infinite; }
+  ul.steps li.ok { color: var(--text); }
+  ul.steps li.ok .dot { background: var(--ok); border-color: var(--ok); }
+  ul.steps li.fail { color: var(--text); }
+  ul.steps li.fail .dot { background: var(--fail); border-color: var(--fail); }
+
+  .section {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 16px;
+    background: var(--card);
+  }
+  .section h2 {
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+    margin: 0 0 10px;
+  }
+  .kv { display: grid; grid-template-columns: 120px 1fr; gap: 4px 12px; font-size: 0.95rem; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; }
+
+  .badges { display: flex; flex-wrap: wrap; gap: 8px; }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    padding: 5px 12px;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    color: #fff;
+  }
+  .badge .glyph { font-size: 0.95rem; line-height: 1; }
+  .badge.success { background: var(--ok); border-color: var(--ok); }
+  .badge.failed  { background: var(--fail); border-color: var(--fail); }
+  .badge.cache-yes { background: var(--ok); border-color: var(--ok); }
+  .badge.cache-no  { background: #9ca3af; border-color: #9ca3af; }
+  .badge .cache-tag {
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 2px 7px;
+    margin-left: 2px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.28);
+  }
+
+  .adwrap { position: relative; }
+  .adwrap pre, .fb pre {
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    font-family: inherit;
+    font-size: 0.97rem;
+    margin: 0;
+  }
+  .fb pre {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+  .copy-btn {
+    position: absolute;
+    top: 0; right: 0;
+    padding: 5px 12px;
+    font-size: 0.8rem;
+    background: #fff;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+  }
+  .section h2.with-btn { padding-right: 84px; }
+
+  .link-toggle {
+    align-self: auto;
+    background: none;
+    border: none;
+    padding: 0;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--accent);
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  .fb-body { margin-top: 10px; }
+
+  .error-box {
+    border: 1px solid var(--fail);
+    background: #fef2f2;
+    color: var(--fail);
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-bottom: 16px;
+    font-weight: 500;
+  }
+  .pill {
+    display: inline-block;
+    font-size: 0.85rem;
+    font-weight: 600;
+    padding: 3px 10px;
+    border-radius: 999px;
+    background: #eef2f7;
+    color: var(--accent);
+  }
+
+  .save-discard { display: flex; align-items: center; gap: 10px; }
+  .btn-save {
+    background: var(--ok);
+    padding: 11px 24px;
+    font-size: 1rem;
+    font-weight: 700;
+  }
+  .btn-discard {
+    align-self: auto;
+    background: #fff;
+    color: var(--muted);
+    border: 1px solid var(--line);
+    padding: 7px 16px;
+    font-size: 0.85rem;
+    font-weight: 600;
+  }
+  .save-msg { font-weight: 600; padding: 6px 0; }
+  .save-msg.save-ok { color: var(--ok); }
+  .save-msg.save-fail { color: var(--fail); }
+  .save-msg.save-discarded { color: var(--muted); }
+
+  .dashboard {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .dcard {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 12px 14px;
+    background: var(--card);
+  }
+  .dcard h3 {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+    margin: 0 0 8px;
+  }
+  .dgrid2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px 10px;
+  }
+  .dline {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    font-size: 0.85rem;
+    line-height: 1.35;
+  }
+  .dline .glyph { flex: none; font-size: 0.9rem; }
+  .dline.d-ok .glyph { color: var(--ok); }
+  .dline.d-warn .glyph { color: #b45309; }
+  .dline.d-skip .glyph { color: var(--muted); }
+  .dline .dtext { color: var(--text); }
+  .dline .dmuted { color: var(--muted); font-size: 0.82rem; }
+  .dcard .dsub {
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    margin: 10px 0 4px;
+  }
+  .dcard .dsub:first-child { margin-top: 0; }
+  .dtag {
+    font-size: 0.68rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-left: 4px;
+  }
+  .dempty { font-size: 0.85rem; color: var(--muted); }
+  .dchip {
+    display: inline-block;
+    font-size: 0.68rem;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 999px;
+    margin-left: 4px;
+  }
+  .dchip.days-green  { background: #dcfce7; color: #15803d; }
+  .dchip.days-yellow { background: #fef9c3; color: #854d0e; }
+  .dchip.days-orange { background: #ffedd5; color: #9a3412; }
+  .dchip.days-red    { background: #fee2e2; color: #b91c1c; }
+
+  @media (max-width: 480px) {
+    button { align-self: stretch; width: 100%; }
+    .kv { grid-template-columns: 1fr; }
+    .kv dt { margin-top: 6px; }
+    .dashboard { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Mercedes-Benz of Durham Ad Writer</h1>
+      <p>Enter a stock number to run the pipeline and draft a CPO ad.</p>
+    </div>
+    <a class="signout" href="/logout">Sign out</a>
+  </header>
+
+  <form id="gen-form" autocomplete="off">
+    <div class="field">
+      <label for="stock_number">Stock number</label>
+      <input type="text" id="stock_number" name="stock_number" placeholder="e.g. PM10954" required>
+      <div class="lookup-badge" id="lookup-badge"></div>
+    </div>
+    <div class="btn-row">
+      <button type="submit" id="submit-btn">Generate New Ad</button>
+      <button type="button" id="pull-btn" class="btn-secondary">Pull Existing Ad</button>
+    </div>
+  </form>
+
+  <div id="results"></div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var form = document.getElementById("gen-form");
+  var input = document.getElementById("stock_number");
+  var btn = document.getElementById("submit-btn");
+  var pullBtn = document.getElementById("pull-btn");
+  var badgeEl = document.getElementById("lookup-badge");
+  var results = document.getElementById("results");
+
+  var STEPS = [
+    { key: "acvmax",     label: "ACV MAX pricing" },
+    { key: "autoipacket", label: "AutoiPacket window sticker" },
+    { key: "reconvision", label: "ReconVision recon" },
+    { key: "carfax",     label: "Carfax history" },
+    { key: "adcopy",     label: "Writing ad copy" }
+  ];
+
+  var walkTimer = null;
+
+  function esc(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+
+  function fmtMiles(n) {
+    if (n == null || n === "") return "—";
+    var v = Number(n);
+    return isNaN(v) ? String(n) : v.toLocaleString("en-US") + " mi";
+  }
+
+  function fmtPrice(n) {
+    if (n == null || n === "") return "—";
+    var v = Number(n);
+    return isNaN(v) ? String(n) : "$" + v.toLocaleString("en-US", { maximumFractionDigits: 0 });
+  }
+
+  function renderLoading() {
+    var lis = STEPS.map(function (s) {
+      return '<li data-step="' + s.key + '"><span class="dot"></span>' + esc(s.label) + "</li>";
+    }).join("");
+    results.innerHTML =
+      '<div class="loading"><span class="spinner"></span><span id="load-msg">Running the pipeline…</span></div>' +
+      '<ul class="steps">' + lis + "</ul>";
+  }
+
+  function stepEl(key) {
+    return results.querySelector('li[data-step="' + key + '"]');
+  }
+
+  // While we wait on the single blocking request, walk the "active" highlight
+  // down the scraper steps so the user sees progress. Real success/failed
+  // state is applied from the response when it lands.
+  function startWalk() {
+    var i = 0;
+    var order = ["acvmax", "autoipacket", "reconvision", "carfax", "adcopy"];
+    function tick() {
+      order.forEach(function (k, idx) {
+        var el = stepEl(k);
+        if (!el) return;
+        el.classList.toggle("active", idx === i);
+      });
+      var msgEl = document.getElementById("load-msg");
+      if (msgEl && STEPS[i]) msgEl.textContent = STEPS[i].label + "…";
+      i = Math.min(i + 1, order.length - 1);
+    }
+    tick();
+    walkTimer = setInterval(tick, 1400);
+  }
+
+  function stopWalk() {
+    if (walkTimer) { clearInterval(walkTimer); walkTimer = null; }
+  }
+
+  function applyScraperSteps(scraper) {
+    scraper = scraper || {};
+    ["acvmax", "autoipacket", "reconvision", "carfax"].forEach(function (k) {
+      var el = stepEl(k);
+      if (!el) return;
+      el.classList.remove("active");
+      el.classList.add(scraper[k] === "success" ? "ok" : "fail");
+    });
+  }
+
+  function finishAdStep(ok) {
+    var el = stepEl("adcopy");
+    if (!el) return;
+    el.classList.remove("active");
+    el.classList.add(ok ? "ok" : "fail");
+  }
+
+  // -------------------------------------------------------------------- //
+  // Quick-glance dashboard — four compact cards shown at the top of the
+  // results area right after a successful Generate New Ad (full data) or
+  // Pull Existing Ad (scrapers card only — recon/proof-point detail isn't
+  // stored in ad_history.json).
+  // -------------------------------------------------------------------- //
+
+  function fmtNum(n) {
+    if (n == null || n === "") return "—";
+    var v = Number(n);
+    return isNaN(v) ? String(n) : v.toLocaleString("en-US");
+  }
+
+  function daysBucketClass(days) {
+    if (days == null || days === "") return null;
+    var v = Number(days);
+    if (isNaN(v)) return null;
+    if (v <= 40) return "days-green";
+    if (v <= 59) return "days-yellow";
+    if (v <= 89) return "days-orange";
+    return "days-red";
+  }
+
+  function daysChip(days) {
+    var cls = daysBucketClass(days);
+    if (!cls) return "";
+    return '<span class="dchip ' + cls + '">' + esc(days) + " days</span>";
+  }
+
+  var DASHBOARD_SCRAPER_LABELS = [
+    ["acvmax", "ACV Max"],
+    ["autoipacket", "AutoiPacket"],
+    ["reconvision", "ReconVision"],
+    ["carfax", "Carfax"]
+  ];
+
+  function cardScrapers(detail) {
+    detail = detail || {};
+    var cells = DASHBOARD_SCRAPER_LABELS.map(function (pair) {
+      var info = detail[pair[0]] || {};
+      var ok = info.status === "scraped" || info.status === "cache_hit";
+      var glyph = ok ? "&#10003;" : "&#9888;";
+      var cls = ok ? "d-ok" : "d-warn";
+      var label = pair[1] + (info.status === "cache_hit" ? " (cache)" : "");
+      return '<div class="dline ' + cls + '"><span class="glyph">' + glyph + "</span>" +
+        '<span class="dtext">' + esc(label) + "</span></div>";
+    }).join("");
+    return '<div class="dcard"><h3>Scrapers</h3><div class="dgrid2">' + cells + "</div></div>";
+  }
+
+  var PULLED_SCRAPER_LABELS = [
+    ["window_sticker", "AutoiPacket"],
+    ["carfax", "Carfax"],
+    ["recon", "ReconVision"]
+  ];
+
+  function cardScrapersPulled(cacheStatus) {
+    cacheStatus = cacheStatus || {};
+    var cells = PULLED_SCRAPER_LABELS.map(function (pair) {
+      var cached = cacheStatus[pair[0]] === "cached";
+      var cls = cached ? "d-ok" : "d-warn";
+      var glyph = cached ? "&#10003;" : "&#9888;";
+      var label = pair[1] + (cached ? " (cache)" : "");
+      return '<div class="dline ' + cls + '"><span class="glyph">' + glyph + "</span>" +
+        '<span class="dtext">' + esc(label) + "</span></div>";
+    }).join("");
+    return '<div class="dcard"><h3>Scrapers</h3><div class="dgrid2">' + cells + "</div></div>";
+  }
+
+  function cardRecon(included, excluded) {
+    included = included || [];
+    excluded = excluded || [];
+    if (!included.length && !excluded.length) {
+      return '<div class="dcard"><h3>Recon</h3><p class="dempty">No qualifying recon items</p></div>';
+    }
+    var incHtml = included.map(function (li) {
+      return '<div class="dline d-ok"><span class="glyph">&#10003;</span>' +
+        '<span class="dtext">' + esc(li.description || li.reason || "—") + "</span></div>";
+    }).join("") || '<p class="dempty">None</p>';
+    var excHtml = excluded.map(function (li) {
+      var text = esc(li.description || "—") + (li.rule ? " &mdash; " + esc(li.rule) : "");
+      return '<div class="dline d-skip"><span class="glyph">&#10007;</span>' +
+        '<span class="dtext">' + text + "</span></div>";
+    }).join("") || '<p class="dempty">None</p>';
+    return '<div class="dcard"><h3>Recon</h3>' +
+      '<div class="dsub">Included</div>' + incHtml +
+      '<div class="dsub">Excluded</div>' + excHtml +
+      "</div>";
+  }
+
+  function cardProofPoints(points) {
+    points = points || [];
+    if (!points.length) {
+      return '<div class="dcard"><h3>Proof points</h3><p class="dempty">No proof points evaluated</p></div>';
+    }
+    var lines = points.map(function (p) {
+      var selected = p.selected === "primary" || p.selected === "secondary";
+      var favorable = p.direction === "below";
+      var cls = selected ? "d-ok" : favorable ? "d-skip" : "d-warn";
+      var glyph = selected ? "&#10003;" : favorable ? "~" : "&#10007;";
+      var gapText = p.gap != null ? fmtPrice(p.gap) + " " + (p.direction || "") : "";
+      var tag = p.selected === "primary" ? '<span class="dtag">Primary</span>' :
+        p.selected === "secondary" ? '<span class="dtag">Secondary</span>' : "";
+      var extra = !selected && p.skip_reason ?
+        ' <span class="dmuted">(' + esc(p.skip_reason) + ")</span>" : "";
+      var text = esc(p.label || "—") + (gapText ? " &mdash; " + esc(gapText) : "") + extra;
+      return '<div class="dline ' + cls + '"><span class="glyph">' + glyph + "</span>" +
+        '<span class="dtext">' + text + "</span>" + tag + "</div>";
+    }).join("");
+    return '<div class="dcard"><h3>Proof points</h3>' + lines + "</div>";
+  }
+
+  function cardMarketData(md) {
+    if (!md) return "";
+    var shipOk = !!md.shipping_triggered;
+    var rows =
+      '<div class="dline"><span class="dtext">Matching listings: ' +
+        esc(fmtNum(md.matching_count)) + "</span></div>" +
+      '<div class="dline"><span class="dtext">Overall days supply: ' +
+        esc(fmtNum(md.overall_days_supply)) + "</span>" + daysChip(md.overall_days_supply) + "</div>" +
+      '<div class="dline"><span class="dtext">Matching days supply: ' +
+        esc(fmtNum(md.market_days_supply)) + "</span>" + daysChip(md.market_days_supply) + "</div>" +
+      '<div class="dline"><span class="dtext">Avg mileage in market: ' +
+        esc(fmtNum(md.avg_mileage)) + "</span></div>" +
+      '<div class="dline"><span class="dtext">Price rank: ' + esc(md.price_rank || "—") + "</span></div>" +
+      '<div class="dline"><span class="dtext">Search radius: ' +
+        (md.search_distance != null ?
+          esc((md.market_scope || "—") + " (" + fmtNum(md.search_distance) + " miles)") :
+          "—") + "</span></div>" +
+      '<div class="dline ' + (shipOk ? "d-ok" : "d-skip") + '"><span class="glyph">' +
+        (shipOk ? "&#10003;" : "&#10007;") + "</span><span class=\"dtext\">Shipping" +
+        (shipOk && md.shipping_reason ? " &mdash; " + esc(md.shipping_reason) : "") + "</span></div>";
+    return '<div class="dcard"><h3>Market data</h3>' + rows + "</div>";
+  }
+
+  function sectionDashboard(data) {
+    if (!data || !data.scraper_status_detail) return "";
+    var cards = cardScrapers(data.scraper_status_detail) +
+      cardRecon(data.recon_included, data.recon_excluded) +
+      cardProofPoints(data.proof_points_all) +
+      cardMarketData(data.market_data);
+    return '<div class="dashboard">' + cards + "</div>";
+  }
+
+  function sectionDashboardPulled(data) {
+    if (!data || !data.cache_status) return "";
+    return '<div class="dashboard">' + cardScrapersPulled(data.cache_status) + "</div>";
+  }
+
+  function sectionVehicle(v) {
+    if (!v) return "";
+    var name = v.year_make_model ||
+      [v.year, v.make, v.model].filter(Boolean).join(" ") || "—";
+    return '<div class="section"><h2>Vehicle</h2><dl class="kv">' +
+      "<dt>Year</dt><dd>" + esc(v.year || "—") + "</dd>" +
+      "<dt>Make</dt><dd>" + esc(v.make || "—") + "</dd>" +
+      "<dt>Model</dt><dd>" + esc(v.model || "—") + "</dd>" +
+      "<dt>Description</dt><dd>" + esc(name) + "</dd>" +
+      "<dt>Mileage</dt><dd>" + esc(fmtMiles(v.mileage)) + "</dd>" +
+      "<dt>Price</dt><dd>" + esc(fmtPrice(v.price)) + "</dd>" +
+      (v.vin ? "<dt>VIN</dt><dd>" + esc(v.vin) + "</dd>" : "") +
+      "</dl></div>";
+  }
+
+  // Real scraper status straight from the API response's scraper_status object:
+  // one green ✓ / red ✗ badge per source, replacing the animated step list.
+  var SCRAPER_LABELS = [
+    ["acvmax", "ACV MAX"],
+    ["autoipacket", "AutoiPacket"],
+    ["reconvision", "ReconVision"],
+    ["carfax", "Carfax"]
+  ];
+
+  // scraper_status source -> the vehicle_cache.db field its cache_status
+  // covers. No entry for acvmax: it's never cached.
+  var CACHE_KEY_MAP = {
+    autoipacket: "window_sticker",
+    carfax: "carfax",
+    reconvision: "recon"
+  };
+
+  function sectionScrapers(scraper, cacheStatus) {
+    if (!scraper) return "";
+    cacheStatus = cacheStatus || {};
+    var badges = SCRAPER_LABELS.map(function (pair) {
+      var ok = scraper[pair[0]] === "success";
+      var cls = ok ? "success" : "failed";
+      var glyph = ok ? "✓" : "✗";   // ✓ / ✗
+      var cacheKey = CACHE_KEY_MAP[pair[0]];
+      var cacheState = cacheKey ? cacheStatus[cacheKey] : null;
+      var cacheTag = "";
+      if (cacheState === "cached" || cacheState === "already_cached") {
+        var title = cacheState === "cached"
+          ? "Newly cached to vehicle_cache.db this run"
+          : "Already in vehicle_cache.db";
+        cacheTag = '<span class="cache-tag" title="' + esc(title) + '">Cached</span>';
+      }
+      return '<span class="badge ' + cls + '">' +
+             '<span class="glyph">' + glyph + "</span>" + esc(pair[1]) + cacheTag + "</span>";
+    }).join("");
+    return '<div class="section"><h2>Scraper status</h2><div class="badges">' + badges + "</div></div>";
+  }
+
+  function sectionMeta(data) {
+    var rows = "";
+    if (data.peacock_mode != null) {
+      rows += "<dt>Peacock mode</dt><dd>" + (data.peacock_mode ? "true" : "false") + "</dd>";
+    }
+    if (data.proof_point) {
+      rows += "<dt>Proof point</dt><dd>" + esc(data.proof_point) + "</dd>";
+    }
+    if (!rows) return "";
+    return '<div class="section"><h2>Pipeline notes</h2><dl class="kv">' + rows + "</dl></div>";
+  }
+
+  function sectionAd(text) {
+    if (!text) return "";
+    return '<div class="section adwrap">' +
+      '<h2 class="with-btn">Ad copy</h2>' +
+      '<button type="button" class="copy-btn" id="copy-ad">Copy</button>' +
+      "<pre id=\"ad-text\">" + esc(text) + "</pre></div>";
+  }
+
+  // Save Ad to System / Discard — only after a successful fresh generation
+  // (data.ad_copy present). The Save button carries everything /save needs
+  // as data-* attributes so the click handler has no other state to track.
+  function sectionSaveDiscard(data) {
+    if (!data || !data.ad_copy) return "";
+    var v = data.vehicle || {};
+    var ymm = v.year_make_model ||
+      [v.year, v.make, v.model].filter(Boolean).join(" ") || "";
+    return '<div class="section save-discard" id="save-discard-section">' +
+      '<button type="button" id="save-ad-btn" class="btn-save" ' +
+        'data-stock="' + esc(data.stock_number || "") + '" ' +
+        'data-ad-copy="' + esc(data.ad_copy) + '" ' +
+        'data-price="' + esc(v.price != null ? v.price : "") + '" ' +
+        'data-ymm="' + esc(ymm) + '" ' +
+        'data-lifecycle="' + esc(data.lifecycle_stage || "active") + '">' +
+        "Save Ad to System</button>" +
+      '<button type="button" id="discard-ad-btn" class="btn-discard">Discard</button>' +
+      "</div>";
+  }
+
+  function wireSaveDiscard() {
+    var saveBtn = document.getElementById("save-ad-btn");
+    var discardBtn = document.getElementById("discard-ad-btn");
+    var section = document.getElementById("save-discard-section");
+    if (!saveBtn || !discardBtn || !section) return;
+
+    saveBtn.addEventListener("click", function () {
+      saveBtn.disabled = true;
+      discardBtn.disabled = true;
+      var payload = {
+        stock_number: saveBtn.dataset.stock || "",
+        ad_copy: saveBtn.dataset.adCopy || "",
+        price: saveBtn.dataset.price || "",
+        year_make_model: saveBtn.dataset.ymm || "",
+        lifecycle_stage: saveBtn.dataset.lifecycle || "active"
+      };
+      fetch("/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      })
+        .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+        .then(function (res) {
+          if (res.ok && res.j && res.j.saved) {
+            section.innerHTML = '<span class="save-msg save-ok">&#10003; Saved to system</span>';
+          } else {
+            var msg = (res.j && res.j.error) || "Save failed.";
+            section.innerHTML = '<span class="save-msg save-fail">' + esc(msg) + "</span>";
+          }
+        })
+        .catch(function (err) {
+          section.innerHTML = '<span class="save-msg save-fail">Save failed: ' +
+            esc(err && err.message ? err.message : err) + "</span>";
+        });
+    });
+
+    discardBtn.addEventListener("click", function () {
+      section.innerHTML = '<span class="save-msg save-discarded">Ad discarded</span>';
+    });
+  }
+
+  // window_sticker/carfax/recon -> the labels shown on the "Cached data"
+  // badges for a pulled (stored) ad's cache_status.
+  var CACHE_STATUS_LABELS = [
+    ["window_sticker", "Window Sticker"],
+    ["carfax", "Carfax"],
+    ["recon", "Recon"]
+  ];
+
+  function sectionCacheStatus(cacheStatus) {
+    if (!cacheStatus) return "";
+    var badges = CACHE_STATUS_LABELS.map(function (pair) {
+      var cached = cacheStatus[pair[0]] === "cached";
+      return '<span class="badge ' + (cached ? "cache-yes" : "cache-no") + '">' +
+        esc(pair[1]) + "</span>";
+    }).join("");
+    return '<div class="section"><h2>Cached data (vehicle_cache.db)</h2><div class="badges">' +
+      badges + "</div></div>";
+  }
+
+  function sectionFeedbackCollapsible(text) {
+    if (!text) return "";
+    return '<div class="section fb">' +
+      '<button type="button" class="link-toggle" id="fb-toggle">Show AI thinking</button>' +
+      '<div class="fb-body" id="fb-body" hidden><pre>' + esc(text) + "</pre></div>" +
+      "</div>";
+  }
+
+  function wireFeedbackToggle() {
+    var toggle = document.getElementById("fb-toggle");
+    var body = document.getElementById("fb-body");
+    if (!toggle || !body) return;
+    toggle.addEventListener("click", function () {
+      var nowHidden = !body.hidden;
+      body.hidden = nowHidden;
+      toggle.textContent = nowHidden ? "Show AI thinking" : "Hide AI thinking";
+    });
+  }
+
+  // Full formatted data package — the same text sent to Claude as prompt
+  // context (=== VEHICLE === / === MSRP === / === CARFAX === / ... raw
+  // sections). Redundant with the dashboard cards for normal use, kept
+  // collapsed by default as a separate toggle from AI feedback for
+  // debugging. Renders nothing when data_package isn't present (e.g. a
+  // pulled/stored ad — ad_history.json doesn't persist it).
+  function sectionDataPackage(data) {
+    var text = data && data.data_package;
+    if (!text) return "";
+    return '<div class="section fb">' +
+      '<button type="button" class="link-toggle" id="dp-toggle">Show raw data package</button>' +
+      '<div class="fb-body" id="dp-body" hidden><pre>' + esc(text) + "</pre></div>" +
+      "</div>";
+  }
+
+  function wireDataPackageToggle() {
+    var toggle = document.getElementById("dp-toggle");
+    var body = document.getElementById("dp-body");
+    if (!toggle || !body) return;
+    toggle.addEventListener("click", function () {
+      var nowHidden = !body.hidden;
+      body.hidden = nowHidden;
+      toggle.textContent = nowHidden ? "Show raw data package" : "Hide raw data package";
+    });
+  }
+
+  function wireCopyButton() {
+    var copyBtn = document.getElementById("copy-ad");
+    if (!copyBtn) return;
+    copyBtn.addEventListener("click", function () {
+      var t = document.getElementById("ad-text").innerText;
+      var done = function () {
+        copyBtn.textContent = "Copied";
+        setTimeout(function () { copyBtn.textContent = "Copy"; }, 1600);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(t).then(done, done);
+      } else {
+        var ta = document.createElement("textarea");
+        ta.value = t; document.body.appendChild(ta); ta.select();
+        try { document.execCommand("copy"); } catch (e) {}
+        document.body.removeChild(ta); done();
+      }
+    });
+  }
+
+  function render(data) {
+    var html = "";
+    if (data.error) {
+      html += '<div class="error-box">' + esc(data.error) + "</div>";
+    }
+    html += sectionDashboard(data);
+    html += sectionVehicle(data.vehicle);
+    html += sectionScrapers(data.scraper_status, data.cache_status);
+    html += sectionMeta(data);
+    html += sectionAd(data.ad_copy);
+    html += sectionFeedbackCollapsible(data.feedback);
+    html += sectionDataPackage(data);
+    html += sectionSaveDiscard(data);
+    results.innerHTML = html;
+    wireCopyButton();
+    wireFeedbackToggle();
+    wireDataPackageToggle();
+    wireSaveDiscard();
+  }
+
+  // -------------------------------------------------------------------- //
+  // Pull Existing Ad — reads ad_history.json via /lookup, no scrapers run.
+  // -------------------------------------------------------------------- //
+
+  function sectionPulledInfo(data) {
+    var rows =
+      "<dt>Stock</dt><dd>" + esc(data.stock_number || "—") + "</dd>" +
+      "<dt>Vehicle</dt><dd>" + esc(data.year_make_model || "—") + "</dd>" +
+      "<dt>Price</dt><dd>" + esc(fmtPrice(data.price)) + "</dd>" +
+      "<dt>Lifecycle</dt><dd>" + esc(data.lifecycle_stage || "—") + "</dd>";
+    if (data.proof_point) {
+      rows += "<dt>Proof point</dt><dd>" + esc(data.proof_point) + "</dd>";
+    }
+    return '<div class="section"><h2>Vehicle</h2><dl class="kv">' + rows + "</dl></div>";
+  }
+
+  function renderPulled(data) {
+    var html = '<div class="banner-onfile">Showing stored ad — written ' +
+      esc(data.last_written || "an earlier date") + ".</div>";
+    html += sectionDashboardPulled(data);
+    html += sectionPulledInfo(data);
+    html += sectionCacheStatus(data.cache_status);
+    html += sectionAd(data.ad_copy);
+    html += sectionFeedbackCollapsible(data.feedback);
+    html += sectionDataPackage(data);
+    html += '<div class="section"><button type="button" id="regen-btn" class="btn-secondary">Regenerate Fresh Ad</button></div>';
+    results.innerHTML = html;
+    wireCopyButton();
+    wireFeedbackToggle();
+    wireDataPackageToggle();
+
+    var regenBtn = document.getElementById("regen-btn");
+    if (regenBtn) {
+      regenBtn.addEventListener("click", function () { runGenerate(data.stock_number); });
+    }
+  }
+
+  function renderNotFound(stock) {
+    results.innerHTML =
+      '<div class="section"><p>No ad on file for this stock number' +
+      (stock ? " (" + esc(stock) + ")" : "") + ".</p>" +
+      '<button type="button" id="gen-instead-btn">Generate New Ad</button></div>';
+    var genBtn = document.getElementById("gen-instead-btn");
+    if (genBtn) {
+      genBtn.addEventListener("click", function () { runGenerate(stock); });
+    }
+  }
+
+  function fetchLookup(stock) {
+    return fetch("/lookup?stock=" + encodeURIComponent(stock))
+      .then(function (r) { return r.json(); });
+  }
+
+  function fetchCheck(stock) {
+    return fetch("/check?stock=" + encodeURIComponent(stock))
+      .then(function (r) { return r.json(); });
+  }
+
+  pullBtn.addEventListener("click", function () {
+    var stock = input.value.trim();
+    console.log("[pull-existing-ad] stock number:", stock);
+    if (!stock) return;
+
+    pullBtn.disabled = true;
+    btn.disabled = true;
+    results.innerHTML =
+      '<div class="loading"><span class="spinner"></span><span>Looking up stored ad…</span></div>';
+
+    var url = "/lookup?stock=" + encodeURIComponent(stock);
+    console.log("[pull-existing-ad] fetching:", url);
+
+    fetch(url)
+      .then(function (r) {
+        console.log("[pull-existing-ad] HTTP status:", r.status);
+        return r.json();
+      })
+      .then(function (j) {
+        console.log("[pull-existing-ad] raw /lookup response:", j);
+        console.log("[pull-existing-ad] data.found =", j && j.found);
+        if (j && j.found) {
+          console.log("[pull-existing-ad] calling renderPulled()");
+          renderPulled(j);
+        } else {
+          console.log("[pull-existing-ad] calling renderNotFound()");
+          renderNotFound(stock);
+        }
+      })
+      .catch(function (err) {
+        console.error("[pull-existing-ad] error:", err);
+        render({
+          error: "Lookup failed: " + (err && err.message ? err.message : err),
+          scraper_status: null, vehicle: null, ad_copy: null, feedback: null
+        });
+      })
+      .finally(function () {
+        pullBtn.disabled = false;
+        btn.disabled = false;
+      });
+  });
+
+  // -------------------------------------------------------------------- //
+  // Auto-check on input — small "Ad on file" badge, 500ms debounce.
+  // -------------------------------------------------------------------- //
+
+  var badgeTimer = null;
+
+  function clearBadge() {
+    badgeEl.innerHTML = "";
+  }
+
+  function showBadge(stock, data) {
+    // Stale-response guard: the input may have changed while the request
+    // was in flight.
+    if (input.value.trim() !== stock) return;
+    if (data && data.found) {
+      badgeEl.innerHTML = '<span class="badge-onfile">Ad on file — ' +
+        esc(data.last_written || "date unknown") + "</span>";
+    } else {
+      clearBadge();
+    }
+  }
+
+  input.addEventListener("input", function () {
+    clearBadge();
+    if (badgeTimer) { clearTimeout(badgeTimer); badgeTimer = null; }
+    var stock = input.value.trim();
+    if (!stock) return;
+    badgeTimer = setTimeout(function () {
+      console.log("[auto-check] fetching /check for:", stock);
+      fetchCheck(stock)
+        .then(function (j) {
+          console.log("[auto-check] raw /check response:", j);
+          showBadge(stock, j);
+        })
+        .catch(function (err) {
+          console.error("[auto-check] error:", err);
+          clearBadge();
+        });
+    }, 500);
+  });
+
+  function runGenerate(stock) {
+    stock = (stock || "").trim();
+    if (!stock) return;
+    input.value = stock;
+    clearBadge();
+
+    btn.disabled = true;
+    pullBtn.disabled = true;
+    renderLoading();
+    startWalk();
+
+    var body = new URLSearchParams();
+    body.set("stock_number", stock);
+
+    fetch("/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: body.toString()
+    })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (res) {
+        stopWalk();
+        var data = res.j || {};
+        applyScraperSteps(data.scraper_status);
+        finishAdStep(!!data.ad_copy && !data.error);
+        // brief beat so the step states are visible before results swap in
+        setTimeout(function () { render(data); }, 350);
+      })
+      .catch(function (err) {
+        stopWalk();
+        render({
+          error: "Request failed: " + (err && err.message ? err.message : err),
+          scraper_status: null, vehicle: null, ad_copy: null, feedback: null
+        });
+      })
+      .finally(function () {
+        btn.disabled = false;
+        pullBtn.disabled = false;
+      });
+  }
+
+  form.addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    runGenerate(input.value);
+  });
+})();
+</script>
+</body>
+</html>
