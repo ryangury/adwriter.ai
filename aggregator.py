@@ -952,6 +952,8 @@ SUPPRESS_FEATURES = [
     "credit for missing",
     "carpeted floor mat",  # suppresses generic carpeted mats; leaves AMG/Designo
                            # branded floor mat options intact
+    "floor mats, front",   # catches "Floor Mats, Front and Rear" variants
+    "floor mats, rear",
     "owners manual",
     "first-aid kit omission",
     "warning triangle omission",
