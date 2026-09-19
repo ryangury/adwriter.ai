@@ -340,9 +340,11 @@ def detect_price_changes(
 
 # Minimum dollar move (in either direction) between the price an ad was
 # written at and the vehicle's live ACV Max price before it's worth spending a
-# Claude call to rewrite paragraph two. Below this, price noise/rounding
-# wouldn't be a noticeable enough change to the reader to justify a rewrite.
-MIN_REPRICE_THRESHOLD = 200
+# Claude call to rewrite paragraph two. Set to $50 to match how often the
+# store actually adjusts pricing (small $100-200 tickles happen regularly and
+# should be caught) while still filtering out sub-$50 noise from scrape
+# timing or rounding.
+MIN_REPRICE_THRESHOLD = 50
 
 
 def detect_reprices_needed(

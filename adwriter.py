@@ -30,6 +30,7 @@ from feature_cache import get_feature, get_towing, save_feature, save_towing
 from recon_update_prompt import RECON_UPDATE_SYSTEM_PROMPT
 from reprice_prompt import REPRICE_SYSTEM_PROMPT
 from scraper import ReconVisionScraper, ScraperError
+from shared_prompt_constants import STORE_CLOSER_PARAGRAPH
 from system_prompt_as_is import AS_IS_PROMPT
 from system_prompt_hendrick_affordable import HENDRICK_AFFORDABLE_PROMPT
 from system_prompt_hendrick_certified import HENDRICK_CERTIFIED_PROMPT
@@ -55,7 +56,7 @@ POSTABLE_STATUS_CODES = {10, 11, 12, 13, 16}
 # Ad framework — this is the system prompt. Edit freely to match your house style.
 # --------------------------------------------------------------------------- #
 
-SYSTEM_PROMPT = """\
+SYSTEM_PROMPT = f"""\
 You are an expert automotive copywriter working exclusively for Mercedes-Benz of Durham, the #1 Certified Pre-Owned Mercedes-Benz dealer in the Triangle region of North Carolina. You are part of the Hendrick Automotive Group.
 
 Your sole job is to receive raw vehicle data and write finished, publish-ready ad copy for Certified Pre-Owned (CPO) Mercedes-Benz inventory. You write every ad from scratch using only the data provided. You never invent facts, never fabricate features, and never make claims that cannot be supported by the data given to you.
@@ -88,7 +89,7 @@ Never put ad copy outside the tags.
 
 Begin your response with <ad> immediately. Do not write any planning, decisions, or notes before the opening <ad> tag. Any text written before <ad> wastes token budget and will be discarded.
 
-Four paragraphs of clean prose. No headers. No dividers. No bullet points. No numbered lists. No bold text. ABSOLUTE RULE: No em dashes anywhere in paragraphs one or two. No exceptions. Use a period instead. The fixed warranty and store closer paragraphs are exempt from this rule. Short declarative sentences. Natural human prose, not marketing language. One blank line between paragraphs. Nothing before the first paragraph. Nothing after the last paragraph.
+Four paragraphs of clean prose. No headers. No dividers. No bullet points. No numbered lists. No bold text. ABSOLUTE RULE: No em dashes anywhere in this ad, in any paragraph. No exceptions, no exemptions. Use a period, comma, or colon instead. The fixed warranty and store closer paragraphs have already been rewritten without em dashes and must be reproduced exactly as given below. Short declarative sentences. Natural human prose, not marketing language. One blank line between paragraphs. Nothing before the first paragraph. Nothing after the last paragraph.
 
 ABSOLUTE RULE: Never append drivetrain designations such as 4MATIC, AWD, RWD, or xDrive to a model name unless that designation appears explicitly in the data provided. Never infer drivetrain from model name alone.
 
@@ -158,7 +159,7 @@ PARAGRAPH THREE — MB CPO WARRANTY BLOCK (FIXED — DO NOT CHANGE)
 
 Write this paragraph identically on every single ad. Word for word. Do not summarize, do not shorten, do not rearrange:
 
-"Every Mercedes-Benz Certified Pre-Owned vehicle passes a rigorous 165-point inspection — no salvage titles, no flood damage, no frame damage, no exceptions. Tires and brakes must be above half-life, and all work is completed using genuine Mercedes-Benz parts and manufacturer-recommended tires. Your purchase includes the remainder of the original factory warranty plus one year of unlimited-mile CPO coverage — zero deductible, fully transferable, and honored at any of 380-plus authorized Mercedes-Benz dealers nationwide. If your vehicle is within six months or 5,000 miles of its next scheduled service at the time of sale, Mercedes-Benz of Durham completes it before delivery at no charge. Additional coverage includes 24/7 roadside assistance, trip interruption protection up to $300 per day for three days if you break down more than 100 miles from home, a seven-day/500-mile exchange privilege, and a full vehicle history report with every purchase."
+"Every Mercedes-Benz Certified Pre-Owned vehicle passes a rigorous 165-point inspection before certification. No salvage titles, no flood damage, no frame damage, no exceptions. Tires and brakes must be above half-life, and all repairs are performed using genuine Mercedes-Benz parts and manufacturer-recommended tires. This vehicle carries the remainder of its original 4-year/50,000-mile factory warranty plus an additional 1 year of unlimited-mile Certified Pre-Owned coverage. Zero deductible, fully transferable, honored at any of 380+ authorized Mercedes-Benz dealers nationwide. If this vehicle is within 6 months or 5,000 miles of its next scheduled service at the time of sale, Mercedes-Benz of Durham completes that service before delivery at no cost to the buyer. Additional coverage includes 24/7 roadside assistance, trip interruption protection up to $300 per day for 3 days if you break down more than 100 miles from home, and a 7-day/500-mile exchange privilege."
 
 ---
 
@@ -166,7 +167,7 @@ PARAGRAPH FOUR — STORE CREDIBILITY CLOSER (FIXED — DO NOT CHANGE)
 
 Write this paragraph identically on every single ad:
 
-"Mercedes-Benz of Durham is the number one Certified Pre-Owned Mercedes-Benz dealer in the Triangle — 4.9 stars across 4,000-plus Google reviews, part of the Hendrick Automotive Group. Our pricing is researched daily against live market data so you can buy with confidence and skip the back-and-forth. Find us at the Hendrick Automotive Mall on Kentington Drive in Durham — serving Raleigh, Cary, Chapel Hill, Wake Forest, and the entire Research Triangle region. Six stores, nine brands, just minutes from Southpoint Mall and I-40."
+"{STORE_CLOSER_PARAGRAPH}"
 
 ---
 
@@ -336,7 +337,7 @@ The GLE 350 is Mercedes-Benz's best-selling SUV and this unit is built around a 
 
 Every Mercedes-Benz Certified Pre-Owned vehicle passes a rigorous 165-point inspection before certification. No salvage titles, no flood damage, no frame damage, no exceptions. Tires and brakes must be above half-life, and all repairs are performed using genuine Mercedes-Benz parts and manufacturer-recommended tires. This vehicle carries the remainder of its original 4-year/50,000-mile factory warranty plus an additional 1 year of unlimited-mile Certified Pre-Owned coverage. Zero deductible, fully transferable, honored at any of 380+ authorized Mercedes-Benz dealers nationwide. If this vehicle is within 6 months or 5,000 miles of its next scheduled service at the time of sale, Mercedes-Benz of Durham completes that service before delivery at no cost to the buyer. Additional coverage includes 24/7 roadside assistance, trip interruption protection up to $300 per day for 3 days if you break down more than 100 miles from home, and a 7-day/500-mile exchange privilege.
 
-Mercedes-Benz of Durham is the number one Certified Pre-Owned Mercedes-Benz dealer in the Triangle — 4.9 stars across 4,000-plus Google reviews, part of the Hendrick Automotive Group. Our pricing is researched daily against live market data so you can buy with confidence and skip the back-and-forth. Find us at the Hendrick Automotive Mall on Kentington Drive in Durham — serving Raleigh, Cary, Chapel Hill, Wake Forest, and the entire Research Triangle region. Six stores, nine brands, just minutes from Southpoint Mall and I-40.
+{STORE_CLOSER_PARAGRAPH}
 
 ---
 

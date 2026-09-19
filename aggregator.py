@@ -950,7 +950,8 @@ SUPPRESS_FEATURES = [
     "sea packing",
     "dispatch",
     "credit for missing",
-    "floormats",  # generic — only mention branded floor mats
+    "carpeted floor mat",  # suppresses generic carpeted mats; leaves AMG/Designo
+                           # branded floor mat options intact
     "owners manual",
     "first-aid kit omission",
     "warning triangle omission",
@@ -973,6 +974,14 @@ SUPPRESS_FEATURES = [
     "independent trunk locking",
     "first-aid kit",
     "warning triangle",
+    "shift-by-wire",
+    "electric parking brake",
+    "power windows",
+    "power door locks",
+    "intermittent wipers",
+    "carpeted cargo area",
+    "cargo net",
+    "cargo cover",
 ]
 
 
@@ -2964,14 +2973,24 @@ def _recon_is_complete(line_items: list[dict[str, Any]]) -> bool:
 
 
 def check_recon(
-    stock_number: str, *, headless: bool = True, fresh_login: bool = False
+    stock_number: str,
+    *,
+    rv: ReconVisionScraper | None = None,
+    headless: bool = True,
+    fresh_login: bool = False,
 ) -> dict[str, Any]:
     """Light ReconVision-only check (no ACV MAX / Carfax / AutoiPacket). Returns
-    {stock_number, recon_complete, work_order_id, note}."""
+    {stock_number, recon_complete, work_order_id, note}.
+
+    Pass an already-open `rv` (logged in) to reuse it across a per-vehicle loop
+    instead of opening a new Chromium process and re-logging-in for every
+    vehicle — see orchestrator.py's _run_inner()."""
     stock = stock_number.strip().lstrip("#").upper()
-    with ReconVisionScraper(
-        headless=headless, use_saved_session=not fresh_login
-    ) as rv:
+    owns_session = rv is None
+    if owns_session:
+        rv = ReconVisionScraper(headless=headless, use_saved_session=not fresh_login)
+        rv.__enter__()
+    try:
         rv.login(force=fresh_login)
         try:
             recon_raw = rv.scrape_work_order(stock)
@@ -2981,6 +3000,9 @@ def check_recon(
                 "recon_complete": False,
                 "note": "ReconVision timeout — will retry next run",
             }
+    finally:
+        if owns_session:
+            rv.__exit__(None, None, None)
     complete = _recon_is_complete(recon_raw.get("line_items", []))
     return {
         "stock_number": stock,

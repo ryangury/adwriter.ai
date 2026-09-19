@@ -48,11 +48,13 @@ from adwriter import (
 from aggregator import ScraperError, aggregate
 from scraper import WorkOrderNotFoundError
 from vehicle_cache import get_carfax, get_recon, get_vehicle_by_stock, get_window_sticker, needs_recon
+from credentials import DEMO_PASSWORD
+from run_lock import acquire_scraper_lock, release_scraper_lock, ScraperBusyError, SCRAPER_LOCK_PATH
 
 # Simple shared-password gate for the demo — no user accounts. Change this to
 # rotate the password; every existing session is invalidated the next time the
 # process restarts (app.secret_key is regenerated on each launch).
-PASSWORD = "durham2026"
+PASSWORD = DEMO_PASSWORD
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
@@ -432,135 +434,144 @@ def generate():
         "error": None,
     }
 
-    # --- 1. aggregate (all scrapers) ------------------------------------- #
-    # A prior crawl's cached vehicle_id (when we have one) is passed to every
-    # aggregate() call below so ACV Max's inventory search only ever runs
-    # once, if at all — see ACVMaxScraper.scrape_pricing()'s docstring for why
-    # a second independent search for the same stock number is a real race.
-    snap = _snapshot_lookup(stock_number)
-    snap_vehicle_id = snap.get("vehicle_id") if snap else None
-    print(
-        f"[app] /generate: aggregate({stock_number!r}) starting  "
-        f"(cwd={os.getcwd()}, vehicle_id={snap_vehicle_id!r})",
-        file=sys.stderr,
-        flush=True,
-    )
     try:
-        pkg = aggregate(
-            stock_number, skip_recon=False, expected_vin=None, vehicle_id=snap_vehicle_id
-        )
-    except WorkOrderNotFoundError as exc:
+        acquire_scraper_lock(SCRAPER_LOCK_PATH, wait_seconds=30)
+    except ScraperBusyError:
+        result["error"] = "An inventory sync is currently running. Try again in a few minutes."
+        return jsonify(result), 503
+
+    try:
+        # --- 1. aggregate (all scrapers) ---------------------------------- #
+        # A prior crawl's cached vehicle_id (when we have one) is passed to every
+        # aggregate() call below so ACV Max's inventory search only ever runs
+        # once, if at all — see ACVMaxScraper.scrape_pricing()'s docstring for why
+        # a second independent search for the same stock number is a real race.
+        snap = _snapshot_lookup(stock_number)
+        snap_vehicle_id = snap.get("vehicle_id") if snap else None
         print(
-            f"[app] /generate: WorkOrderNotFoundError for {stock_number!r}: {exc}",
+            f"[app] /generate: aggregate({stock_number!r}) starting  "
+            f"(cwd={os.getcwd()}, vehicle_id={snap_vehicle_id!r})",
             file=sys.stderr,
             flush=True,
         )
-        vin = snap.get("vin") if snap else None
-        if vin and not needs_recon(vin):
-            # We already have complete recon for this VIN cached from an
-            # earlier run — retry and let aggregate() itself use the cache
-            # (see aggregator.aggregate()'s expected_vin/needs_recon path)
-            # instead of hitting ReconVision again.
+        try:
+            pkg = aggregate(
+                stock_number, skip_recon=False, expected_vin=None, vehicle_id=snap_vehicle_id
+            )
+        except WorkOrderNotFoundError as exc:
             print(
-                f"[app] /generate: recon cache hit for VIN {vin} — retrying "
-                f"{stock_number!r} with expected_vin",
+                f"[app] /generate: WorkOrderNotFoundError for {stock_number!r}: {exc}",
                 file=sys.stderr,
                 flush=True,
             )
-            try:
-                pkg = aggregate(
-                    stock_number, skip_recon=False, expected_vin=vin,
-                    vehicle_id=snap_vehicle_id,
+            vin = snap.get("vin") if snap else None
+            if vin and not needs_recon(vin):
+                # We already have complete recon for this VIN cached from an
+                # earlier run — retry and let aggregate() itself use the cache
+                # (see aggregator.aggregate()'s expected_vin/needs_recon path)
+                # instead of hitting ReconVision again.
+                print(
+                    f"[app] /generate: recon cache hit for VIN {vin} — retrying "
+                    f"{stock_number!r} with expected_vin",
+                    file=sys.stderr,
+                    flush=True,
                 )
-            except ScraperError as exc2:
-                traceback.print_exc()
-                result["error"] = f"Scraper error: {exc2}"
+                try:
+                    pkg = aggregate(
+                        stock_number, skip_recon=False, expected_vin=vin,
+                        vehicle_id=snap_vehicle_id,
+                    )
+                except ScraperError as exc2:
+                    traceback.print_exc()
+                    result["error"] = f"Scraper error: {exc2}"
+                    return jsonify(result), 200
+                except Exception as exc2:  # noqa: BLE001
+                    traceback.print_exc()
+                    result["error"] = f"Aggregation failed: {exc2}"
+                    return jsonify(result), 502
+            else:
+                # No cached recon to fall back on. Still try to show whatever ACV
+                # Max / AutoiPacket / Carfax data is available (skip_recon=True
+                # bypasses ReconVision entirely) so the demo isn't a blank wall.
+                try:
+                    partial_pkg = aggregate(
+                        stock_number, skip_recon=True, expected_vin=vin,
+                        vehicle_id=snap_vehicle_id,
+                    )
+                    result["scraper_status"] = _scraper_status(partial_pkg)
+                    result["scraper_status"]["reconvision"] = "failed"
+                    result["cache_status"] = _cache_status(partial_pkg)
+                    result["vehicle"] = _vehicle_summary(partial_pkg)
+                except Exception:  # noqa: BLE001 - this is already a fallback path
+                    result["scraper_status"]["reconvision"] = "failed"
+                result["error"] = (
+                    "ReconVision work order not found for this stock number. "
+                    "Recon data unavailable — ad cannot be generated without "
+                    "reconditioning data."
+                )
                 return jsonify(result), 200
-            except Exception as exc2:  # noqa: BLE001
-                traceback.print_exc()
-                result["error"] = f"Aggregation failed: {exc2}"
-                return jsonify(result), 502
-        else:
-            # No cached recon to fall back on. Still try to show whatever ACV
-            # Max / AutoiPacket / Carfax data is available (skip_recon=True
-            # bypasses ReconVision entirely) so the demo isn't a blank wall.
-            try:
-                partial_pkg = aggregate(
-                    stock_number, skip_recon=True, expected_vin=vin,
-                    vehicle_id=snap_vehicle_id,
-                )
-                result["scraper_status"] = _scraper_status(partial_pkg)
-                result["scraper_status"]["reconvision"] = "failed"
-                result["cache_status"] = _cache_status(partial_pkg)
-                result["vehicle"] = _vehicle_summary(partial_pkg)
-            except Exception:  # noqa: BLE001 - this is already a fallback path
-                result["scraper_status"]["reconvision"] = "failed"
-            result["error"] = (
-                "ReconVision work order not found for this stock number. "
-                "Recon data unavailable — ad cannot be generated without "
-                "reconditioning data."
+        except ScraperError as exc:  # includes VehicleIdentityError
+            print(
+                f"[app] /generate: ScraperError for {stock_number!r} — full traceback:",
+                file=sys.stderr,
+                flush=True,
             )
+            traceback.print_exc()
+            result["error"] = f"Scraper error: {exc}"
             return jsonify(result), 200
-    except ScraperError as exc:  # includes VehicleIdentityError
-        print(
-            f"[app] /generate: ScraperError for {stock_number!r} — full traceback:",
-            file=sys.stderr,
-            flush=True,
-        )
-        traceback.print_exc()
-        result["error"] = f"Scraper error: {exc}"
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[app] /generate: aggregate() failed for {stock_number!r} — "
+                f"full traceback:",
+                file=sys.stderr,
+                flush=True,
+            )
+            traceback.print_exc()
+            result["error"] = f"Aggregation failed: {exc}"
+            return jsonify(result), 502
+
+        # Recon still in progress — aggregate() returns an early stub, no ad.
+        if pkg.get("recon_complete") is False:
+            result["scraper_status"]["reconvision"] = "failed"
+            result["error"] = pkg.get("note") or "Recon is not complete for this vehicle."
+            return jsonify(result), 200
+
+        result["scraper_status"] = _scraper_status(pkg)
+        result["cache_status"] = _cache_status(pkg)
+        result["vehicle"] = _vehicle_summary(pkg)
+        result["peacock_mode"] = bool(pkg.get("peacock_mode"))
+        result["recon_included"], result["recon_excluded"] = _recon_dashboard(pkg)
+        result["proof_points_all"] = _proof_points_all(pkg)
+        result["scraper_status_detail"] = _scraper_status_detail(pkg)
+        result["market_data"] = _market_data(pkg)
+        try:
+            result["data_package"] = format_data_package(pkg)[0]
+        except Exception:  # noqa: BLE001 - the data-package view is a bonus, not core
+            traceback.print_exc()
+
+        # MB CPO data-completeness gate tripped inside aggregate() — no Claude call.
+        if pkg.get("reason") == "incomplete_data":
+            result["error"] = pkg.get("message") or "Required source data was incomplete."
+            return jsonify(result), 200
+
+        # --- 2. write the ad ----------------------------------------------- #
+        try:
+            ad_copy, feedback = _generate_from_package(pkg)
+        except (anthropic.APIError, RuntimeError) as exc:
+            traceback.print_exc()
+            result["error"] = f"Ad generation failed: {exc}"
+            return jsonify(result), 502
+        except Exception as exc:  # noqa: BLE001
+            traceback.print_exc()
+            result["error"] = f"Ad generation failed: {exc}"
+            return jsonify(result), 500
+
+        result["ad_copy"] = ad_copy
+        result["feedback"] = feedback
+        result["proof_point"] = _proof_point(feedback, pkg)
         return jsonify(result), 200
-    except Exception as exc:  # noqa: BLE001
-        print(
-            f"[app] /generate: aggregate() failed for {stock_number!r} — "
-            f"full traceback:",
-            file=sys.stderr,
-            flush=True,
-        )
-        traceback.print_exc()
-        result["error"] = f"Aggregation failed: {exc}"
-        return jsonify(result), 502
-
-    # Recon still in progress — aggregate() returns an early stub, no ad.
-    if pkg.get("recon_complete") is False:
-        result["scraper_status"]["reconvision"] = "failed"
-        result["error"] = pkg.get("note") or "Recon is not complete for this vehicle."
-        return jsonify(result), 200
-
-    result["scraper_status"] = _scraper_status(pkg)
-    result["cache_status"] = _cache_status(pkg)
-    result["vehicle"] = _vehicle_summary(pkg)
-    result["peacock_mode"] = bool(pkg.get("peacock_mode"))
-    result["recon_included"], result["recon_excluded"] = _recon_dashboard(pkg)
-    result["proof_points_all"] = _proof_points_all(pkg)
-    result["scraper_status_detail"] = _scraper_status_detail(pkg)
-    result["market_data"] = _market_data(pkg)
-    try:
-        result["data_package"] = format_data_package(pkg)[0]
-    except Exception:  # noqa: BLE001 - the data-package view is a bonus, not core
-        traceback.print_exc()
-
-    # MB CPO data-completeness gate tripped inside aggregate() — no Claude call.
-    if pkg.get("reason") == "incomplete_data":
-        result["error"] = pkg.get("message") or "Required source data was incomplete."
-        return jsonify(result), 200
-
-    # --- 2. write the ad ------------------------------------------------- #
-    try:
-        ad_copy, feedback = _generate_from_package(pkg)
-    except (anthropic.APIError, RuntimeError) as exc:
-        traceback.print_exc()
-        result["error"] = f"Ad generation failed: {exc}"
-        return jsonify(result), 502
-    except Exception as exc:  # noqa: BLE001
-        traceback.print_exc()
-        result["error"] = f"Ad generation failed: {exc}"
-        return jsonify(result), 500
-
-    result["ad_copy"] = ad_copy
-    result["feedback"] = feedback
-    result["proof_point"] = _proof_point(feedback, pkg)
-    return jsonify(result), 200
+    finally:
+        release_scraper_lock(SCRAPER_LOCK_PATH)
 
 
 def _parse_price(raw: Any) -> float | None:

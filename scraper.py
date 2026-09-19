@@ -2267,17 +2267,20 @@ class ACVMaxScraper(_BrowserSession):
         _first_visible(self.page, "acvmax_inventory_ready", self.timeout_ms)
         self.page.wait_for_timeout(2_000)
 
-        # "/" focuses the Quick Search box (global key handler in the SPA).
-        self.page.keyboard.press("/")
-        self.page.wait_for_timeout(400)
-        focused_is_input = self.page.evaluate(
-            "() => ['INPUT','TEXTAREA'].includes(document.activeElement?.tagName)"
-        )
-        if not focused_is_input:
-            _first_visible(self.page, "acvmax_quick_search", self.timeout_ms).click()
-        self.page.keyboard.type(stock, delay=40)
+        search_input = _first_visible(self.page, "acvmax_quick_search", self.timeout_ms)
+        search_input.fill("")  # explicit clear — do not rely on the box being empty
+        self.page.wait_for_timeout(200)
+        search_input.fill(stock)  # .fill() replaces the value atomically instead of relying on keystroke-by-keystroke state
         self.page.wait_for_timeout(3_000)
         self.page.wait_for_load_state("networkidle")
+
+        actual_value = search_input.input_value()
+        if actual_value.strip().upper() != stock.strip().upper():
+            self._dump_debug(f"acvmax-search-box-mismatch-{stock}")
+            raise VehicleNotFoundError(
+                f"Stock #{stock}: search box shows {actual_value!r} after fill — "
+                f"search did not take, refusing to scan results."
+            )
 
         rows = self.page.evaluate(
             """() => [...document.querySelectorAll('a[href]')]
@@ -2293,7 +2296,7 @@ class ACVMaxScraper(_BrowserSession):
         stock_bare = stock.lstrip("#")
         matches = [
             href for href, txt in by_href.items() if stock_bare in txt.upper().replace("#", "")
-        ] or list(by_href)
+        ]
 
         if len(matches) != 1:
             self._dump_debug(f"acvmax-search-{stock_bare}")

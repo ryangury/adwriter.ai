@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import time
 from datetime import date
@@ -49,7 +48,8 @@ from inventory_crawler import (
     detect_reprices_needed,
     save_snapshot,
 )
-from scraper import ACVMaxScraper
+from scraper import ACVMaxScraper, ReconVisionScraper
+from run_lock import ScraperBusyError, SCRAPER_LOCK_PATH, acquire_scraper_lock, release_scraper_lock
 
 BUILD_STATUS_CODES = {10, 11, 12, 13, 16}
 
@@ -77,46 +77,9 @@ def _save_reprice_queue(overflow: list[dict[str, Any]]) -> None:
 # --------------------------------------------------------------------------- #
 # single-instance lock — a stuck/hung run must never let a second one start
 # and race it for ad_history.json / vehicle_cache.db / reprice_queue.json.
+# Shared with app.py's /generate route via run_lock.py so Flask and the
+# orchestrator never scrape the same platform at the same time.
 # --------------------------------------------------------------------------- #
-
-ORCHESTRATOR_LOCK_PATH = Path("C:/adwriter/orchestrator.lock")
-
-
-def _acquire_orchestrator_lock() -> None:
-    """Refuse to start a second orchestrator run while one is already active.
-    A stale lock (the PID inside it is no longer running) is cleaned up and
-    the new run proceeds."""
-    if ORCHESTRATOR_LOCK_PATH.exists():
-        try:
-            pid = int(ORCHESTRATOR_LOCK_PATH.read_text(encoding="utf-8").strip())
-        except (ValueError, OSError):
-            pid = None
-
-        running = False
-        if pid is not None:
-            try:
-                os.kill(pid, 0)
-            except OSError:
-                running = False  # no such process — stale lock
-            else:
-                running = True
-
-        if running:
-            print(
-                f"[orchestrator] Another instance is already running "
-                f"(PID {pid}) — exiting",
-                file=sys.stderr,
-            )
-            sys.exit(0)
-
-        ORCHESTRATOR_LOCK_PATH.unlink(missing_ok=True)
-
-    ORCHESTRATOR_LOCK_PATH.write_text(str(os.getpid()), encoding="utf-8")
-
-
-def _release_orchestrator_lock() -> None:
-    ORCHESTRATOR_LOCK_PATH.unlink(missing_ok=True)
-
 
 # --------------------------------------------------------------------------- #
 # formatting helpers
@@ -283,11 +246,15 @@ def _format_action_email(
 def run(
     *, limit: int | None = None, send_email: bool = True, status: list[int] | None = None
 ) -> int:
-    _acquire_orchestrator_lock()
+    try:
+        acquire_scraper_lock(SCRAPER_LOCK_PATH)
+    except ScraperBusyError as exc:
+        print(f"[orchestrator] {exc} — exiting", file=sys.stderr)
+        return 0
     try:
         return _run_inner(limit=limit, send_email=send_email, status=status)
     finally:
-        _release_orchestrator_lock()
+        release_scraper_lock(SCRAPER_LOCK_PATH)
 
 
 def _run_inner(
@@ -385,78 +352,91 @@ def _run_inner(
     recon_update_queue: list[dict[str, Any]] = []
     reprice_queue: list[dict[str, Any]] = []
 
-    for v in retail:
-        stock = v.get("stock_number")
-        sc = v.get("status_code")
+    rv: ReconVisionScraper | None = None
+    try:
+        for v in retail:
+            stock = v.get("stock_number")
+            sc = v.get("status_code")
 
-        if sc not in BUILD_STATUS_CODES:
-            if sc == 1:
-                needs_cert.append(v)
-                print(f"[gate] {stock}: status 1 — needs certification assigned")
-            else:
-                skipped_status.append(v)
-                print(f"[gate] {stock}: status {sc} not in {{10,11,12,13,16}} — skipped")
-            continue
-
-        entry = ad_history.get(stock)
-        price_changed = stock in repricing_queue and bool(
-            (entry or {}).get("current_ad_text")
-        )
-
-        if entry:
-            if entry.get("recon_pending"):
-                try:
-                    rc = check_recon(stock)
-                except PlaywrightTimeoutError as exc:
-                    print(f"[orchestrator] ReconVision timeout on {stock} — skipping to next vehicle")
-                    errors.append(
-                        {
-                            "stock": stock,
-                            "phase": "recon",
-                            "error": f"ReconVision timeout — will retry on next run: {exc}",
-                        }
-                    )
-                    continue
-                except ScraperError as exc:
-                    errors.append({"stock": stock, "phase": "recon", "error": str(exc)})
-                    print(f"[gate] {stock}: recon check failed — {exc}")
-                    continue
-                if rc["recon_complete"]:
-                    recon_update_queue.append(v)
-                    print(f"[gate] {stock}: recon complete -> recon update queue")
+            if sc not in BUILD_STATUS_CODES:
+                if sc == 1:
+                    needs_cert.append(v)
+                    print(f"[gate] {stock}: status 1 — needs certification assigned")
                 else:
-                    print(f"[gate] {stock}: pre-recon ad live, recon still open — watching")
-            if price_changed:
-                reprice_queue.append(v)
-                print(f"[gate] {stock}: price changed -> reprice queue")
-            if not entry.get("recon_pending") and not price_changed:
-                print(f"[gate] {stock}: ad current, nothing pending — skip")
-            continue
+                    skipped_status.append(v)
+                    print(f"[gate] {stock}: status {sc} not in {{10,11,12,13,16}} — skipped")
+                continue
 
-        # No ad on record yet — decide full vs pre-recon on the recon gate.
-        try:
-            rc = check_recon(stock)
-        except PlaywrightTimeoutError as exc:
-            print(f"[orchestrator] ReconVision timeout on {stock} — skipping to next vehicle")
-            errors.append(
-                {
-                    "stock": stock,
-                    "phase": "recon",
-                    "error": f"ReconVision timeout — will retry on next run: {exc}",
-                }
+            entry = ad_history.get(stock)
+            price_changed = stock in repricing_queue and bool(
+                (entry or {}).get("current_ad_text")
             )
-            continue
-        except ScraperError as exc:
-            errors.append({"stock": stock, "phase": "recon", "error": str(exc)})
-            print(f"[gate] {stock}: recon check failed — {exc}")
-            continue
 
-        if rc["recon_complete"]:
-            build_queue.append(v)
-            print(f"[gate] {stock}: no ad yet, recon complete -> build queue")
-        else:
-            pre_recon_queue.append(v)
-            print(f"[gate] {stock}: no ad yet, recon open -> pre-recon queue")
+            if entry:
+                if entry.get("recon_pending"):
+                    if rv is None:
+                        rv = ReconVisionScraper(headless=True, use_saved_session=True)
+                        rv.__enter__()
+                        rv.login()
+                    try:
+                        rc = check_recon(stock, rv=rv)
+                    except PlaywrightTimeoutError as exc:
+                        print(f"[orchestrator] ReconVision timeout on {stock} — skipping to next vehicle")
+                        errors.append(
+                            {
+                                "stock": stock,
+                                "phase": "recon",
+                                "error": f"ReconVision timeout — will retry on next run: {exc}",
+                            }
+                        )
+                        continue
+                    except ScraperError as exc:
+                        errors.append({"stock": stock, "phase": "recon", "error": str(exc)})
+                        print(f"[gate] {stock}: recon check failed — {exc}")
+                        continue
+                    if rc["recon_complete"]:
+                        recon_update_queue.append(v)
+                        print(f"[gate] {stock}: recon complete -> recon update queue")
+                    else:
+                        print(f"[gate] {stock}: pre-recon ad live, recon still open — watching")
+                if price_changed:
+                    reprice_queue.append(v)
+                    print(f"[gate] {stock}: price changed -> reprice queue")
+                if not entry.get("recon_pending") and not price_changed:
+                    print(f"[gate] {stock}: ad current, nothing pending — skip")
+                continue
+
+            # No ad on record yet — decide full vs pre-recon on the recon gate.
+            if rv is None:
+                rv = ReconVisionScraper(headless=True, use_saved_session=True)
+                rv.__enter__()
+                rv.login()
+            try:
+                rc = check_recon(stock, rv=rv)
+            except PlaywrightTimeoutError as exc:
+                print(f"[orchestrator] ReconVision timeout on {stock} — skipping to next vehicle")
+                errors.append(
+                    {
+                        "stock": stock,
+                        "phase": "recon",
+                        "error": f"ReconVision timeout — will retry on next run: {exc}",
+                    }
+                )
+                continue
+            except ScraperError as exc:
+                errors.append({"stock": stock, "phase": "recon", "error": str(exc)})
+                print(f"[gate] {stock}: recon check failed — {exc}")
+                continue
+
+            if rc["recon_complete"]:
+                build_queue.append(v)
+                print(f"[gate] {stock}: no ad yet, recon complete -> build queue")
+            else:
+                pre_recon_queue.append(v)
+                print(f"[gate] {stock}: no ad yet, recon open -> pre-recon queue")
+    finally:
+        if rv is not None:
+            rv.__exit__(None, None, None)
 
     # --- 4. AD GENERATION -------------------------------------------- #
     n_queued = (
