@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
-"""feature_cache.py — local cache for brand feature blurbs + model tow ratings.
+"""feature_cache.py — local cache for brand feature blurbs, tow ratings, and
+per-trim standard equipment + engine specs.
 
-Two SQLite tables in feature_cache.db:
+Three SQLite tables in feature_cache.db:
 
   brand_features   — branded feature descriptions at the manufacturer level
                      (not model/year specific). e.g. "Magic Sky Control".
   towing_capacity  — tow ratings at the model + year + trim level, because the
                      numbers change year to year.
+  trim_knowledge   — standard equipment and verified engine description at the
+                     exact year + make + model + trim level (non-Mercedes only).
 
-    from feature_cache import get_feature, save_feature, get_towing, save_towing
+    from feature_cache import (
+        get_feature, save_feature, get_towing, save_towing,
+        get_trim_knowledge, save_trim_knowledge,
+    )
 """
 
 from __future__ import annotations
@@ -44,6 +50,19 @@ CREATE TABLE IF NOT EXISTS towing_capacity (
     source_url        TEXT,
     cached_date       TEXT,
     UNIQUE (year, make, model, trim, package_required)
+);
+
+CREATE TABLE IF NOT EXISTS trim_knowledge (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    year                INTEGER NOT NULL,
+    make                TEXT NOT NULL COLLATE NOCASE,
+    model               TEXT NOT NULL COLLATE NOCASE,
+    trim                TEXT NOT NULL COLLATE NOCASE,
+    standard_equipment  TEXT,
+    engine_description  TEXT,
+    source_url          TEXT,
+    cached_date         TEXT,
+    UNIQUE (year, make, model, trim)
 );
 """
 
@@ -185,6 +204,67 @@ def save_towing(
 
 
 # --------------------------------------------------------------------------- #
+# trim_knowledge
+# --------------------------------------------------------------------------- #
+
+
+def get_trim_knowledge(
+    year: int, make: str, model: str, trim: str | None
+) -> dict[str, Any] | None:
+    """Look up cached standard-equipment + engine info for this exact
+    year/make/model/trim. Case-insensitive. Returns None if not cached yet."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM trim_knowledge "
+            "WHERE year = ? AND make = ? COLLATE NOCASE AND model = ? COLLATE NOCASE "
+            "AND trim = ? COLLATE NOCASE LIMIT 1",
+            (year, make, model, trim or ""),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def save_trim_knowledge(
+    year: int,
+    make: str,
+    model: str,
+    trim: str | None,
+    standard_equipment: str | None,
+    engine_description: str | None,
+    source_url: str | None,
+) -> None:
+    """Insert or update trim knowledge (upsert on year/make/model/trim).
+
+    A field passed as None never overwrites a value already stored: a partial
+    save (e.g. only an engine description salvaged from prose) must not wipe
+    out a standard-equipment list an earlier, fuller save recorded."""
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO trim_knowledge
+                (year, make, model, trim, standard_equipment, engine_description,
+                 source_url, cached_date)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(year, make, model, trim) DO UPDATE SET
+                standard_equipment = COALESCE(excluded.standard_equipment, standard_equipment),
+                engine_description = COALESCE(excluded.engine_description, engine_description),
+                source_url         = COALESCE(excluded.source_url, source_url),
+                cached_date        = excluded.cached_date
+            """,
+            (
+                year,
+                make,
+                model,
+                trim or "",
+                standard_equipment,
+                engine_description,
+                source_url,
+                date.today().isoformat(),
+            ),
+        )
+        conn.commit()
+
+
+# --------------------------------------------------------------------------- #
 # CLI — quick inspection
 # --------------------------------------------------------------------------- #
 
@@ -193,9 +273,11 @@ def main(argv: list[str] | None = None) -> int:
     with _connect() as conn:
         nf = conn.execute("SELECT COUNT(*) FROM brand_features").fetchone()[0]
         nt = conn.execute("SELECT COUNT(*) FROM towing_capacity").fetchone()[0]
+        nk = conn.execute("SELECT COUNT(*) FROM trim_knowledge").fetchone()[0]
         print(f"feature_cache.db  ({DB_PATH})")
         print(f"  brand_features:  {nf} row(s)")
         print(f"  towing_capacity: {nt} row(s)")
+        print(f"  trim_knowledge:  {nk} row(s)")
         for r in conn.execute(
             "SELECT brand, feature_name, cached_date FROM brand_features "
             "ORDER BY brand, feature_name LIMIT 20"

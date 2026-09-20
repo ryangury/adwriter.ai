@@ -26,7 +26,14 @@ import anthropic
 import credentials
 from credentials import ANTHROPIC_API_KEY
 from aggregator import DEALER_DOC_FEE, _filter_recon, aggregate, dedupe_equipment_descriptors
-from feature_cache import get_feature, get_towing, save_feature, save_towing
+from feature_cache import (
+    get_feature,
+    get_towing,
+    get_trim_knowledge,
+    save_feature,
+    save_towing,
+    save_trim_knowledge,
+)
 from recon_update_prompt import RECON_UPDATE_SYSTEM_PROMPT
 from reprice_prompt import REPRICE_SYSTEM_PROMPT
 from scraper import ReconVisionScraper, ScraperError
@@ -641,6 +648,11 @@ def _research_instructions(needs_lookup: list[dict]) -> str:
                 f"TOWING rating for {n.get('year')} {n.get('make')} {n.get('model')}"
                 f" {n.get('trim') or ''}".strip()
             )
+        elif n.get("kind") == "trim_knowledge":
+            items.append(
+                f"STANDARD EQUIPMENT AND ENGINE SPECS for {n.get('year')} "
+                f"{n.get('make')} {n.get('model')} {n.get('trim') or ''}".strip()
+            )
         else:
             items.append(n.get("feature_name", ""))
     listed = "; ".join(x for x in items if x)
@@ -648,7 +660,9 @@ def _research_instructions(needs_lookup: list[dict]) -> str:
         f"\n\nFEATURES REQUIRING RESEARCH: {listed}\n"
         "For each item above: search for it, then write a 1-2 sentence plain "
         "English buyer-facing description of what it does and why a buyer would "
-        "want it. Use those descriptions when you write the ad.\n\n"
+        "want it. Use those descriptions when you write the ad. (A TOWING or "
+        "STANDARD EQUIPMENT AND ENGINE SPECS item is answered with its own "
+        "line format below instead of a description.)\n\n"
         "When research is done you MUST output the findings block below BEFORE "
         "the ad. This block is the ONLY text allowed before paragraph one — do "
         "not write any sentence, preamble, or status note ('Now I have "
@@ -661,6 +675,11 @@ def _research_instructions(needs_lookup: list[dict]) -> str:
         "(one such line per feature above; then, only if a TOWING item is "
         "listed above, exactly one line:)\n"
         "TOWING :: <rated pounds, digits only> :: <required package name or none> :: <source URL>\n"
+        "(and, only if a STANDARD EQUIPMENT AND ENGINE SPECS item is listed "
+        "above, exactly one line:)\n"
+        "TRIM :: <comma-separated list of standard equipment on this trim> :: "
+        "<engine description: configuration, cylinder count, displacement, "
+        "horsepower, torque — verified via search, not memory> :: <source URL>\n"
         "===END RESEARCH===\n\n"
         "Then one blank line, then the ad starting at paragraph one. Do not "
         "repeat or mention the findings block inside the ad."
@@ -673,6 +692,18 @@ def _cache_research_findings(block_text: str, needs_lookup: list[dict]) -> None:
     for raw in block_text.splitlines():
         parts = [p.strip() for p in raw.split("::")]
         if len(parts) < 2 or not parts[0]:
+            continue
+        if parts[0].upper() == "TRIM":
+            equip = parts[1] if len(parts) > 1 else None
+            engine_desc = parts[2] if len(parts) > 2 else None
+            url = parts[3] if len(parts) > 3 else None
+            trims = [n for n in needs_lookup if n.get("kind") == "trim_knowledge"]
+            tk = trims[0] if trims else None
+            if tk and tk.get("year") and tk.get("make") and tk.get("model"):
+                save_trim_knowledge(
+                    tk["year"], tk["make"], tk["model"], tk.get("trim"),
+                    equip, engine_desc, url,
+                )
             continue
         if parts[0].upper() == "TOWING":
             rating = None
@@ -764,6 +795,38 @@ def _salvage_findings(
                     package_name=pkg_name,
                     source_url=url,
                 )
+
+    # Trim knowledge: an engine description pulled from prose. Partial by
+    # design (no equipment list), so it still reads as a cache miss next time
+    # and gets a full lookup — but a verified engine spec is worth keeping.
+    # Never overwrites an engine description the structured TRIM line just saved.
+    trims = [n for n in needs_lookup if n.get("kind") == "trim_knowledge"]
+    if trims:
+        tk = trims[0]
+        if tk.get("year") and tk.get("make") and tk.get("model"):
+            existing = get_trim_knowledge(tk["year"], tk["make"], tk["model"], tk.get("trim"))
+            if not (existing and existing.get("engine_description")):
+                me = re.search(
+                    r"(\d\.\d)\s*L\s+(?:turbo(?:charged)?\s+)?(?:inline[\s-]?)?"
+                    r"(three|four|five|six|eight|3|4|5|6|8)[\s-]?cylinder",
+                    region,
+                    re.IGNORECASE,
+                )
+                if me:
+                    # Keep the whole sentence: it usually carries horsepower and
+                    # torque alongside the cylinder count.
+                    engine_desc = next(
+                        (
+                            s.strip()
+                            for s in re.split(r"(?<=[.!?])\s+", region)
+                            if me.group(0) in s
+                        ),
+                        me.group(0),
+                    )[:300]
+                    save_trim_knowledge(
+                        tk["year"], tk["make"], tk["model"], tk.get("trim"),
+                        None, engine_desc, url,
+                    )
 
     sentences = re.split(r"(?<=[.!?])\s+", region)
     for f in (n for n in needs_lookup if n.get("kind") == "feature"):
@@ -1206,6 +1269,24 @@ def format_data_package(pkg: dict) -> tuple[str, list[dict]]:
                         "trim": trim,
                     }
                 )
+
+    # --- TRIM KNOWLEDGE: standard equipment + verified engine, non-MB only ---
+    # Deliberately outside the branded-feature block above: it is keyed on
+    # year/make/model/trim, not on sticker data, so it also applies to vehicles
+    # whose MSRP came from the ACV Max options tab or is unavailable.
+    if make and "mercedes" not in make.lower() and year and make and model:
+        tk = get_trim_knowledge(year, make, model, trim)
+        lines.append("")
+        lines.append("=== TRIM KNOWLEDGE (pre-researched, use directly, do not search again) ===")
+        if tk and tk.get("standard_equipment") and tk.get("engine_description"):
+            lines.append(f"  Standard equipment: {tk['standard_equipment']}")
+            lines.append(f"  Engine: {tk['engine_description']}")
+        else:
+            lines.append("  (none cached yet — search required, see FEATURES REQUIRING RESEARCH below)")
+            needs_lookup.append({
+                "kind": "trim_knowledge", "year": year, "make": make,
+                "model": model, "trim": trim,
+            })
 
     lines.append("")
     lines.append("=== PRICING PROOF POINTS (favorable only: advertised price BELOW benchmark) ===")
