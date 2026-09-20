@@ -3560,7 +3560,7 @@ def aggregate(
         "proof_point_sentence": proof_point_sentence,
         "proof_point_type": proof_point_type,
         "msrp_sentence": build_msrp_sentence(
-            msrp_data.get("total_msrp"),
+            (msrp_data or {}).get("total_msrp"),
             _advertised_price(pricing_raw),
             pricing_raw.get("status_code"),
             pricing_raw.get("year_make_model"),
@@ -3576,7 +3576,7 @@ def aggregate(
         "amg_line_description": build_amg_line_description(
             pricing_raw.get("year_make_model"),
             pricing_raw.get("trim_body"),
-            msrp_data.get("option_packages", []),
+            (msrp_data or {}).get("option_packages", []),
         ),
         "recon": recon_block,
         "scraper_status": {
