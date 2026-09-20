@@ -34,7 +34,13 @@ from typing import Any
 import anthropic
 
 VISION_MODEL = "claude-haiku-4-5-20251001"
-VISION_MAX_TOKENS = 1000
+VISION_MAX_TOKENS = 4096  # raised from 1000 after a ReconVision work order
+                          # with many line items got cut off mid-JSON,
+                          # producing an unclosed ```json fence that failed
+                          # to parse and silently fell back to the DOM/regex
+                          # parser. This is a ceiling, not a reservation —
+                          # short responses (most Carfax/sticker parses)
+                          # cost the same as before.
 
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 _JPEG_MAGIC = b"\xff\xd8\xff"
