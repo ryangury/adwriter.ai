@@ -7,6 +7,7 @@ for module shape and rule format."""
 from shared_prompt_constants import (
     AD_TAG_FORMAT_PREAMBLE,
     API_FEEDBACK_BLOCK,
+    PACKAGE_CONTENT_VERIFICATION_RULE,
     WEB_SEARCH_NON_MB_BLOCK,
     WINDOW_STICKER_HEADERS_BLOCK,
     EQUIPMENT_EXPLANATION_RULE,
@@ -106,6 +107,8 @@ When in doubt on this tier, lean toward including the item — the opposite bias
 PARAGRAPH TWO — SELLING STORY (VARIABLE, sub-category-specific)
 
 Both sub-categories start the same way: lead with the primary differentiator (color, standout equipment, rare configuration), then the equipment story, named specifically. No em dashes in this paragraph. Never list the same feature or package twice.
+
+{PACKAGE_CONTENT_VERIFICATION_RULE}
 
 PACKAGE PRICING
 

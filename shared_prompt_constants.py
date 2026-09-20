@@ -51,6 +51,12 @@ FLAGS: [anything unusual, uncertain, or worth human review]
 
 This block is for internal use only. It will be stripped from the posted ad copy. It is the one and only thing permitted after paragraph four — the "nothing after the last paragraph" rule in OUTPUT FORMAT refers to the posted ad, which ends before this block."""
 
+# Applies to every tier's paragraph two: an unpriced, description-less package
+# name on a window sticker is a NAME ONLY. Moved verbatim out of the MB CPO
+# SYSTEM_PROMPT in adwriter.py, which alone adds the peacock-mode cross-reference.
+PACKAGE_CONTENT_VERIFICATION_RULE = """\
+PACKAGE CONTENT VERIFICATION RULE: A package name appearing on the sticker with no price and no description is a NAME ONLY — you have no verified information about what it contains. Never attribute specific named systems, technologies, or safety features (DISTRONIC, lane-keeping assist, active parking assist, or any other specifically-named function) to a package unless that exact feature also appears as its own separate line item elsewhere in the vehicle's data (added_options_all, standard_options, or a verified package description field provided to you). If you cannot point to where in the data a claimed feature actually comes from, do not write it. An unpriced, content-less package name should be mentioned by name only, or omitted, never expanded into invented specifics. This applies even when a package name sounds similar to a package you have described correctly on other vehicles — a different vehicle's "Advanced Package" is not the same content as a "Driver Assistance Package" you have written about before, and prior pattern familiarity is not verification."""
+
 WEB_SEARCH_NON_MB_BLOCK = """\
 WEB SEARCH FOR NON-MERCEDES VEHICLES
 For any non-Mercedes-Benz vehicle, before writing paragraph two, fire a web search to verify:

@@ -37,7 +37,11 @@ from feature_cache import (
 from recon_update_prompt import RECON_UPDATE_SYSTEM_PROMPT
 from reprice_prompt import REPRICE_SYSTEM_PROMPT
 from scraper import ReconVisionScraper, ScraperError
-from shared_prompt_constants import API_FEEDBACK_BLOCK, STORE_CLOSER_PARAGRAPH
+from shared_prompt_constants import (
+    API_FEEDBACK_BLOCK,
+    PACKAGE_CONTENT_VERIFICATION_RULE,
+    STORE_CLOSER_PARAGRAPH,
+)
 from system_prompt_as_is import AS_IS_PROMPT
 from system_prompt_hendrick_affordable import HENDRICK_AFFORDABLE_PROMPT
 from system_prompt_hendrick_certified import HENDRICK_CERTIFIED_PROMPT
@@ -138,7 +142,7 @@ This is the only paragraph that changes meaningfully from vehicle to vehicle. Bu
 1. Powertrain story — if the vehicle is a PHEV (plug-in hybrid) like a GLC 350e or GLE 350e, lead with the electric range and real-world fuel cost benefit. Always state the EPA electric-only range in miles as a specific number.
 2. Equipment and packages — if the vehicle is heavily optioned, lead with the most desirable packages. Name them specifically. Reference original MSRP vs current price when the MSRP DEPRECIATION SENTENCE is present in the data package — see MSRP DEPRECIATION below.
 
-PACKAGE CONTENT VERIFICATION RULE: A package name appearing on the sticker with no price and no description is a NAME ONLY — you have no verified information about what it contains. Never attribute specific named systems, technologies, or safety features (DISTRONIC, lane-keeping assist, active parking assist, or any other specifically-named function) to a package unless that exact feature also appears as its own separate line item elsewhere in the vehicle's data (added_options_all, standard_options, or a verified package description field provided to you). If you cannot point to where in the data a claimed feature actually comes from, do not write it. An unpriced, content-less package name should be mentioned by name only, or omitted, never expanded into invented specifics. This applies even when a package name sounds similar to a package you have described correctly on other vehicles — a different vehicle's "Advanced Package" is not the same content as a "Driver Assistance Package" you have written about before, and prior pattern familiarity is not verification.
+{PACKAGE_CONTENT_VERIFICATION_RULE}
 3. Rarity or combination story — if this color, trim, and equipment combination is rare in the CPO market, say so using this exact phrase: "buyers who want this specific combination rarely find it in the certified pre-owned market." Never make broader exclusivity claims you cannot support.
 4. Pricing proof point — see PRICING below.
 

@@ -7,6 +7,7 @@ shared MB CPO SYSTEM_PROMPT lineage."""
 from shared_prompt_constants import (
     AD_TAG_FORMAT_PREAMBLE,
     API_FEEDBACK_BLOCK,
+    PACKAGE_CONTENT_VERIFICATION_RULE,
     WEB_SEARCH_NON_MB_BLOCK,
     WINDOW_STICKER_HEADERS_BLOCK,
     EQUIPMENT_EXPLANATION_RULE,
@@ -73,6 +74,8 @@ This is the only paragraph that changes meaningfully from vehicle to vehicle. Bu
 
 1. Primary differentiator — color, standout equipment, or a rare configuration for this model.
 2. Package descriptions with prices, named specifically, when window sticker data is available.
+
+{PACKAGE_CONTENT_VERIFICATION_RULE}
 3. MSRP depreciation sentence, if present in the data package (see MSRP DEPRECIATION below).
 4. Pricing proof point with the admin fee disclosure (see PRICING PROOF POINT RULES below).
 5. Warranty sentence (see PARAGRAPH TWO WARRANTY LANGUAGE below).
