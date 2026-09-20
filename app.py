@@ -76,6 +76,12 @@ _PROOF_POINT_RE = re.compile(r"^PROOF_POINT_USED:\s*(.+)$", re.MULTILINE)
 
 SNAPSHOT_PATH = Path(__file__).with_name("last_inventory_snapshot.json")
 
+_STATUS_1_MESSAGE = (
+    "This vehicle is status 1 (in stock, not yet assigned a "
+    "certification tier) — ads are never generated for vehicles at "
+    "this status by design. Wait until certification is assigned."
+)
+
 
 def _snapshot_lookup(stock_number: str) -> dict[str, Any] | None:
     """The last inventory crawl's raw vehicle dict for this stock number (vin,
@@ -475,6 +481,9 @@ def generate():
     # skips find_vehicle(), so it is the only place this run can learn the
     # vehicle's status (and therefore which system prompt / warranty tier).
     snap_status_code = snap.get("status_code") if snap else None
+    if snap_status_code == 1:
+        result["error"] = _STATUS_1_MESSAGE
+        return jsonify(result), 400
     print(
         f"[app] /generate: aggregate({stock_number!r}) starting  "
         f"(cwd={os.getcwd()}, vehicle_id={snap_vehicle_id!r})",
@@ -568,6 +577,14 @@ def generate():
         result["scraper_status"]["reconvision"] = "failed"
         result["error"] = pkg.get("note") or "Recon is not complete for this vehicle."
         return jsonify(result), 200
+
+    # The snapshot check above only catches a status-1 vehicle the last crawl
+    # still lists — the orchestrator drops status 1 from the snapshot it saves,
+    # so those vehicles reach aggregate() with no snapshot status and get their
+    # real one read live. Refuse here, before any ad is generated.
+    if (pkg.get("vehicle") or {}).get("status_code") == 1:
+        result["error"] = _STATUS_1_MESSAGE
+        return jsonify(result), 400
 
     result["scraper_status"] = _scraper_status(pkg)
     result["cache_status"] = _cache_status(pkg)

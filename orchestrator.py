@@ -273,6 +273,13 @@ def _run_inner(
     # --- 1. INVENTORY CRAWL ------------------------------------------------ #
     print("\n=== 1. INVENTORY CRAWL ===")
     retail = crawl_inventory(save=False)
+    excluded_not_certified = [v for v in retail if v.get("status_code") == 1]
+    retail = [v for v in retail if v.get("status_code") != 1]
+    if excluded_not_certified:
+        print(
+            f"[orchestrator] excluding {len(excluded_not_certified)} vehicle(s) "
+            f"at status 1 (in stock, not yet certified) — never run by design"
+        )
     if status:
         retail = [v for v in retail if v.get("status_code") in status]
         print(f"[orchestrator] --status {status}: processing {len(retail)} vehicle(s)")
