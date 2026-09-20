@@ -39,7 +39,6 @@ from flask import Flask, abort, jsonify, redirect, render_template, request, sen
 # Imported exactly as orchestrator.py does.
 from adwriter import (
     _generate_from_package,
-    format_data_package,
     load_ad_history,
     record_ad,
     save_ad_history,
@@ -101,8 +100,14 @@ def _snapshot_lookup(stock_number: str) -> dict[str, Any] | None:
 
 
 def _scraper_status(pkg: dict[str, Any]) -> dict[str, str]:
-    """{acvmax|autoipacket|reconvision|carfax: 'success'|'failed'} from
-    adwriter.source_status(). Anything we can't read is reported 'failed'."""
+    """{acvmax|autoipacket|reconvision|carfax: 'success'|'warning'|'failed'}.
+
+    Starts from adwriter.source_status() ("did the step run"), then downgrades
+    on the actual outcome: source_status() reports "ok" for a scraper that ran
+    but came back with nothing usable (e.g. AutoiPacket ending in
+    unavailable_after_retries, or an empty recon block). 'warning' means
+    usable-but-degraded data (approximate MSRP from the ACV Max options tab,
+    a Carfax with no owner count). Anything we can't read is 'failed'."""
     status = {name: "failed" for name in _ALL_SOURCES}
     try:
         raw = source_status(pkg)
@@ -112,6 +117,28 @@ def _scraper_status(pkg: dict[str, Any]) -> dict[str, str]:
         name = _SOURCE_KEY_MAP.get(src_key)
         if name:
             status[name] = "success" if state == "ok" else "failed"
+
+    if status["acvmax"] == "success":
+        if (pkg.get("vehicle") or {}).get("current_price") is None:
+            status["acvmax"] = "failed"
+
+    if status["autoipacket"] == "success":
+        msrp = pkg.get("msrp_data") or {}
+        source = msrp.get("source")
+        if source == "unavailable_after_retries" or (
+            msrp.get("total_msrp") is None and not msrp.get("option_packages")
+        ):
+            status["autoipacket"] = "failed"
+        elif source == "acvmax_options_tab":
+            status["autoipacket"] = "warning"
+
+    if status["reconvision"] == "success":
+        if not (pkg.get("recon") or {}).get("work_order_id"):
+            status["reconvision"] = "failed"
+
+    if status["carfax"] == "success":
+        if (pkg.get("carfax") or {}).get("number_of_owners") is None:
+            status["carfax"] = "warning"
     return status
 
 
@@ -126,9 +153,6 @@ _EMPTY_CACHE_STATUS = {
     "window_sticker": "not_available",
     "carfax": "not_available",
     "recon": "not_available",
-}
-_EMPTY_SCRAPER_STATUS_DETAIL = {
-    name: {"status": "failed", "note": ""} for name in _ALL_SOURCES
 }
 
 
@@ -304,20 +328,6 @@ def _proof_points_all(pkg: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
-def _scraper_status_detail(pkg: dict[str, Any]) -> dict[str, dict[str, str]]:
-    """Per-source status plus a short note — the note surfaces AutoiPacket's
-    finer-grained cache tier (msrp_data["source"], e.g. "rarity_db_cache")
-    when there is one; the other sources have no equivalent sub-tier today."""
-    raw = pkg.get("scraper_status") or {}
-    msrp_source = (pkg.get("msrp_data") or {}).get("source") or ""
-    return {
-        "acvmax": {"status": raw.get("acvmax", "failed"), "note": ""},
-        "autoipacket": {"status": raw.get("autoipacket", "failed"), "note": msrp_source},
-        "reconvision": {"status": raw.get("reconvision", "failed"), "note": ""},
-        "carfax": {"status": raw.get("carfax", "failed"), "note": ""},
-    }
-
-
 def _shipping_reason(pkg: dict[str, Any]) -> str | None:
     """Best-effort label for why build_shipping_sentence() fired — a
     dashboard hint, not a re-implementation of its per-tier trigger rules
@@ -446,12 +456,10 @@ def generate():
         "feedback": None,
         "peacock_mode": None,
         "proof_point": None,
-        "data_package": None,
         "recon_included": [],
         "recon_excluded": [],
         "carfax_detail": None,
         "proof_points_all": [],
-        "scraper_status_detail": dict(_EMPTY_SCRAPER_STATUS_DETAIL),
         "market_data": None,
         "error": None,
     }
@@ -562,12 +570,7 @@ def generate():
     result["recon_included"], result["recon_excluded"] = _recon_dashboard(pkg)
     result["carfax_detail"] = _carfax_dashboard(pkg)
     result["proof_points_all"] = _proof_points_all(pkg)
-    result["scraper_status_detail"] = _scraper_status_detail(pkg)
     result["market_data"] = _market_data(pkg)
-    try:
-        result["data_package"] = format_data_package(pkg)[0]
-    except Exception:  # noqa: BLE001 - the data-package view is a bonus, not core
-        traceback.print_exc()
 
     # MB CPO data-completeness gate tripped inside aggregate() — no Claude call.
     if pkg.get("reason") == "incomplete_data":

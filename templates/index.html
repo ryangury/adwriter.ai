@@ -204,6 +204,7 @@
   }
   .badge .glyph { font-size: 0.95rem; line-height: 1; }
   .badge.success { background: var(--ok); border-color: var(--ok); }
+  .badge.warning { background: #b45309; border-color: #b45309; }
   .badge.failed  { background: var(--fail); border-color: var(--fail); }
   .badge.cache-yes { background: var(--ok); border-color: var(--ok); }
   .badge.cache-no  { background: #9ca3af; border-color: #9ca3af; }
@@ -476,7 +477,7 @@
       var el = stepEl(k);
       if (!el) return;
       el.classList.remove("active");
-      el.classList.add(scraper[k] === "success" ? "ok" : "fail");
+      el.classList.add(scraper[k] === "success" || scraper[k] === "warning" ? "ok" : "fail");
     });
   }
 
@@ -514,45 +515,6 @@
     var cls = daysBucketClass(days);
     if (!cls) return "";
     return '<span class="dchip ' + cls + '">' + esc(days) + " days</span>";
-  }
-
-  var DASHBOARD_SCRAPER_LABELS = [
-    ["acvmax", "ACV Max"],
-    ["autoipacket", "AutoiPacket"],
-    ["reconvision", "ReconVision"]
-  ];
-
-  function cardScrapers(detail) {
-    detail = detail || {};
-    var cells = DASHBOARD_SCRAPER_LABELS.map(function (pair) {
-      var info = detail[pair[0]] || {};
-      var ok = info.status === "scraped" || info.status === "cache_hit";
-      var glyph = ok ? "&#10003;" : "&#9888;";
-      var cls = ok ? "d-ok" : "d-warn";
-      var label = pair[1] + (info.status === "cache_hit" ? " (cache)" : "");
-      return '<div class="dline ' + cls + '"><span class="glyph">' + glyph + "</span>" +
-        '<span class="dtext">' + esc(label) + "</span></div>";
-    }).join("");
-    return '<div class="dcard"><h3>Scrapers</h3><div class="dgrid2">' + cells + "</div></div>";
-  }
-
-  var PULLED_SCRAPER_LABELS = [
-    ["window_sticker", "AutoiPacket"],
-    ["carfax", "Carfax"],
-    ["recon", "ReconVision"]
-  ];
-
-  function cardScrapersPulled(cacheStatus) {
-    cacheStatus = cacheStatus || {};
-    var cells = PULLED_SCRAPER_LABELS.map(function (pair) {
-      var cached = cacheStatus[pair[0]] === "cached";
-      var cls = cached ? "d-ok" : "d-warn";
-      var glyph = cached ? "&#10003;" : "&#9888;";
-      var label = pair[1] + (cached ? " (cache)" : "");
-      return '<div class="dline ' + cls + '"><span class="glyph">' + glyph + "</span>" +
-        '<span class="dtext">' + esc(label) + "</span></div>";
-    }).join("");
-    return '<div class="dcard"><h3>Scrapers</h3><div class="dgrid2">' + cells + "</div></div>";
   }
 
   function cardRecon(included, excluded) {
@@ -651,18 +613,12 @@
   }
 
   function sectionDashboard(data) {
-    if (!data || !data.scraper_status_detail) return "";
-    var cards = cardScrapers(data.scraper_status_detail) +
-      cardRecon(data.recon_included, data.recon_excluded) +
+    if (!data || !data.recon_included) return "";
+    var cards = cardRecon(data.recon_included, data.recon_excluded) +
       cardCarfax(data.carfax_detail) +
       cardProofPoints(data.proof_points_all) +
       cardMarketData(data.market_data);
     return '<div class="dashboard">' + cards + "</div>";
-  }
-
-  function sectionDashboardPulled(data) {
-    if (!data || !data.cache_status) return "";
-    return '<div class="dashboard">' + cardScrapersPulled(data.cache_status) + "</div>";
   }
 
   function sectionVehicle(v) {
@@ -701,9 +657,11 @@
     if (!scraper) return "";
     cacheStatus = cacheStatus || {};
     var badges = SCRAPER_LABELS.map(function (pair) {
-      var ok = scraper[pair[0]] === "success";
-      var cls = ok ? "success" : "failed";
-      var glyph = ok ? "✓" : "✗";   // ✓ / ✗
+      // "success" (usable), "warning" (ran but degraded: approximate MSRP,
+      // no owner count), anything else (error / unavailable / empty) is failed.
+      var state = scraper[pair[0]];
+      var cls = state === "success" ? "success" : state === "warning" ? "warning" : "failed";
+      var glyph = cls === "success" ? "✓" : cls === "warning" ? "!" : "✗";   // ✓ / ! / ✗
       var cacheKey = CACHE_KEY_MAP[pair[0]];
       var cacheState = cacheKey ? cacheStatus[cacheKey] : null;
       var cacheTag = "";
@@ -838,32 +796,6 @@
     });
   }
 
-  // Full formatted data package — the same text sent to Claude as prompt
-  // context (=== VEHICLE === / === MSRP === / === CARFAX === / ... raw
-  // sections). Redundant with the dashboard cards for normal use, kept
-  // collapsed by default as a separate toggle from AI feedback for
-  // debugging. Renders nothing when data_package isn't present (e.g. a
-  // pulled/stored ad — ad_history.json doesn't persist it).
-  function sectionDataPackage(data) {
-    var text = data && data.data_package;
-    if (!text) return "";
-    return '<div class="section fb">' +
-      '<button type="button" class="link-toggle" id="dp-toggle">Show raw data package</button>' +
-      '<div class="fb-body" id="dp-body" hidden><pre>' + esc(text) + "</pre></div>" +
-      "</div>";
-  }
-
-  function wireDataPackageToggle() {
-    var toggle = document.getElementById("dp-toggle");
-    var body = document.getElementById("dp-body");
-    if (!toggle || !body) return;
-    toggle.addEventListener("click", function () {
-      var nowHidden = !body.hidden;
-      body.hidden = nowHidden;
-      toggle.textContent = nowHidden ? "Show raw data package" : "Hide raw data package";
-    });
-  }
-
   function wireCopyButton() {
     var copyBtn = document.getElementById("copy-ad");
     if (!copyBtn) return;
@@ -895,12 +827,10 @@
     html += sectionMeta(data);
     html += sectionAd(data.ad_copy);
     html += sectionFeedbackCollapsible(data.feedback);
-    html += sectionDataPackage(data);
     html += sectionSaveDiscard(data);
     results.innerHTML = html;
     wireCopyButton();
     wireFeedbackToggle();
-    wireDataPackageToggle();
     wireSaveDiscard();
   }
 
@@ -923,17 +853,14 @@
   function renderPulled(data) {
     var html = '<div class="banner-onfile">Showing stored ad — written ' +
       esc(data.last_written || "an earlier date") + ".</div>";
-    html += sectionDashboardPulled(data);
     html += sectionPulledInfo(data);
     html += sectionCacheStatus(data.cache_status);
     html += sectionAd(data.ad_copy);
     html += sectionFeedbackCollapsible(data.feedback);
-    html += sectionDataPackage(data);
     html += '<div class="section"><button type="button" id="regen-btn" class="btn-secondary">Regenerate Fresh Ad</button></div>';
     results.innerHTML = html;
     wireCopyButton();
     wireFeedbackToggle();
-    wireDataPackageToggle();
 
     var regenBtn = document.getElementById("regen-btn");
     if (regenBtn) {

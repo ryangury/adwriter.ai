@@ -3730,22 +3730,36 @@ class ACVMaxScraper(_BrowserSession):
     def _parse_equipment_colors(target: Any, text: str) -> tuple[str | None, str | None]:
         """Exterior/interior color selectors a few rows below the equipment
         list. Tries the <select>'s chosen option first; falls back to a plain
-        text label when the selector markup doesn't match."""
+        text label when the selector markup doesn't match.
 
-        def _selected_option_text(label_hint: str) -> str | None:
+        Live markup (confirmed 2026-09-20): the exterior dropdown is
+        select#colorSelection and the interior one select#intColorSelection —
+        neither id/name contains the words "exterior"/"interior", so the
+        generic hint match alone found nothing and the text fallback then
+        returned the dropdown's placeholder option, "Choose a color...". Both
+        selects lead with that placeholder (value ""), which is never a color."""
+
+        def _is_placeholder(val: str | None) -> bool:
+            return not val or bool(re.match(r"\s*(choose|select)\b", val, re.IGNORECASE))
+
+        def _selected_option_text(css: str, *, strip_family: bool = False) -> str | None:
             try:
-                loc = target.locator(
-                    f"select[aria-label*='{label_hint}' i], "
-                    f"select[name*='{label_hint}' i], "
-                    f"select[id*='{label_hint}' i]"
-                ).first
+                loc = target.locator(css).first
                 if not loc.count():
                     return None
-                val = loc.evaluate(
+                picked = loc.evaluate(
                     "el => el.options[el.selectedIndex] ? "
-                    "el.options[el.selectedIndex].text : null"
+                    "{text: el.options[el.selectedIndex].text, "
+                    "value: el.options[el.selectedIndex].value} : null"
                 )
-                return _clean(val) if val else None
+                if not picked or not (picked.get("value") or "").strip():
+                    return None  # nothing chosen: the empty-valued placeholder
+                val = _clean(picked.get("text"))
+                if strip_family:
+                    # Exterior options read "Summit White (White)": the
+                    # parenthetical is the color family, not part of the name.
+                    val = re.sub(r"\s*\([^)]*\)\s*$", "", val)
+                return None if _is_placeholder(val) else val
             except Exception:  # noqa: BLE001 - best effort, text fallback covers this
                 return None
 
@@ -3755,7 +3769,7 @@ class ACVMaxScraper(_BrowserSession):
             m = re.search(rf"{re.escape(label)}:?\s*(.+)", text, re.IGNORECASE)
             if m:
                 val = _clean(m.group(1))
-                if val:
+                if val and not _is_placeholder(val):
                     return val
             # Label alone on its own line, value on the next non-empty line —
             # the shape a label/value pair takes when each is its own <tr>,
@@ -3767,11 +3781,21 @@ class ACVMaxScraper(_BrowserSession):
                 if re.fullmatch(rf"{re.escape(label)}:?", ln, re.IGNORECASE):
                     for nxt in lines[i + 1 :]:
                         if nxt:
-                            return _clean(nxt)
+                            val = _clean(nxt)
+                            return None if _is_placeholder(val) else val
             return None
 
-        ext = _selected_option_text("exterior")
-        intr = _selected_option_text("interior")
+        ext = _selected_option_text(
+            "select#colorSelection, select[name$='colorSelection'], "
+            "select[aria-label*='exterior' i], select[name*='exterior' i], "
+            "select[id*='exterior' i]",
+            strip_family=True,
+        )
+        intr = _selected_option_text(
+            "select#intColorSelection, select[name$='intColorSelection'], "
+            "select[aria-label*='interior' i], select[name*='interior' i], "
+            "select[id*='interior' i]"
+        )
 
         if not ext:
             ext = _label_then_value("Exterior Color")
