@@ -1286,6 +1286,9 @@ def _apply_carfax_vision(
     airbag_deployed = bool(vjson.get("airbag_deployed"))
 
     carfax_raw["number_of_owners"] = vjson.get("owners", carfax_raw.get("number_of_owners"))
+    # Persisted so a future owner-count dispute can be audited against what
+    # the vision model says it actually read (badge / summary stat / headers).
+    carfax_raw["owners_evidence"] = vjson.get("owners_evidence")
     carfax_raw["owner_type"] = owner_type
     carfax_raw["accident_severity"] = vjson.get("accident_severity")
     if isinstance(accident_count, int):
