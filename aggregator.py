@@ -3503,15 +3503,40 @@ def aggregate(
                     msrp_raw = opts
                     sticker_status = "options_tab_fallback"
                     skip_live_pull = True
+                    # Cached like a normal sticker pull (source label
+                    # "acvmax_options_tab" rides along in the stored JSON) so
+                    # later generations skip the ACV Max browser session.
+                    save_window_sticker(
+                        vin,
+                        stock,
+                        pricing_raw.get("year_make_model"),
+                        msrp_raw,
+                        _sticker_source(msrp_raw),
+                        image_path=msrp_raw.get("sticker_image_path"),
+                    )
                     print(
                         f"[aggregator] non-MB sticker source for {vin}: ACV Max "
                         f"options tab (no usable Carfax sticker link)"
                     )
                 else:
-                    print(
-                        f"[aggregator] non-MB {vin}: no usable Carfax sticker link or "
-                        f"ACV Max options — falling back to live AutoiPacket pull"
-                    )
+                    attempts_so_far = get_autoipacket_attempts(vin)
+                    if attempts_so_far >= 3:
+                        msrp_raw = {
+                            "source": "unavailable_after_retries",
+                            "total_msrp": None,
+                            "option_packages": [],
+                        }
+                        sticker_status = "unavailable_after_retries"
+                        skip_live_pull = True
+                        print(
+                            f"[aggregator] non-MB {vin}: already at {attempts_so_far} "
+                            f"failed AutoiPacket attempts — skipping live pull"
+                        )
+                    else:
+                        print(
+                            f"[aggregator] non-MB {vin}: no usable Carfax sticker link or "
+                            f"ACV Max options — falling back to live AutoiPacket pull"
+                        )
 
         if not skip_live_pull:
             with AutoiPacketScraper(
@@ -3546,33 +3571,10 @@ def aggregate(
                     )
             _capture_sticker_to_rarity(vin, msrp_raw, pricing_raw)
 
-        # --- 3b. Carfax window-sticker fallback -- Mercedes-Benz only (non-MB
-        # vehicles already tried the Carfax link above, before AutoiPacket).
-        # Only when AutoiPacket came back empty/errored and Carfax's own
-        # report happened to link an OEM sticker.
-        if vin and is_mb and _msrp_unusable(msrp_raw):
-            link = _carfax_link_sticker()
-            if link is not None:
-                msrp_raw = link
-                sticker_status = "scraped"
-
-        # --- 3c. Final fallback -- reached only when everything above left
-        # msrp_raw unusable. Mercedes-Benz gets the ACV Max options tab; a
-        # non-MB vehicle has by now already tried the options tab and a live
-        # AutoiPacket pull, so it just gets a bounded retry count, after which
-        # the pipeline stops waiting on AutoiPacket and proceeds without MSRP
-        # data rather than blocking the vehicle indefinitely.
-        if vin and _msrp_unusable(msrp_raw):
-            if is_mb:
-                opts = _options_tab_msrp()
-                if opts is not None:
-                    msrp_raw = opts
-                    sticker_status = "options_tab_fallback"
-                    print(
-                        "[aggregator] AutoiPacket failed for MB vehicle — using "
-                        "ACV Max options tab fallback"
-                    )
-            else:
+            # A live pull that actually ran and came back unusable is the only
+            # thing that counts as a failed attempt (non-MB only). The
+            # pre-check above stops the pull once attempts reach 3.
+            if not is_mb and _msrp_unusable(msrp_raw):
                 increment_autoipacket_attempts(vin)
                 attempts = get_autoipacket_attempts(vin)
                 print(
@@ -3586,6 +3588,30 @@ def aggregate(
                         "option_packages": [],
                     }
                     sticker_status = "unavailable_after_retries"
+
+        # --- 3b. Carfax window-sticker fallback -- Mercedes-Benz only (non-MB
+        # vehicles already tried the Carfax link above, before AutoiPacket).
+        # Only when AutoiPacket came back empty/errored and Carfax's own
+        # report happened to link an OEM sticker.
+        if vin and is_mb and _msrp_unusable(msrp_raw):
+            link = _carfax_link_sticker()
+            if link is not None:
+                msrp_raw = link
+                sticker_status = "scraped"
+
+        # --- 3c. Final fallback -- Mercedes-Benz only, reached when AutoiPacket
+        # and the Carfax link both left msrp_raw unusable: the ACV Max options
+        # tab. (Non-MB vehicles already tried the options tab before the live
+        # pull, and their bounded retry count lives with that pull above.)
+        if vin and is_mb and _msrp_unusable(msrp_raw):
+            opts = _options_tab_msrp()
+            if opts is not None:
+                msrp_raw = opts
+                sticker_status = "options_tab_fallback"
+                print(
+                    "[aggregator] AutoiPacket failed for MB vehicle — using "
+                    "ACV Max options tab fallback"
+                )
     finally:
         gc.collect()
         print(f"[aggregator] browser cleanup after {stock}")
