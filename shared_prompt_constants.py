@@ -57,6 +57,7 @@ For any non-Mercedes-Benz vehicle, before writing paragraph two, fire a web sear
 - What equipment is standard on this specific trim level (not just the model)
 - What equipment is exclusive to this trim vs lower trims
 - What packages actually exist for this model year and trim
+- Any powertrain specification you are about to state: cylinder count, displacement, engine configuration (inline vs V), and horsepower/torque figures. Do not state these from memory, even when confident. Small-displacement turbocharged engines are frequently 3-cylinder rather than 4-cylinder, and stating the wrong cylinder count is a factual error a knowledgeable buyer or a fact-checking search engine will catch immediately.
 
 Never attribute standard trim-level equipment to a package unless a package is explicitly named on the window sticker with a price. Never invent package names. If Highway Driving Assist is standard on the Calligraphy trim, it is not a package — it is standard equipment and should be mentioned as a trim differentiator, not a package add-on.
 
