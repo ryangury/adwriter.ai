@@ -2104,7 +2104,7 @@ def build_proof_point_sentence(
             edge_labels.append(_BOOK_VALUE_LABELS[_KBB_PROOF_POINT_KEY])
         edge_str = " and ".join(edge_labels) if edge_labels else "book value"
         sentence = (
-            f"{base}, at or below {edge_str} benchmarks for "
+            f"{base}, at or below {edge_str} for "
             f"comparable units. {velocity_sentence}"
         )
         return _with_scarcity(sentence), "velocity_anchor"
