@@ -196,6 +196,23 @@ This is a CARFAX vehicle history report. Extract and return ONLY a JSON object w
                        # "Owner 1", "Owner 2", etc. headers, they will
                        # always match the summary count — use them only to
                        # confirm, never to override.
+                       # A title number changing partway through the history
+                       # (e.g. "Title #775971210710014" early on, a different
+                       # "Title #772175223219947" later) does NOT by itself
+                       # mean a new owner — title numbers can change for
+                       # reasons unrelated to ownership (lien payoff, lost
+                       # title reissue, registration renewal). Only trust the
+                       # "CARFAX 1-Owner Vehicle" badge, the "N Previous
+                       # Owners" summary stat, or the count of distinct
+                       # "Owner 1" / "Owner 2" section headers in Ownership
+                       # History — never infer an owner change from a title
+                       # number changing alone.
+  'owners_evidence': string,  # The exact text you read to determine the owner
+                       # count — e.g. "CARFAX 1-Owner Vehicle badge" or
+                       # "3 Previous Owners" or "Owner 1, Owner 2, Owner 3
+                       # section headers". This must be a direct quote or
+                       # precise description of what you saw, not a
+                       # restatement of your conclusion.
   'owner_type': 'personal' or 'lease' or 'corporate' or 'unknown',
   'accident_count': integer (0 if none reported),
   'accident_severity': 'none' or 'minor' or 'moderate' or 'severe',
