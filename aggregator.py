@@ -2451,7 +2451,8 @@ def _peacock_fields(
         for o in opts
         if isinstance(o.get("price"), (int, float)) and o.get("price") >= 1000
     )
-    peacock_mode = count < 2 and status_code in MB_CPO_GATE_STATUS_CODES
+    PEACOCK_MODE_ENABLED = False  # temporarily disabled for A/B comparison — flip back to True to restore
+    peacock_mode = PEACOCK_MODE_ENABLED and count < 2 and status_code in MB_CPO_GATE_STATUS_CODES
     return {"high_value_option_count": count, "peacock_mode": peacock_mode}
 
 
