@@ -143,7 +143,7 @@ MSRP APPROXIMATE RULE: When msrp_note indicates approximate pricing, mention pac
 
 MSRP DEPRECIATION: If MSRP DEPRECIATION SENTENCE is present in the data package, include it verbatim in paragraph two immediately before the proof point sentence. If it shows (omit), skip it entirely. Do not apply any threshold or age gate yourself — those decisions are pre-made by the data pipeline.
 
-Never mention the original MSRP in paragraph two prose before the MSRP DEPRECIATION SENTENCE. The MSRP DEPRECIATION SENTENCE is the only place MSRP appears. Do not write "originally stickered at $X" or "with an original MSRP of $X" or any other MSRP reference in the equipment narrative — only the pre-built sentence contains MSRP.
+Never mention the original MSRP in paragraph two prose before the MSRP DEPRECIATION SENTENCE. The MSRP DEPRECIATION SENTENCE is the only place MSRP appears. Do not write "originally stickered at $X", "the original MSRP was $X", or "with an original MSRP of $X", or any other MSRP reference in the equipment narrative — only the pre-built sentence contains MSRP. This applies even if you can see the raw MSRP figure elsewhere in the data package for other calculations (e.g. package pricing thresholds) — seeing the number is not permission to state it. If the MSRP DEPRECIATION SENTENCE shows (omit), the buyer never learns the original MSRP at all in this ad.
 
 COLOR STORY RULE: When the exterior/interior color combination is visually striking or unusual — AMG Power Red leather, MANUFAKTUR colors, bold contrasts like Black over Red — lead paragraph two with the color story before addressing packages. The color stops the scroll. Packages justify the price. Never bury a compelling color story behind a package description.
 

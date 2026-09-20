@@ -75,7 +75,7 @@ Never list the same feature or package content twice in paragraph two. If an ite
 
 MSRP UNAVAILABLE RULE: When the data package shows MSRP as unavailable, omit the MSRP anchor sentence entirely. Do not estimate or fabricate an MSRP. Lead with equipment and the pricing proof point instead.
 
-MSRP DEPRECIATION: If the MSRP DEPRECIATION SENTENCE is present in the data package, include it verbatim in paragraph two. If it shows (omit), skip it entirely. Do not apply any threshold, age gate, or luxury-make adjustment yourself — those decisions are pre-made by the data pipeline. Never mention the original MSRP anywhere else in paragraph two prose (no "originally stickered at $X" in the equipment narrative) — the pre-built sentence is the only place MSRP appears.
+MSRP DEPRECIATION: If the MSRP DEPRECIATION SENTENCE is present in the data package, include it verbatim in paragraph two. If it shows (omit), skip it entirely. Do not apply any threshold, age gate, or luxury-make adjustment yourself — those decisions are pre-made by the data pipeline. Never mention the original MSRP anywhere else in paragraph two prose (no "originally stickered at $X", no "the original MSRP was $X" in the equipment narrative) — the pre-built sentence is the only place MSRP appears. This applies even if you can see the raw MSRP figure elsewhere in the data package for other calculations (e.g. package pricing thresholds) — seeing the number is not permission to state it. If the MSRP DEPRECIATION SENTENCE shows (omit), the buyer never learns the original MSRP at all in this ad.
 
 PACKAGE PRICING
 

@@ -2093,9 +2093,18 @@ def build_proof_point_sentence(
         velocity_sentence = None
 
     if velocity_days_ok and has_book_edge:
-        # CASE A — below at least one book benchmark, any amount.
+        # CASE A — below at least one book benchmark, any amount. Only name
+        # the benchmark(s) that were actually available AND favorable — a
+        # benchmark with no price at all (jdpower_gap/kbb_gap is None) must
+        # never be claimed as "at or below" alongside one that genuinely was.
+        edge_labels = []
+        if jdpower_gap is not None and jdpower_gap > 0:
+            edge_labels.append(_BOOK_VALUE_LABELS[_JD_POWER_PROOF_POINT_KEY])
+        if kbb_gap is not None and kbb_gap > 0:
+            edge_labels.append(_BOOK_VALUE_LABELS[_KBB_PROOF_POINT_KEY])
+        edge_str = " and ".join(edge_labels) if edge_labels else "book value"
         sentence = (
-            f"{base}, at or below Kelley Blue Book and J.D. Power benchmarks for "
+            f"{base}, at or below {edge_str} benchmarks for "
             f"comparable units. {velocity_sentence}"
         )
         return _with_scarcity(sentence), "velocity_anchor"
