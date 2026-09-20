@@ -3376,17 +3376,144 @@ def aggregate(
             )
             return disqualified
 
-        # --- 3. AutoiPacket window sticker by VIN, cache-first ------------- #
+        # --- 3. Window sticker / equipment sourcing ------------------------ #
+        # Mercedes-Benz: cached sticker -> live AutoiPacket pull -> Carfax
+        # sticker link (3b) -> ACV Max options tab (3c). Unchanged.
+        # Everything else: cached sticker -> Carfax sticker link -> ACV Max
+        # options tab -> live AutoiPacket pull as the LAST resort, and only
+        # then the bounded retry/give-up count (3c). Checked in that order so
+        # a non-MB trade-in AutoiPacket does not cover never burns a pull (and
+        # a retry attempt) on a VIN we can already source another way.
+        make = _make_from_ymm(pricing_raw.get("year_make_model"))
+        is_mb = bool(make) and "mercedes" in make.lower()
+
+        def _msrp_unusable(m: Any) -> bool:
+            # AutoiPacket can "succeed" (no error key) but still parse out to
+            # nothing usable for a VIN it doesn't cover, so treat that the
+            # same as an outright error.
+            return bool(
+                not m
+                or m.get("error")
+                or (m.get("total_msrp") is None and not m.get("option_packages"))
+            )
+
+        def _carfax_link_sticker() -> dict[str, Any] | None:
+            """Parse and cache the OEM sticker Carfax's report links to, if
+            it links one. None when there is no link or the parse fails."""
+            sticker_url = (carfax_raw or {}).get("window_sticker_url")
+            if not sticker_url:
+                return None
+            try:
+                fallback = _parse_oem_sticker(sticker_url, vin, make)
+            except (StickerNotFoundError, ScraperError) as exc:
+                print(
+                    f"[aggregator] Carfax sticker-link fallback failed for {vin}: {exc}",
+                    file=sys.stderr,
+                )
+                return None
+            save_window_sticker(
+                vin,
+                stock,
+                pricing_raw.get("year_make_model"),
+                fallback,
+                _sticker_source(fallback),
+                image_path=fallback.get("sticker_image_path"),
+            )
+            _capture_sticker_to_rarity(
+                vin, fallback, pricing_raw, source="carfax_sticker_link"
+            )
+            print(
+                f"[aggregator] recovered MSRP data for {vin} via the Carfax "
+                f"sticker link ({sticker_url})"
+            )
+            return fallback
+
+        def _options_tab_msrp() -> dict[str, Any] | None:
+            """Approximate MSRP from the packages ACV Max has on file for this
+            vehicle (no real MSRP, but the vehicle's actual selected packages
+            plus an approximate, non-OEM price per package from the Find
+            Packages catalog). None when the scrape fails."""
+            options_vehicle_id = pricing_raw.get("vehicle_id") or vehicle_id
+            try:
+                with ACVMaxScraper(
+                    headless=headless, use_saved_session=use_saved
+                ) as ax2:
+                    ax2.login(force=fresh_login)
+                    options = ax2.scrape_options_tab(options_vehicle_id)
+            except ScraperError as exc:
+                print(
+                    f"[aggregator] ACV Max options tab fallback failed for "
+                    f"{vin}: {exc}",
+                    file=sys.stderr,
+                )
+                return None
+            selected = options.get("selected_packages") or []
+            approx_prices = [
+                p["approx_msrp"] for p in selected if p.get("approx_msrp") is not None
+            ]
+            return {
+                "source": "acvmax_options_tab",
+                "vehicle_id": options.get("vehicle_id"),
+                "base_price": None,
+                "total_msrp": sum(approx_prices) if approx_prices else None,
+                "option_packages": [
+                    {
+                        "code": p.get("code"),
+                        "name": p.get("name"),
+                        "price": p.get("approx_msrp"),
+                        "description": p.get("description"),
+                    }
+                    for p in selected
+                ],
+                "selected_packages": selected,
+                "exterior_color": options.get("exterior_color"),
+                "interior_color": options.get("interior_color"),
+                "scraped_at": options.get("scraped_at"),
+                "msrp_note": (
+                    "MSRP approximate — from ACV Max option packages, "
+                    "not OEM window sticker"
+                ),
+            }
+
+        msrp_raw = None
+        skip_live_pull = False
         if not vin:
             msrp_raw = {"error": "no VIN from ACV MAX; cannot pull the window sticker"}
+            skip_live_pull = True
         elif not needs_window_sticker(vin):
             msrp_raw = get_window_sticker(vin)
             sticker_status = "cache_hit"
+            skip_live_pull = True
             print(
                 f"[cache] window sticker hit for VIN {vin} — skipping AutoiPacket",
                 file=sys.stderr,
             )
-        else:
+        elif not is_mb:
+            # 3a. Carfax window-sticker link, before any live AutoiPacket pull.
+            link = _carfax_link_sticker()
+            if link is not None and not _msrp_unusable(link):
+                msrp_raw = link
+                sticker_status = "scraped"
+                skip_live_pull = True
+                print(f"[aggregator] non-MB sticker source for {vin}: Carfax sticker link")
+            else:
+                # 3a'. ACV Max options tab, before any live AutoiPacket pull.
+                opts = _options_tab_msrp()
+                if opts is not None and not _msrp_unusable(opts):
+                    msrp_raw = opts
+                    sticker_status = "options_tab_fallback"
+                    skip_live_pull = True
+                    print(
+                        f"[aggregator] non-MB sticker source for {vin}: ACV Max "
+                        f"options tab (no usable Carfax sticker link)"
+                    )
+                else:
+                    print(
+                        f"[aggregator] non-MB {vin}: no usable Carfax sticker link or "
+                        f"ACV Max options — falling back to live AutoiPacket pull"
+                    )
+
+        if not skip_live_pull:
             with AutoiPacketScraper(
                 headless=headless, use_saved_session=use_saved
             ) as ap:
@@ -3419,108 +3546,31 @@ def aggregate(
                     )
             _capture_sticker_to_rarity(vin, msrp_raw, pricing_raw)
 
-        # --- 3b. Carfax window-sticker fallback (non-MB trade-ins AutoiPacket
-        # couldn't cover) -- only when AutoiPacket came back empty/errored and
-        # Carfax's own report happened to link an OEM sticker. AutoiPacket can
-        # "succeed" (no error key) but still parse out to nothing usable for a
-        # VIN it doesn't cover, so treat that the same as an outright error. # #
-        msrp_unusable = (
-            not msrp_raw
-            or msrp_raw.get("error")
-            or (msrp_raw.get("total_msrp") is None and not msrp_raw.get("option_packages"))
-        )
-        if vin and msrp_unusable:
-            sticker_url = (carfax_raw or {}).get("window_sticker_url")
-            if sticker_url:
-                try:
-                    make = _make_from_ymm(pricing_raw.get("year_make_model"))
-                    fallback = _parse_oem_sticker(sticker_url, vin, make)
-                    msrp_raw = fallback
-                    sticker_status = "scraped"
-                    save_window_sticker(
-                        vin,
-                        stock,
-                        pricing_raw.get("year_make_model"),
-                        msrp_raw,
-                        _sticker_source(msrp_raw),
-                        image_path=msrp_raw.get("sticker_image_path"),
-                    )
-                    _capture_sticker_to_rarity(
-                        vin, msrp_raw, pricing_raw, source="carfax_sticker_link"
-                    )
-                    print(
-                        f"[aggregator] AutoiPacket had no sticker for {vin}; recovered "
-                        f"MSRP data via the Carfax sticker link ({sticker_url})"
-                    )
-                except (StickerNotFoundError, ScraperError) as exc:
-                    print(
-                        f"[aggregator] Carfax sticker-link fallback failed for {vin}: {exc}",
-                        file=sys.stderr,
-                    )
+        # --- 3b. Carfax window-sticker fallback -- Mercedes-Benz only (non-MB
+        # vehicles already tried the Carfax link above, before AutoiPacket).
+        # Only when AutoiPacket came back empty/errored and Carfax's own
+        # report happened to link an OEM sticker.
+        if vin and is_mb and _msrp_unusable(msrp_raw):
+            link = _carfax_link_sticker()
+            if link is not None:
+                msrp_raw = link
+                sticker_status = "scraped"
 
-        # --- 3c. Final MSRP fallback -- reached only when AutoiPacket AND the
-        # Carfax sticker-link fallback above both left msrp_raw unusable.
-        # Mercedes-Benz vehicles get the ACV Max options tab (no real MSRP,
-        # but the vehicle's actual selected packages plus an approximate,
-        # non-OEM price per package from the Find Packages catalog);
-        # everything else gets a bounded retry count, after which the
-        # pipeline stops waiting on AutoiPacket and proceeds without MSRP
+        # --- 3c. Final fallback -- reached only when everything above left
+        # msrp_raw unusable. Mercedes-Benz gets the ACV Max options tab; a
+        # non-MB vehicle has by now already tried the options tab and a live
+        # AutoiPacket pull, so it just gets a bounded retry count, after which
+        # the pipeline stops waiting on AutoiPacket and proceeds without MSRP
         # data rather than blocking the vehicle indefinitely.
-        msrp_still_unusable = (
-            not msrp_raw
-            or msrp_raw.get("error")
-            or (msrp_raw.get("total_msrp") is None and not msrp_raw.get("option_packages"))
-        )
-        if vin and msrp_still_unusable:
-            make = _make_from_ymm(pricing_raw.get("year_make_model"))
-            is_mb = bool(make) and "mercedes" in make.lower()
-
+        if vin and _msrp_unusable(msrp_raw):
             if is_mb:
-                options_vehicle_id = pricing_raw.get("vehicle_id") or vehicle_id
-                try:
-                    with ACVMaxScraper(
-                        headless=headless, use_saved_session=use_saved
-                    ) as ax2:
-                        ax2.login(force=fresh_login)
-                        options = ax2.scrape_options_tab(options_vehicle_id)
-
-                    selected = options.get("selected_packages") or []
-                    approx_prices = [
-                        p["approx_msrp"] for p in selected if p.get("approx_msrp") is not None
-                    ]
-                    msrp_raw = {
-                        "source": "acvmax_options_tab",
-                        "vehicle_id": options.get("vehicle_id"),
-                        "base_price": None,
-                        "total_msrp": sum(approx_prices) if approx_prices else None,
-                        "option_packages": [
-                            {
-                                "code": p.get("code"),
-                                "name": p.get("name"),
-                                "price": p.get("approx_msrp"),
-                                "description": p.get("description"),
-                            }
-                            for p in selected
-                        ],
-                        "selected_packages": selected,
-                        "exterior_color": options.get("exterior_color"),
-                        "interior_color": options.get("interior_color"),
-                        "scraped_at": options.get("scraped_at"),
-                        "msrp_note": (
-                            "MSRP approximate — from ACV Max option packages, "
-                            "not OEM window sticker"
-                        ),
-                    }
+                opts = _options_tab_msrp()
+                if opts is not None:
+                    msrp_raw = opts
                     sticker_status = "options_tab_fallback"
                     print(
                         "[aggregator] AutoiPacket failed for MB vehicle — using "
                         "ACV Max options tab fallback"
-                    )
-                except ScraperError as exc:
-                    print(
-                        f"[aggregator] ACV Max options tab fallback failed for "
-                        f"{vin}: {exc}",
-                        file=sys.stderr,
                     )
             else:
                 increment_autoipacket_attempts(vin)
