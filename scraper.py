@@ -3557,10 +3557,11 @@ class ACVMaxScraper(_BrowserSession):
     """
 
     # Same idea for the Find Packages catalog, but we only need CODE ->
-    # APPROX ORIG MSRP pairs out of it — never the rest of the catalog. Reads
-    # each row's first <td> as the code and searches the whole row's text for
-    # a dollar-formatted price, rather than assuming which column holds the
-    # price — the exact column position there is unconfirmed.
+    # APPROX ORIG MSRP pairs out of it — never the rest of the catalog. Live
+    # rows (confirmed 2026-09-20) are four <td>s: an "add" checkbox cell with no
+    # text, the code, the package text, and the price. The code cell is found
+    # by content, not position (the checkbox cell is first), and the price is
+    # searched for in the whole row's text rather than assuming its column.
     _FIND_PACKAGES_PRICES_JS = """
     () => {
         function cellText(el) { return (el.textContent || '').replace(/\\s+/g, ' ').trim(); }
@@ -3580,8 +3581,11 @@ class ACVMaxScraper(_BrowserSession):
         for (const tr of rows) {
             const tds = [...tr.querySelectorAll('td')];
             if (!tds.length) continue;
-            const code = cellText(tds[0]);
-            if (!CODE_RE.test(code)) continue;
+            // Find the code cell by content, not fixed position: each row
+            // starts with a checkbox cell (no text) ahead of the code.
+            const codeIdx = tds.findIndex(td => CODE_RE.test(cellText(td)));
+            if (codeIdx === -1) continue;
+            const code = cellText(tds[codeIdx]);
             const m = cellText(tr).match(PRICE_RE);
             if (m) out.push({ code: code.toUpperCase(), price: m[0] });
         }
