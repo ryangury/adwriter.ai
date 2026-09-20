@@ -2010,8 +2010,8 @@ def _num(n) -> str:
 _ADS_READY_SECTIONS = [
     ("active", "SECTION A — NEW ADS (full pipeline, recon complete)", True),
     ("pre_recon", "SECTION B — PRE-RECON ADS (posted without recon, watching for completion)", True),
-    ("recon_updated", "SECTION C — RECON UPDATES (recon just completed, paragraph one updated)", False),
-    ("repriced", "SECTION D — REPRICED (pricing paragraph updated)", False),
+    ("recon_updated", "SECTION C — RECON UPDATES (recon just completed, paragraph one updated)", True),
+    ("repriced", "SECTION D — REPRICED (pricing paragraph updated)", True),
 ]
 
 
