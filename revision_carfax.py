@@ -73,9 +73,10 @@ def main() -> None:
 
         old_owners, new_owners = existing.get("number_of_owners"), merged.get("number_of_owners")
         if old_owners != new_owners:
-            evidence = merged.get("owners_evidence")
-            print(f"[revision] {vin}: owner count changed {old_owners} -> {new_owners}  ({evidence})")
-            owner_changes.append((vin, old_owners, new_owners, evidence))
+            # owners_evidence is vision's own claim and has been shown to be
+            # fabricated, so it is deliberately not printed here as a reason.
+            print(f"[revision] {vin}: owner count changed {old_owners} -> {new_owners}")
+            owner_changes.append((vin, old_owners, new_owners, None))
         for k in _COMPARE:
             if existing.get(k) != merged.get(k):
                 other_changes[k] += 1
@@ -91,8 +92,8 @@ def main() -> None:
 
     print(f"Done. {updated} {'parsed (not written)' if args.dry_run else 'updated'}, {failed} failed, {skipped} skipped.")
     print(f"Owner counts changed: {len(owner_changes)} of {updated}")
-    for vin, old, new, ev in owner_changes:
-        print(f"  {vin}: {old} -> {new}  | evidence: {ev}")
+    for vin, old, new, _ in owner_changes:
+        print(f"  {vin}: {old} -> {new}")
     print("Other fields that differ (rows):", {k: v for k, v in other_changes.items() if v} or "none")
 
 

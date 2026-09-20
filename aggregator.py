@@ -1252,6 +1252,43 @@ _VISION_OWNER_TYPE_MAP = {
 }
 
 
+def _owner_count_from_raw_text(raw_text: str | None) -> int | None:
+    """Deterministic owner count read straight from the report's own curated
+    summary line. Proven 22/22 correct against manual verification, vs. the
+    vision-parsed 'owners' field's demonstrated unreliability on this
+    specific vehicle (including fabricating quoted evidence for a wrong
+    count). This is the source of truth for owner count going forward —
+    vision's own 'owners' field is only a fallback when neither pattern
+    below is found anywhere in the raw text."""
+    if not raw_text:
+        return None
+    if re.search(r"CARFAX\s+1[\s-]*Owner\s+Vehicle", raw_text, re.IGNORECASE):
+        return 1
+    m = re.search(r"(\d+)\s+Previous\s+Owners?\b", raw_text, re.IGNORECASE)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def _set_owner_count(
+    carfax_raw: dict[str, Any], vision_count: int | None, vin: str | None
+) -> None:
+    """Set carfax_raw["number_of_owners"]: the text-pattern count when the raw
+    text has one (logging any disagreement with vision), else vision's count,
+    else whatever value the text parser already left there."""
+    deterministic_count = _owner_count_from_raw_text(carfax_raw.get("raw_text"))
+    if deterministic_count is not None:
+        if vision_count is not None and vision_count != deterministic_count:
+            print(
+                f"[carfax] owner count disagreement for {vin}: vision said "
+                f"{vision_count}, text pattern says {deterministic_count} — "
+                f"using text pattern"
+            )
+        carfax_raw["number_of_owners"] = deterministic_count
+    elif vision_count is not None:
+        carfax_raw["number_of_owners"] = vision_count  # fallback: no pattern matched
+
+
 def _apply_carfax_vision(
     carfax_raw: dict[str, Any], vin: str | None
 ) -> dict[str, Any]:
@@ -1272,11 +1309,13 @@ def _apply_carfax_vision(
     """
     image_path = carfax_raw.get("carfax_image_path")
     if not image_path:
+        _set_owner_count(carfax_raw, None, vin)
         carfax_raw.setdefault("carfax_parse_source", "text_regex")
         return carfax_raw
 
     vjson = parse_carfax_image(image_path, vin)
     if vjson is None:
+        _set_owner_count(carfax_raw, None, vin)
         carfax_raw.setdefault("carfax_parse_source", "text_regex")
         return carfax_raw
 
@@ -1285,9 +1324,12 @@ def _apply_carfax_vision(
     title_brands = vjson.get("title_brands") or []
     airbag_deployed = bool(vjson.get("airbag_deployed"))
 
-    carfax_raw["number_of_owners"] = vjson.get("owners", carfax_raw.get("number_of_owners"))
-    # Persisted so a future owner-count dispute can be audited against what
-    # the vision model says it actually read (badge / summary stat / headers).
+    # Owner count: deterministic text pattern first, vision only as a fallback.
+    _set_owner_count(carfax_raw, vjson.get("owners"), vin)
+    # NOT trustworthy as evidence: the vision model has been shown to invent a
+    # quoted "2 Previous Owners" for reports that say "CARFAX 1-Owner Vehicle".
+    # Kept only as a raw record of what vision claimed; nothing may present it
+    # as a citation or audit justification.
     carfax_raw["owners_evidence"] = vjson.get("owners_evidence")
     carfax_raw["owner_type"] = owner_type
     carfax_raw["accident_severity"] = vjson.get("accident_severity")
