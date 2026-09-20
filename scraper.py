@@ -88,14 +88,21 @@ IPACKET_BUSINESS_HOUR_START = 8  # 8:00am local
 IPACKET_BUSINESS_HOUR_END = 18  # 6:00pm local
 IPACKET_DELAY_RANGE_SECONDS = (45, 90)
 
-# Rate limiting for non-MB sticker downloads, for when that's re-enabled (see
-# crawl_ipacket_inventory()'s _is_mercedes_vin() gate — non-MB sticker
-# scraping is currently disabled entirely, so nothing calls this yet).
+# Rate limiting for live non-MB sticker pulls made by aggregate() (batch
+# callers only — the Flask route bypasses both). (crawl_ipacket_inventory()
+# is separate and still skips every non-MB VIN outright via _is_mercedes_vin().)
 # Deliberately stricter than the MB-only IPACKET_* limiter above: a lower
 # daily cap, a narrower window, and a real minimum delay between downloads
 # rather than just a random pre-download sleep.
+#
+# Two independent counters, both checked before a non-MB live pull:
+#   * NON_MB_STICKER_DAILY_LIMIT           — "manual pulls" per day
+#   * NON_MB_STICKER_DOWNLOAD_DAILY_LIMIT  — sticker file downloads per day
+# Same window and minimum spacing, separate count files and separate limits.
 NON_MB_STICKER_DAILY_COUNT_FILE = Path(__file__).with_name("non_mb_sticker_daily_count.json")
 NON_MB_STICKER_DAILY_LIMIT = 10
+NON_MB_STICKER_DOWNLOAD_DAILY_LIMIT = 15
+NON_MB_STICKER_DOWNLOAD_COUNT_FILE = Path(__file__).with_name("non_mb_sticker_download_count.json")
 NON_MB_STICKER_BUSINESS_HOUR_START = 11  # 11:00am local
 NON_MB_STICKER_BUSINESS_HOUR_END = 18  # 6:00pm local
 NON_MB_STICKER_MIN_DELAY_SECONDS = 300  # 5 minutes between downloads
@@ -511,11 +518,13 @@ def _ipacket_save_daily_count(data: dict[str, Any]) -> None:
     IPACKET_DAILY_COUNT_FILE.write_text(json.dumps(data), encoding="utf-8")
 
 
-def _ipacket_check_and_increment_daily_count() -> int | None:
+def _ipacket_check_and_increment_daily_count(enforce_limit: bool = True) -> int | None:
     """Bump today's /stickerpull count and return the new (1-based) total, or
-    None if today's count is already at IPACKET_DAILY_LIMIT."""
+    None if today's count is already at IPACKET_DAILY_LIMIT. With
+    enforce_limit=False (interactive Flask pulls) the limit is not applied,
+    but the pull is still counted so batch runs see it."""
     data = _ipacket_load_daily_count()
-    if data.get("count", 0) >= IPACKET_DAILY_LIMIT:
+    if enforce_limit and data.get("count", 0) >= IPACKET_DAILY_LIMIT:
         return None
     data["count"] = data.get("count", 0) + 1
     _ipacket_save_daily_count(data)
@@ -523,10 +532,10 @@ def _ipacket_check_and_increment_daily_count() -> int | None:
 
 
 # --------------------------------------------------------------------------- #
-# Non-MB sticker download rate limiter — built ahead of non-MB sticker
-# scraping being re-enabled (see NON_MB_STICKER_* constants above). Nothing
-# calls these yet; crawl_ipacket_inventory() currently skips every non-MB VIN
-# outright rather than reaching a download at all.
+# Non-MB sticker rate limiters (see NON_MB_STICKER_* constants above): the
+# "manual pull" counter and the separate "download" counter. Both are called
+# from aggregate() ahead of a live non-MB pull, for non-Flask callers only;
+# crawl_ipacket_inventory() skips every non-MB VIN outright and never uses them.
 # --------------------------------------------------------------------------- #
 
 
@@ -592,8 +601,60 @@ def _non_mb_sticker_check_and_increment_daily_count(vin: str) -> int | None:
     data["last_download_at"] = datetime.now().isoformat()
     _non_mb_sticker_save_daily_count(data)
     print(
-        f"[scraper] non-MB sticker download {data['count']} of "
+        f"[scraper] non-MB sticker manual pull {data['count']} of "
         f"{NON_MB_STICKER_DAILY_LIMIT} today — VIN {vin}"
+    )
+    return data["count"]
+
+
+def _non_mb_sticker_download_load_count() -> dict[str, Any]:
+    """Today's {'date', 'count', 'last_download_at'} for the non-MB sticker
+    DOWNLOAD counter. Same reset/carry-over behavior as
+    _non_mb_sticker_load_daily_count(), separate file."""
+    today = datetime.now().date().isoformat()
+    data: dict[str, Any] = {}
+    if NON_MB_STICKER_DOWNLOAD_COUNT_FILE.exists():
+        try:
+            data = json.loads(NON_MB_STICKER_DOWNLOAD_COUNT_FILE.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            data = {}
+    if data.get("date") != today:
+        data = {"date": today, "count": 0, "last_download_at": data.get("last_download_at")}
+    return data
+
+
+def _non_mb_sticker_download_save_count(data: dict[str, Any]) -> None:
+    NON_MB_STICKER_DOWNLOAD_COUNT_FILE.write_text(json.dumps(data), encoding="utf-8")
+
+
+def _non_mb_sticker_download_check_and_increment(vin: str) -> int | None:
+    """Gate + bump today's non-MB sticker DOWNLOAD count for `vin`. Returns
+    the new (1-based) total and logs '[scraper] non-MB sticker download X of
+    {NON_MB_STICKER_DOWNLOAD_DAILY_LIMIT} today — VIN {vin}' on success.
+    Returns None (no increment, no log) outside the Mon-Sat 11am-6pm window,
+    once today's count is at NON_MB_STICKER_DOWNLOAD_DAILY_LIMIT, or when fewer
+    than NON_MB_STICKER_MIN_DELAY_SECONDS have passed since the last download.
+    Independent of _non_mb_sticker_check_and_increment_daily_count(); like it,
+    this only refuses a too-soon call and never sleeps."""
+    if not _non_mb_sticker_business_hours_ok():
+        return None
+    data = _non_mb_sticker_download_load_count()
+    if data.get("count", 0) >= NON_MB_STICKER_DOWNLOAD_DAILY_LIMIT:
+        return None
+    last_at = data.get("last_download_at")
+    if last_at:
+        try:
+            elapsed = (datetime.now() - datetime.fromisoformat(last_at)).total_seconds()
+        except ValueError:
+            elapsed = NON_MB_STICKER_MIN_DELAY_SECONDS
+        if elapsed < NON_MB_STICKER_MIN_DELAY_SECONDS:
+            return None
+    data["count"] = data.get("count", 0) + 1
+    data["last_download_at"] = datetime.now().isoformat()
+    _non_mb_sticker_download_save_count(data)
+    print(
+        f"[scraper] non-MB sticker download {data['count']} of "
+        f"{NON_MB_STICKER_DOWNLOAD_DAILY_LIMIT} today — VIN {vin}"
     )
     return data["count"]
 
@@ -812,7 +873,9 @@ class AutoiPacketScraper(_BrowserSession):
 
     # -- sticker pull --------------------------------------------------- #
 
-    def pull_sticker(self, vin: str) -> dict[str, Any] | None:
+    def pull_sticker(
+        self, vin: str, *, bypass_rate_limits: bool = False
+    ) -> dict[str, Any] | None:
         """Get window-sticker data for a VIN via a three-tier strategy:
 
           Tier 1  rarity.db cache      — a stored 'complete' row, no browser.
@@ -859,9 +922,11 @@ class AutoiPacketScraper(_BrowserSession):
             file=sys.stderr,
         )
         print(f"[scraper] sticker tier 3 (ipacket_stickerpull) for {vin}")
-        return self.pull_sticker_endpoint(vin)
+        return self.pull_sticker_endpoint(vin, bypass_rate_limits=bypass_rate_limits)
 
-    def pull_sticker_endpoint(self, vin: str) -> dict[str, Any] | None:
+    def pull_sticker_endpoint(
+        self, vin: str, *, bypass_rate_limits: bool = False
+    ) -> dict[str, Any] | None:
         """Direct /stickerpull flow: type the VIN into the form and scrape the
         result. This is tier 3 of pull_sticker(), and the path the bulk importer
         uses (it wants the endpoint, not the cache/browse tiers). Return carries
@@ -873,18 +938,22 @@ class AutoiPacketScraper(_BrowserSession):
           * capped at IPACKET_DAILY_LIMIT pulls/day (ipacket_daily_count.json)
           * a random 45-90s delay before each request
         Returns None (no browser activity, no delay) if either gate blocks the
-        call.
+        call. `bypass_rate_limits=True` (interactive Flask requests) skips the
+        hours gate and the daily cap (the pull is still counted); the random
+        delay before the request still applies.
         """
         assert self.page is not None
         vin = vin.strip().upper()
 
-        if not _ipacket_business_hours_ok():
+        if not bypass_rate_limits and not _ipacket_business_hours_ok():
             print(
                 "[scraper] iPacket sticker pull outside business hours — skipping"
             )
             return None
 
-        count = _ipacket_check_and_increment_daily_count()
+        count = _ipacket_check_and_increment_daily_count(
+            enforce_limit=not bypass_rate_limits
+        )
         if count is None:
             print(
                 f"[scraper] iPacket daily sticker limit reached "

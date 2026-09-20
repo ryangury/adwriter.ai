@@ -471,7 +471,8 @@ def generate():
     )
     try:
         pkg = aggregate(
-            stock_number, skip_recon=False, expected_vin=None, vehicle_id=snap_vehicle_id
+            stock_number, skip_recon=False, expected_vin=None, vehicle_id=snap_vehicle_id,
+            bypass_rate_limits=True,
         )
     except WorkOrderNotFoundError as exc:
         print(
@@ -494,7 +495,7 @@ def generate():
             try:
                 pkg = aggregate(
                     stock_number, skip_recon=False, expected_vin=vin,
-                    vehicle_id=snap_vehicle_id,
+                    vehicle_id=snap_vehicle_id, bypass_rate_limits=True,
                 )
             except ScraperError as exc2:
                 traceback.print_exc()
@@ -511,7 +512,7 @@ def generate():
             try:
                 partial_pkg = aggregate(
                     stock_number, skip_recon=True, expected_vin=vin,
-                    vehicle_id=snap_vehicle_id,
+                    vehicle_id=snap_vehicle_id, bypass_rate_limits=True,
                 )
                 result["scraper_status"] = _scraper_status(partial_pkg)
                 result["scraper_status"]["reconvision"] = "failed"

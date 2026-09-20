@@ -35,6 +35,8 @@ from scraper import (
     StickerNotFoundError,
     WorkOrderLoadError,
     _INTERIOR_MATERIAL_RE,
+    _non_mb_sticker_check_and_increment_daily_count,
+    _non_mb_sticker_download_check_and_increment,
     _parse_oem_sticker,
 )
 from vehicle_cache import (
@@ -1416,6 +1418,8 @@ def _capture_sticker_to_rarity(
         yr, mk, md, tr = _parse_description(
             pricing_raw.get("year_make_model") or msrp_raw.get("year_make_model")
         )
+        if not mk or "mercedes" not in mk.lower():
+            return  # rarity database is Mercedes-Benz only — never capture a non-MB sticker here, regardless of how it was sourced (AutoiPacket, Carfax link, or ACV Max options tab)
         # status_code only — never pricing_raw.get("certified"), which came
         # from the ACV Max competitive-set screen's own "Certified" filter
         # state, not the vehicle's own status (see CERTIFIED_STATUS_CODES).
@@ -3183,8 +3187,15 @@ def aggregate(
     skip_recon: bool = False,
     expected_vin: str | None = None,
     vehicle_id: str | None = None,
+    bypass_rate_limits: bool = False,
 ) -> dict[str, Any]:
     """Run the scrapers for `stock_number` and return the unified package.
+
+    `bypass_rate_limits=True` (the Flask /generate route only) skips the
+    AutoiPacket business-hours / daily-count / minimum-delay gates on the live
+    sticker pull, so an interactive request is never refused by them. It never
+    skips the cache: the cached-sticker check runs first, unconditionally.
+    Batch callers (orchestrator, CLI) leave it False and stay rate-limited.
 
     With `skip_recon=True` the ReconVision scraper and the recon-complete gate
     are skipped entirely (the "pre-recon" pipeline): the package still carries
@@ -3538,13 +3549,47 @@ def aggregate(
                             f"ACV Max options — falling back to live AutoiPacket pull"
                         )
 
+        # Non-MB live-pull rate limiters: a download gate (15/day) and a
+        # manual-pull gate (10/day), each with the Mon-Sat 11am-6pm window and
+        # 5-minute spacing. Both must pass. Only reached on a cache miss, and
+        # only for a pull that would actually happen. Skipped entirely for the
+        # Flask route (bypass_rate_limits). Mercedes-Benz pulls are gated
+        # inside pull_sticker_endpoint() by the existing iPacket hours/daily
+        # limit.
+        if not skip_live_pull and not is_mb and not bypass_rate_limits:
+            download_allowed = _non_mb_sticker_download_check_and_increment(vin)
+            if download_allowed is None:
+                print(
+                    f"[aggregator] non-MB {vin}: download limit or window closed — "
+                    f"skipping live pull"
+                )
+                msrp_raw = {
+                    "error": "AutoiPacket pull skipped: non-MB download limit or window closed"
+                }
+                sticker_status = "rate_limited"
+                skip_live_pull = True
+            else:
+                pull_allowed = _non_mb_sticker_check_and_increment_daily_count(vin)
+                if pull_allowed is None:
+                    print(
+                        f"[aggregator] non-MB {vin}: manual-pull limit reached — "
+                        f"skipping live pull"
+                    )
+                    msrp_raw = {
+                        "error": "AutoiPacket pull skipped: non-MB manual-pull limit reached"
+                    }
+                    sticker_status = "rate_limited"
+                    skip_live_pull = True
+
         if not skip_live_pull:
             with AutoiPacketScraper(
                 headless=headless, use_saved_session=use_saved
             ) as ap:
                 ap.login(force=fresh_login)
                 try:
-                    msrp_raw = ap.pull_sticker(vin)
+                    msrp_raw = ap.pull_sticker(
+                        vin, bypass_rate_limits=bypass_rate_limits
+                    )
                 except ScraperError as exc:
                     msrp_raw = {"error": str(exc)}
 
