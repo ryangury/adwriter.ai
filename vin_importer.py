@@ -146,6 +146,14 @@ def _parse_description(desc: str | None) -> tuple[int | None, str | None, str | 
     return year, make, model, trim
 
 
+def is_mercedes_make(make: str | None) -> bool:
+    """Single source of truth for "is this vehicle a Mercedes-Benz" by its parsed
+    make. rarity.db is Mercedes-Benz only; every writer that can put a row in it
+    (aggregator._capture_sticker_to_rarity(), run_import()) calls this rather
+    than carrying its own copy of the check. A missing make is not Mercedes."""
+    return bool(make) and "mercedes" in str(make).lower()
+
+
 def _get(row: dict[str, str], *names: str) -> str | None:
     """Case-insensitive column lookup, first match wins."""
     lowered = {k.lower().strip(): v for k, v in row.items() if k}
@@ -471,6 +479,17 @@ def run_import(csv_path: Path) -> int:
 
         for i, ctx in enumerate(rows, start=1):
             vin = ctx["vin"]
+
+            # rarity.db is Mercedes-Benz only: never pull or write a row for
+            # any other make, before anything touches the database.
+            if not is_mercedes_make(ctx.get("make")):
+                counts["skipped"] += 1
+                print(
+                    f"Processing VIN {i} of {total} — {vin} — skipped "
+                    f"(non-Mercedes make {ctx.get('make')!r})"
+                )
+                continue
+
             existing, retries = _vin_state(conn, vin)
 
             # Terminal states: done, or not_covered after all its retries.

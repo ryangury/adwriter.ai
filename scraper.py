@@ -103,6 +103,9 @@ NON_MB_STICKER_DAILY_COUNT_FILE = Path(__file__).with_name("non_mb_sticker_daily
 NON_MB_STICKER_DAILY_LIMIT = 10
 NON_MB_STICKER_DOWNLOAD_DAILY_LIMIT = 15
 NON_MB_STICKER_DOWNLOAD_COUNT_FILE = Path(__file__).with_name("non_mb_sticker_download_count.json")
+# One shared "last non-MB pull attempt at" timestamp for the spacing check,
+# written on every real non-MB tier-3 attempt (Flask included).
+NON_MB_STICKER_LAST_PULL_FILE = Path(__file__).with_name("non_mb_sticker_last_pull.json")
 NON_MB_STICKER_BUSINESS_HOUR_START = 11  # 11:00am local
 NON_MB_STICKER_BUSINESS_HOUR_END = 18  # 6:00pm local
 NON_MB_STICKER_MIN_DELAY_SECONDS = 300  # 5 minutes between downloads
@@ -532,10 +535,18 @@ def _ipacket_check_and_increment_daily_count(enforce_limit: bool = True) -> int 
 
 
 # --------------------------------------------------------------------------- #
-# Non-MB sticker rate limiters (see NON_MB_STICKER_* constants above): the
-# "manual pull" counter and the separate "download" counter. Both are called
-# from aggregate() ahead of a live non-MB pull, for non-Flask callers only;
+# Non-MB sticker rate limiters (see NON_MB_STICKER_* constants above). Used
+# only by pull_sticker_endpoint() (tier 3, the live download) when the caller
+# says the vehicle is non-MB — tiers 1 and 2 are never gated by any of this.
 # crawl_ipacket_inventory() skips every non-MB VIN outright and never uses them.
+#
+# Two independent DAILY COUNTS (bypassed entirely by the Flask route):
+#   * manual pulls  — NON_MB_STICKER_DAILY_LIMIT
+#   * downloads     — NON_MB_STICKER_DOWNLOAD_DAILY_LIMIT
+# and ONE shared "last pull at" TIMESTAMP that drives the 5-minute spacing check.
+# The timestamp is recorded on every real non-MB tier-3 attempt, Flask
+# included, so a Flask pull still makes a batch attempt seconds later wait out
+# the remaining delay even though the Flask pull never counted toward a cap.
 # --------------------------------------------------------------------------- #
 
 
@@ -552,10 +563,8 @@ def _non_mb_sticker_business_hours_ok(now: datetime | None = None) -> bool:
 
 
 def _non_mb_sticker_load_daily_count() -> dict[str, Any]:
-    """Today's {'date', 'count', 'last_download_at'}. `count` resets to 0
-    when the stored date isn't today; `last_download_at` (an ISO timestamp,
-    or None) is preserved across the reset since the minimum-delay check
-    needs to see yesterday's last download too, right after midnight."""
+    """Today's {'date', 'count'} for the manual-pull counter; `count` resets to
+    0 when the stored date isn't today."""
     today = datetime.now().date().isoformat()
     data: dict[str, Any] = {}
     if NON_MB_STICKER_DAILY_COUNT_FILE.exists():
@@ -564,7 +573,7 @@ def _non_mb_sticker_load_daily_count() -> dict[str, Any]:
         except (ValueError, OSError):
             data = {}
     if data.get("date") != today:
-        data = {"date": today, "count": 0, "last_download_at": data.get("last_download_at")}
+        data = {"date": today, "count": 0}
     return data
 
 
@@ -572,33 +581,28 @@ def _non_mb_sticker_save_daily_count(data: dict[str, Any]) -> None:
     NON_MB_STICKER_DAILY_COUNT_FILE.write_text(json.dumps(data), encoding="utf-8")
 
 
-def _non_mb_sticker_check_and_increment_daily_count(vin: str) -> int | None:
-    """Gate + bump today's non-MB sticker download count for `vin`. Returns
-    the new (1-based) total and logs '[scraper] non-MB sticker download X of
-    {NON_MB_STICKER_DAILY_LIMIT} today — VIN {vin}' on success. Returns None
-    (no increment, no log) if we're outside the Mon-Sat 11am-6pm window,
-    today's count is already at NON_MB_STICKER_DAILY_LIMIT, or fewer than
-    NON_MB_STICKER_MIN_DELAY_SECONDS have passed since the last download.
+def _non_mb_sticker_daily_would_allow() -> bool:
+    """PEEK: would a non-MB MANUAL-PULL be allowed right now? True only inside
+    the Mon-Sat 11am-6pm window, with the 5-minute spacing since the last
+    non-MB pull elapsed, and today's manual-pull count under
+    NON_MB_STICKER_DAILY_LIMIT. No side effects — nothing is incremented or
+    stamped."""
+    return (
+        _non_mb_sticker_business_hours_ok()
+        and _non_mb_sticker_spacing_ok()
+        and _non_mb_sticker_load_daily_count().get("count", 0) < NON_MB_STICKER_DAILY_LIMIT
+    )
 
-    This only refuses a call that's too soon — it doesn't sleep/block for
-    the caller. A caller that wants the minimum delay actually enforced as a
-    wait (rather than treating None as "skip this one for now") needs to
-    retry after sleeping the remainder itself."""
-    if not _non_mb_sticker_business_hours_ok():
-        return None
+
+def _non_mb_sticker_daily_commit(vin: str) -> int:
+    """COMMIT: bump today's manual-pull count for `vin` and log '[scraper]
+    non-MB sticker manual pull X of {NON_MB_STICKER_DAILY_LIMIT} today — VIN
+    {vin}'. Call only after _non_mb_sticker_daily_would_allow() (and the other
+    counter's peek) passed. Count only — the spacing timestamp is stamped by
+    _record_non_mb_sticker_pull_timestamp() on every real attempt, which
+    includes Flask pulls that never commit a count."""
     data = _non_mb_sticker_load_daily_count()
-    if data.get("count", 0) >= NON_MB_STICKER_DAILY_LIMIT:
-        return None
-    last_at = data.get("last_download_at")
-    if last_at:
-        try:
-            elapsed = (datetime.now() - datetime.fromisoformat(last_at)).total_seconds()
-        except ValueError:
-            elapsed = NON_MB_STICKER_MIN_DELAY_SECONDS
-        if elapsed < NON_MB_STICKER_MIN_DELAY_SECONDS:
-            return None
     data["count"] = data.get("count", 0) + 1
-    data["last_download_at"] = datetime.now().isoformat()
     _non_mb_sticker_save_daily_count(data)
     print(
         f"[scraper] non-MB sticker manual pull {data['count']} of "
@@ -607,10 +611,19 @@ def _non_mb_sticker_check_and_increment_daily_count(vin: str) -> int | None:
     return data["count"]
 
 
+def _non_mb_sticker_check_and_increment_daily_count(vin: str) -> int | None:
+    """Peek + commit for the manual-pull counter alone: the new (1-based) total,
+    or None (no side effects) if _non_mb_sticker_daily_would_allow() says no.
+    Kept for standalone use; the tier-3 gate peeks at BOTH counters first and
+    only then commits both, so it never uses this."""
+    if not _non_mb_sticker_daily_would_allow():
+        return None
+    return _non_mb_sticker_daily_commit(vin)
+
+
 def _non_mb_sticker_download_load_count() -> dict[str, Any]:
-    """Today's {'date', 'count', 'last_download_at'} for the non-MB sticker
-    DOWNLOAD counter. Same reset/carry-over behavior as
-    _non_mb_sticker_load_daily_count(), separate file."""
+    """Today's {'date', 'count'} for the DOWNLOAD counter; same reset behavior
+    as _non_mb_sticker_load_daily_count(), separate file."""
     today = datetime.now().date().isoformat()
     data: dict[str, Any] = {}
     if NON_MB_STICKER_DOWNLOAD_COUNT_FILE.exists():
@@ -619,7 +632,7 @@ def _non_mb_sticker_download_load_count() -> dict[str, Any]:
         except (ValueError, OSError):
             data = {}
     if data.get("date") != today:
-        data = {"date": today, "count": 0, "last_download_at": data.get("last_download_at")}
+        data = {"date": today, "count": 0}
     return data
 
 
@@ -627,36 +640,90 @@ def _non_mb_sticker_download_save_count(data: dict[str, Any]) -> None:
     NON_MB_STICKER_DOWNLOAD_COUNT_FILE.write_text(json.dumps(data), encoding="utf-8")
 
 
-def _non_mb_sticker_download_check_and_increment(vin: str) -> int | None:
-    """Gate + bump today's non-MB sticker DOWNLOAD count for `vin`. Returns
-    the new (1-based) total and logs '[scraper] non-MB sticker download X of
-    {NON_MB_STICKER_DOWNLOAD_DAILY_LIMIT} today — VIN {vin}' on success.
-    Returns None (no increment, no log) outside the Mon-Sat 11am-6pm window,
-    once today's count is at NON_MB_STICKER_DOWNLOAD_DAILY_LIMIT, or when fewer
-    than NON_MB_STICKER_MIN_DELAY_SECONDS have passed since the last download.
-    Independent of _non_mb_sticker_check_and_increment_daily_count(); like it,
-    this only refuses a too-soon call and never sleeps."""
-    if not _non_mb_sticker_business_hours_ok():
-        return None
+def _non_mb_sticker_download_would_allow() -> bool:
+    """PEEK: would a non-MB sticker DOWNLOAD be allowed right now? True only
+    inside the Mon-Sat 11am-6pm window, with the 5-minute spacing since the
+    last non-MB pull elapsed, and today's download count under
+    NON_MB_STICKER_DOWNLOAD_DAILY_LIMIT. No side effects."""
+    return (
+        _non_mb_sticker_business_hours_ok()
+        and _non_mb_sticker_spacing_ok()
+        and _non_mb_sticker_download_load_count().get("count", 0)
+        < NON_MB_STICKER_DOWNLOAD_DAILY_LIMIT
+    )
+
+
+def _non_mb_sticker_download_commit(vin: str) -> int:
+    """COMMIT: bump today's download count for `vin` and log '[scraper] non-MB
+    sticker download X of {NON_MB_STICKER_DOWNLOAD_DAILY_LIMIT} today — VIN
+    {vin}'. Call only after both counters' peeks passed. Count only (see
+    _non_mb_sticker_daily_commit() on the spacing timestamp)."""
     data = _non_mb_sticker_download_load_count()
-    if data.get("count", 0) >= NON_MB_STICKER_DOWNLOAD_DAILY_LIMIT:
-        return None
-    last_at = data.get("last_download_at")
-    if last_at:
-        try:
-            elapsed = (datetime.now() - datetime.fromisoformat(last_at)).total_seconds()
-        except ValueError:
-            elapsed = NON_MB_STICKER_MIN_DELAY_SECONDS
-        if elapsed < NON_MB_STICKER_MIN_DELAY_SECONDS:
-            return None
     data["count"] = data.get("count", 0) + 1
-    data["last_download_at"] = datetime.now().isoformat()
     _non_mb_sticker_download_save_count(data)
     print(
         f"[scraper] non-MB sticker download {data['count']} of "
         f"{NON_MB_STICKER_DOWNLOAD_DAILY_LIMIT} today — VIN {vin}"
     )
     return data["count"]
+
+
+def _non_mb_sticker_download_check_and_increment(vin: str) -> int | None:
+    """Peek + commit for the download counter alone: the new (1-based) total, or
+    None (no side effects) if _non_mb_sticker_download_would_allow() says no.
+    Kept for standalone use; the tier-3 gate peeks at both counters first."""
+    if not _non_mb_sticker_download_would_allow():
+        return None
+    return _non_mb_sticker_download_commit(vin)
+
+
+def _non_mb_sticker_last_pull_at() -> datetime | None:
+    """When the last real non-MB tier-3 pull was attempted (Flask or batch), or
+    None if never / unreadable. Carries across midnight on purpose."""
+    if not NON_MB_STICKER_LAST_PULL_FILE.exists():
+        return None
+    try:
+        raw = json.loads(NON_MB_STICKER_LAST_PULL_FILE.read_text(encoding="utf-8"))
+        return datetime.fromisoformat(raw["last_pull_at"])
+    except (ValueError, OSError, KeyError, TypeError):
+        return None
+
+
+def _record_non_mb_sticker_pull_timestamp() -> None:
+    """Stamp 'now' as the last non-MB tier-3 pull attempt. Called for every
+    real attempt regardless of bypass_rate_limits — it is what makes a batch
+    attempt wait out the spacing after an uncounted Flask pull."""
+    NON_MB_STICKER_LAST_PULL_FILE.write_text(
+        json.dumps({"last_pull_at": datetime.now().isoformat()}), encoding="utf-8"
+    )
+
+
+def _non_mb_sticker_spacing_ok() -> bool:
+    """True if at least NON_MB_STICKER_MIN_DELAY_SECONDS have passed since the
+    last recorded non-MB pull attempt. Refuses only; never sleeps."""
+    last_at = _non_mb_sticker_last_pull_at()
+    if last_at is None:
+        return True
+    return (datetime.now() - last_at).total_seconds() >= NON_MB_STICKER_MIN_DELAY_SECONDS
+
+
+def _non_mb_sticker_gate_refusal() -> str | None:
+    """PEEK at BOTH non-MB counters for a non-Flask non-MB tier-3 pull: a short
+    reason string if either would_allow check fails, else None. Side-effect
+    free — no count bumped, no timestamp stamped — so a refusal by one gate can
+    never burn a slot on the other. Only when this returns None does the
+    caller commit both counts (_non_mb_sticker_download_commit() and
+    _non_mb_sticker_daily_commit()). The reason is worked out in the same
+    order the checks run."""
+    if _non_mb_sticker_download_would_allow() and _non_mb_sticker_daily_would_allow():
+        return None
+    if not _non_mb_sticker_business_hours_ok():
+        return "outside the non-MB pull window (Mon-Sat 11am-6pm)"
+    if not _non_mb_sticker_spacing_ok():
+        return f"less than {NON_MB_STICKER_MIN_DELAY_SECONDS}s since the last non-MB pull"
+    if not _non_mb_sticker_download_would_allow():
+        return f"non-MB download limit reached ({NON_MB_STICKER_DOWNLOAD_DAILY_LIMIT}/day)"
+    return f"non-MB manual-pull limit reached ({NON_MB_STICKER_DAILY_LIMIT}/day)"
 
 
 # --------------------------------------------------------------------------- #
@@ -874,7 +941,7 @@ class AutoiPacketScraper(_BrowserSession):
     # -- sticker pull --------------------------------------------------- #
 
     def pull_sticker(
-        self, vin: str, *, bypass_rate_limits: bool = False
+        self, vin: str, *, bypass_rate_limits: bool = False, non_mb: bool = False
     ) -> dict[str, Any] | None:
         """Get window-sticker data for a VIN via a three-tier strategy:
 
@@ -886,6 +953,9 @@ class AutoiPacketScraper(_BrowserSession):
                                          be monitored.
 
         The return always carries a `source` field naming the tier that answered.
+        `bypass_rate_limits` / `non_mb` only matter for tier 3 (the live
+        download) and are handed straight to pull_sticker_endpoint(); tiers 1
+        and 2 are never rate-limited.
         """
         assert self.page is not None
         vin = vin.strip().upper()
@@ -922,10 +992,12 @@ class AutoiPacketScraper(_BrowserSession):
             file=sys.stderr,
         )
         print(f"[scraper] sticker tier 3 (ipacket_stickerpull) for {vin}")
-        return self.pull_sticker_endpoint(vin, bypass_rate_limits=bypass_rate_limits)
+        return self.pull_sticker_endpoint(
+            vin, bypass_rate_limits=bypass_rate_limits, non_mb=non_mb
+        )
 
     def pull_sticker_endpoint(
-        self, vin: str, *, bypass_rate_limits: bool = False
+        self, vin: str, *, bypass_rate_limits: bool = False, non_mb: bool = False
     ) -> dict[str, Any] | None:
         """Direct /stickerpull flow: type the VIN into the form and scrape the
         result. This is tier 3 of pull_sticker(), and the path the bulk importer
@@ -939,27 +1011,50 @@ class AutoiPacketScraper(_BrowserSession):
           * a random 45-90s delay before each request
         Returns None (no browser activity, no delay) if either gate blocks the
         call. `bypass_rate_limits=True` (interactive Flask requests) skips the
-        hours gate and the daily cap (the pull is still counted); the random
-        delay before the request still applies.
+        hours gate and the daily caps (the pull is still counted against the
+        iPacket total); the random delay before the request still applies.
+
+        `non_mb=True` (a non-Mercedes vehicle) adds the stricter non-MB gates
+        here, on the live download only: the Mon-Sat 11am-6pm window, the 5-minute
+        spacing, and the manual-pull and download daily caps — both caps must
+        pass. All gates are checked read-only first and the counts are bumped
+        only once every gate has passed, so one refusal never burns a slot on
+        another. A refused non-MB pull returns {"error": ..., "rate_limited":
+        True} instead of None so the caller can tell "held back by a limit"
+        from "the pull failed" (the latter counts toward the retry cap). The
+        spacing timestamp is stamped on every real non-MB attempt, Flask
+        included.
         """
         assert self.page is not None
         vin = vin.strip().upper()
 
-        if not bypass_rate_limits and not _ipacket_business_hours_ok():
-            print(
-                "[scraper] iPacket sticker pull outside business hours — skipping"
-            )
-            return None
+        def _refused(reason: str) -> dict[str, Any] | None:
+            print(f"[scraper] sticker pull for {vin} skipped — {reason}")
+            return {"error": f"AutoiPacket pull skipped: {reason}", "rate_limited": True} if non_mb else None
+
+        if not bypass_rate_limits:
+            if not _ipacket_business_hours_ok():
+                return _refused("iPacket outside business hours")
+            if non_mb:
+                reason = _non_mb_sticker_gate_refusal()
+                if reason:
+                    return _refused(reason)
+            if _ipacket_load_daily_count().get("count", 0) >= IPACKET_DAILY_LIMIT:
+                return _refused(f"iPacket daily sticker limit reached ({IPACKET_DAILY_LIMIT})")
+            # Every peek passed (both non-MB counters, and the iPacket cap
+            # above) — only now commit the two non-MB counts together.
+            if non_mb:
+                _non_mb_sticker_download_commit(vin)
+                _non_mb_sticker_daily_commit(vin)
 
         count = _ipacket_check_and_increment_daily_count(
             enforce_limit=not bypass_rate_limits
         )
         if count is None:
-            print(
-                f"[scraper] iPacket daily sticker limit reached "
-                f"({IPACKET_DAILY_LIMIT}) — skipping"
-            )
-            return None
+            return _refused(f"iPacket daily sticker limit reached ({IPACKET_DAILY_LIMIT})")
+
+        if non_mb:
+            _record_non_mb_sticker_pull_timestamp()
 
         time.sleep(random.uniform(*IPACKET_DELAY_RANGE_SECONDS))
         print(

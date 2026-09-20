@@ -35,8 +35,6 @@ from scraper import (
     StickerNotFoundError,
     WorkOrderLoadError,
     _INTERIOR_MATERIAL_RE,
-    _non_mb_sticker_check_and_increment_daily_count,
-    _non_mb_sticker_download_check_and_increment,
     _parse_oem_sticker,
 )
 from vehicle_cache import (
@@ -1413,12 +1411,12 @@ def _capture_sticker_to_rarity(
     if not msrp_raw or msrp_raw.get("error"):
         return
     try:
-        from vin_importer import _parse_description, capture_sticker
+        from vin_importer import _parse_description, capture_sticker, is_mercedes_make
 
         yr, mk, md, tr = _parse_description(
             pricing_raw.get("year_make_model") or msrp_raw.get("year_make_model")
         )
-        if not mk or "mercedes" not in mk.lower():
+        if not is_mercedes_make(mk):
             return  # rarity database is Mercedes-Benz only — never capture a non-MB sticker here, regardless of how it was sourced (AutoiPacket, Carfax link, or ACV Max options tab)
         # status_code only — never pricing_raw.get("certified"), which came
         # from the ACV Max competitive-set screen's own "Certified" filter
@@ -3549,38 +3547,11 @@ def aggregate(
                             f"ACV Max options — falling back to live AutoiPacket pull"
                         )
 
-        # Non-MB live-pull rate limiters: a download gate (15/day) and a
-        # manual-pull gate (10/day), each with the Mon-Sat 11am-6pm window and
-        # 5-minute spacing. Both must pass. Only reached on a cache miss, and
-        # only for a pull that would actually happen. Skipped entirely for the
-        # Flask route (bypass_rate_limits). Mercedes-Benz pulls are gated
-        # inside pull_sticker_endpoint() by the existing iPacket hours/daily
-        # limit.
-        if not skip_live_pull and not is_mb and not bypass_rate_limits:
-            download_allowed = _non_mb_sticker_download_check_and_increment(vin)
-            if download_allowed is None:
-                print(
-                    f"[aggregator] non-MB {vin}: download limit or window closed — "
-                    f"skipping live pull"
-                )
-                msrp_raw = {
-                    "error": "AutoiPacket pull skipped: non-MB download limit or window closed"
-                }
-                sticker_status = "rate_limited"
-                skip_live_pull = True
-            else:
-                pull_allowed = _non_mb_sticker_check_and_increment_daily_count(vin)
-                if pull_allowed is None:
-                    print(
-                        f"[aggregator] non-MB {vin}: manual-pull limit reached — "
-                        f"skipping live pull"
-                    )
-                    msrp_raw = {
-                        "error": "AutoiPacket pull skipped: non-MB manual-pull limit reached"
-                    }
-                    sticker_status = "rate_limited"
-                    skip_live_pull = True
-
+        # The non-MB rate limiters (11am-6pm window, 5-minute spacing, 15/day
+        # downloads, 10/day manual pulls) and the MB hours/daily limit all live
+        # inside pull_sticker_endpoint() — tier 3, the live download — so the
+        # rarity-cache and browse tiers are never gated. bypass_rate_limits is
+        # passed through for the Flask route; non_mb selects the stricter gates.
         if not skip_live_pull:
             with AutoiPacketScraper(
                 headless=headless, use_saved_session=use_saved
@@ -3588,7 +3559,7 @@ def aggregate(
                 ap.login(force=fresh_login)
                 try:
                     msrp_raw = ap.pull_sticker(
-                        vin, bypass_rate_limits=bypass_rate_limits
+                        vin, bypass_rate_limits=bypass_rate_limits, non_mb=not is_mb
                     )
                 except ScraperError as exc:
                     msrp_raw = {"error": str(exc)}
@@ -3616,10 +3587,21 @@ def aggregate(
                     )
             _capture_sticker_to_rarity(vin, msrp_raw, pricing_raw)
 
+            # Held back by a non-MB rate limit (pull_sticker_endpoint returned
+            # its rate_limited marker): not a failed pull, so it must not burn
+            # one of the 3 retry attempts below.
+            rate_limited = bool(msrp_raw and msrp_raw.get("rate_limited"))
+            if rate_limited:
+                sticker_status = "rate_limited"
+                print(
+                    f"[aggregator] non-MB {vin}: live pull held back by a rate "
+                    f"limit — {msrp_raw.get('error')}"
+                )
+
             # A live pull that actually ran and came back unusable is the only
             # thing that counts as a failed attempt (non-MB only). The
             # pre-check above stops the pull once attempts reach 3.
-            if not is_mb and _msrp_unusable(msrp_raw):
+            if not is_mb and not rate_limited and _msrp_unusable(msrp_raw):
                 increment_autoipacket_attempts(vin)
                 attempts = get_autoipacket_attempts(vin)
                 print(
