@@ -48,6 +48,7 @@ import json
 import random
 import re
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -61,6 +62,7 @@ from playwright.sync_api import (
 )
 
 import credentials
+from run_lock import SCRAPER_LOCK_PATH, acquire_scraper_lock, release_scraper_lock
 
 # --------------------------------------------------------------------------- #
 # Configuration
@@ -601,6 +603,10 @@ def _non_mb_sticker_check_and_increment_daily_count(vin: str) -> int | None:
 # --------------------------------------------------------------------------- #
 
 
+_SESSION_THREAD_LOCK = threading.RLock()
+_session_depth = 0
+
+
 class _BrowserSession:
     """Playwright lifecycle + saved-session + debug-dump plumbing shared by the
     concrete scrapers. Subclasses set SESSION_FILENAME."""
@@ -631,17 +637,46 @@ class _BrowserSession:
         self.page: Page | None = None
 
     def __enter__(self):
-        self.start()
+        # The lock file is per-process and released only by the OUTERMOST
+        # session: the orchestrator keeps a ReconVision session open while
+        # aggregate() opens ACV Max / AutoiPacket ones inside it, and an inner
+        # exit must not free the lock under the outer one. The RLock also makes
+        # a second thread in this process wait instead of sailing through the
+        # PID-reentrant file lock.
+        _SESSION_THREAD_LOCK.acquire()
+        try:
+            global _session_depth
+            if _session_depth == 0:
+                acquire_scraper_lock(SCRAPER_LOCK_PATH, wait_seconds=30)
+            try:
+                self.start()
+            except Exception:
+                if _session_depth == 0:
+                    release_scraper_lock(SCRAPER_LOCK_PATH)
+                raise
+            _session_depth += 1
+        except BaseException:
+            _SESSION_THREAD_LOCK.release()
+            raise
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
-        if self.keep_open and not self.headless and self.page is not None:
-            print("[scraper] --keep-open set; leaving browser open. Ctrl-C to exit.")
+        global _session_depth
+        try:
             try:
-                self.page.wait_for_timeout(10 * 60 * 1000)
-            except KeyboardInterrupt:
-                pass
-        self.stop()
+                if self.keep_open and not self.headless and self.page is not None:
+                    print("[scraper] --keep-open set; leaving browser open. Ctrl-C to exit.")
+                    try:
+                        self.page.wait_for_timeout(10 * 60 * 1000)
+                    except KeyboardInterrupt:
+                        pass
+                self.stop()
+            finally:
+                _session_depth -= 1
+                if _session_depth == 0:
+                    release_scraper_lock(SCRAPER_LOCK_PATH)
+        finally:
+            _SESSION_THREAD_LOCK.release()
 
     def start(self) -> None:
         self._pw = sync_playwright().start()

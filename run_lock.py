@@ -12,7 +12,10 @@ class ScraperBusyError(Exception):
 def acquire_scraper_lock(lock_path: Path, *, wait_seconds: int = 0) -> None:
     """Raise ScraperBusyError if another live process holds the lock.
     A stale lock (PID no longer running) is cleaned up automatically.
-    If wait_seconds > 0, poll and retry for up to that long before giving up."""
+    If wait_seconds > 0, poll and retry for up to that long before giving up.
+    Reentrant per process: a lock file already holding this process's own PID
+    is a no-op, so a nested acquire never waits on itself."""
+    own_pid = os.getpid()
     deadline = time.monotonic() + wait_seconds
     while True:
         if lock_path.exists():
@@ -20,6 +23,8 @@ def acquire_scraper_lock(lock_path: Path, *, wait_seconds: int = 0) -> None:
                 pid = int(lock_path.read_text(encoding="utf-8").strip())
             except (ValueError, OSError):
                 pid = None
+            if pid == own_pid:
+                return  # already held by this process — reentrant no-op
             running = False
             if pid is not None:
                 try:
@@ -34,7 +39,7 @@ def acquire_scraper_lock(lock_path: Path, *, wait_seconds: int = 0) -> None:
                 time.sleep(2)
                 continue
             lock_path.unlink(missing_ok=True)
-        lock_path.write_text(str(os.getpid()), encoding="utf-8")
+        lock_path.write_text(str(own_pid), encoding="utf-8")
         return
 
 

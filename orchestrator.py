@@ -49,7 +49,7 @@ from inventory_crawler import (
     save_snapshot,
 )
 from scraper import ACVMaxScraper, ReconVisionScraper
-from run_lock import ScraperBusyError, SCRAPER_LOCK_PATH, acquire_scraper_lock, release_scraper_lock
+from run_lock import ScraperBusyError
 
 BUILD_STATUS_CODES = {10, 11, 12, 13, 16}
 
@@ -247,14 +247,10 @@ def run(
     *, limit: int | None = None, send_email: bool = True, status: list[int] | None = None
 ) -> int:
     try:
-        acquire_scraper_lock(SCRAPER_LOCK_PATH)
+        return _run_inner(limit=limit, send_email=send_email, status=status)
     except ScraperBusyError as exc:
         print(f"[orchestrator] {exc} — exiting", file=sys.stderr)
         return 0
-    try:
-        return _run_inner(limit=limit, send_email=send_email, status=status)
-    finally:
-        release_scraper_lock(SCRAPER_LOCK_PATH)
 
 
 def _run_inner(
