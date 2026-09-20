@@ -316,12 +316,11 @@ def _filter_recon(line_items: list[dict[str, Any]], status_code: int = 10) -> di
             spark_plugs_replaced = True
             continue
 
-        if _AIR_FILTER_RE.search(d):
-            air_filter_any = True
-            continue
-
-        if _OIL_CHANGE_RE.search(d):
-            oil_change_any = True
+        if _AIR_FILTER_RE.search(d) or _OIL_CHANGE_RE.search(d):
+            if _AIR_FILTER_RE.search(d):
+                air_filter_any = True
+            if _OIL_CHANGE_RE.search(d):
+                oil_change_any = True
             continue
 
         # Wheel bearing (As-Is only) must be checked before the tier's wheel/rim
@@ -1859,6 +1858,12 @@ def build_recon_sentence(
         items = by_reason.get("wiper_blades") or []
         desc = items[0].get("description") if items else None
         components.append(_lower_first(desc) if desc else f"wiper blades replaced {suffix}")
+
+    # 7. OIL CHANGE — same rule as air filter and wiper blades.
+    if recon_data.get("oil_change_done") and components:
+        items = by_reason.get("oil_change") or []
+        desc = items[0].get("description") if items else None
+        components.append(_lower_first(desc) if desc else f"oil and filter changed {suffix}")
 
     if not components:
         return None
