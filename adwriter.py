@@ -2113,6 +2113,18 @@ _ADS_READY_SECTIONS = [
 ]
 
 
+def _hendrickcars_line(e: dict) -> str:
+    """The 'HendrickCars.com: ...' line for an Ads Ready entry. The URL is
+    looked up once per batch in orchestrator.py; a failed lookup is flagged
+    separately from "not listed" so the two aren't confused."""
+    hc_url = e.get("hendrickcars_url")
+    if hc_url:
+        return f"HendrickCars.com: {hc_url}"
+    if e.get("hendrickcars_lookup_failed"):
+        return "HendrickCars.com: (lookup failed — check the site manually)"
+    return "HendrickCars.com: (not found — vehicle may not be live yet)"
+
+
 def _ads_ready_full_block(e: dict) -> list[str]:
     """Detailed per-vehicle block: data summary + finished ad copy."""
     pkg = e.get("pkg") or {}
@@ -2129,6 +2141,7 @@ def _ads_ready_full_block(e: dict) -> list[str]:
         f"  —  {_usd(v.get('current_price'))}"
     )
     out.append("=" * 60)
+    out.append(_hendrickcars_line(e))
     out.append("")
     out.append("DATA SUMMARY")
     out.append("-" * 60)
@@ -2241,6 +2254,7 @@ def _ads_ready_compact_block(e: dict) -> list[str]:
         f"  —  {_usd(v.get('current_price'))}"
     )
     out.append("=" * 60)
+    out.append(_hendrickcars_line(e))
     out.append(f"Change made: {e.get('change_note', 'ad updated')}")
     if e.get("feedback"):
         out.extend(_tool_feedback_block(e))

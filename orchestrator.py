@@ -42,7 +42,7 @@ from adwriter import (
 )
 from aggregator import DEALER_DOC_FEE, ScraperError, aggregate, check_recon
 from ctr_database import BENCHMARK_DEALERSHIPS, infer_tier, record_ctr
-from verifier import run_verification, send_verification_alert
+from verifier import HendrickCarsScraper, run_verification, send_verification_alert
 from inventory_crawler import (
     crawl_inventory,
     detect_reprices_needed,
@@ -734,6 +734,39 @@ def _run_inner(
         f"[verify] checks run {verification_checks_run} | "
         f"not posted {len(needs_posting)} | outdated {len(needs_update)}"
     )
+
+    # --- HendrickCars.com VDP links for the Ads Ready email ------------ #
+    # One shared browser session for the whole batch (our own public site, no
+    # login, no rate gate — just not one browser launch per vehicle). Never
+    # blocks the email: a failure leaves the entry without a URL.
+    if ads_generated:
+        print("\n=== HENDRICKCARS.COM LINKS ===")
+        try:
+            with HendrickCarsScraper(headless=True) as hc:
+                urls: dict[str, str | None] = {}
+                for entry in ads_generated:
+                    stock = entry["stock"]
+                    if stock not in urls:
+                        try:
+                            urls[stock] = hc.find_url(stock)
+                        except Exception as exc:  # noqa: BLE001
+                            print(
+                                f"[orchestrator] HendrickCars.com lookup failed for "
+                                f"{stock}: {exc}",
+                                file=sys.stderr,
+                            )
+                            urls[stock] = None
+                            entry["hendrickcars_lookup_failed"] = True
+                    entry["hendrickcars_url"] = urls[stock]
+            print(
+                f"[orchestrator] HendrickCars.com: {sum(1 for u in urls.values() if u)} "
+                f"of {len(urls)} vehicle(s) found"
+            )
+        except Exception as exc:  # noqa: BLE001 - the link is a nicety, never fatal
+            print(
+                f"[orchestrator] HendrickCars.com session failed: {exc}",
+                file=sys.stderr,
+            )
 
     # --- 8. EMAIL REPORTS ---------------------------------------- #
     print("\n=== 8. EMAIL REPORTS ===")

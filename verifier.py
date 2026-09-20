@@ -102,7 +102,43 @@ class HendrickCarsScraper(_BrowserSession):
                 return re.sub(r"\n{3,}", "\n\n", txt)
         return ""
 
+    def _search_vdp_links(self, stock: str) -> list[str]:
+        """Search the used then new inventory grids for `stock` and return the
+        VDP hrefs found (empty list when neither shows a match)."""
+        vdp_links: list[str] = []
+        for path in _SEARCH_PATHS:
+            self.page.goto(
+                HENDRICKCARS_HOME + path.format(q=stock),
+                wait_until="domcontentloaded",
+            )
+            try:
+                self.page.wait_for_load_state("networkidle", timeout=15000)
+            except Exception:  # noqa: BLE001
+                pass
+            self.page.wait_for_timeout(1200)
+            vdp_links = self._collect_vdp_links()
+            body = ""
+            try:
+                body = self.page.inner_text("body")
+            except Exception:  # noqa: BLE001
+                pass
+            if re.search(r"\b0 (?:matches|results|vehicles)\b|no (?:matching )?vehicles", body, re.IGNORECASE):
+                vdp_links = []
+            if vdp_links:
+                break
+        return vdp_links
+
     # -- public -------------------------------------------------------- #
+
+    def find_url(self, stock_number: str) -> str | None:
+        """Just the VDP URL for a stock number, or None when it isn't listed
+        (yet). Skips check()'s VDP visit and description read, so a caller that
+        only wants the link can reuse one session across a whole batch cheaply.
+        Raises on a browser/navigation failure so callers can tell "lookup
+        failed" apart from "not listed"."""
+        stock = stock_number.strip().lstrip("#").upper()
+        vdp_links = self._search_vdp_links(stock)
+        return HENDRICKCARS_HOME + vdp_links[0] if vdp_links else None
 
     def check(self, stock_number: str) -> dict[str, Any]:
         stock = stock_number.strip().lstrip("#").upper()
@@ -116,27 +152,7 @@ class HendrickCarsScraper(_BrowserSession):
         }
 
         try:
-            vdp_links: list[str] = []
-            for path in _SEARCH_PATHS:
-                self.page.goto(
-                    HENDRICKCARS_HOME + path.format(q=stock),
-                    wait_until="domcontentloaded",
-                )
-                try:
-                    self.page.wait_for_load_state("networkidle", timeout=15000)
-                except Exception:  # noqa: BLE001
-                    pass
-                self.page.wait_for_timeout(1200)
-                vdp_links = self._collect_vdp_links()
-                body = ""
-                try:
-                    body = self.page.inner_text("body")
-                except Exception:  # noqa: BLE001
-                    pass
-                if re.search(r"\b0 (?:matches|results|vehicles)\b|no (?:matching )?vehicles", body, re.IGNORECASE):
-                    vdp_links = []
-                if vdp_links:
-                    break
+            vdp_links = self._search_vdp_links(stock)
 
             if not vdp_links:
                 self._dump_debug(f"hendrickcars-no-vdp-{stock}")
