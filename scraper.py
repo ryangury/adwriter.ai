@@ -2088,7 +2088,7 @@ _PP_BENCHMARK_RE = re.compile(r"^\$([\d,]+(?:\.\d{2})?)$")
 # <newline> "Overall" (label before its value, value before the OTHER
 # label), while the market days-supply chart is "Overall62"/"Matching38"
 # (label immediately before its own value) — _COMPETITIVE_SET_RE and
-# _MARKET_DAYS_SUPPLY_RE are each scoped to their own section header so
+# _MARKET_DAYS_SUPPLY_SECTION_RE are each scoped to their own section header so
 # they can't cross-match the other widget's numbers.
 #
 # The "Price 'In the Game'" rank widget draws its rank NUMERATOR (e.g. the
@@ -2100,10 +2100,15 @@ _COMPETITIVE_SET_RE = re.compile(
     r"Define\s*Competitive\s*Set\D*?Matching\D*?([\d,]+)\D*?([\d,]+)\D*?Overall",
     re.IGNORECASE,
 )
-_MARKET_DAYS_SUPPLY_RE = re.compile(
-    r"Market\s*Days\s*Supply\D*?Overall\D*?(\d+)\D*?Matching\D*?(\d+)",
-    re.IGNORECASE,
-)
+_MARKET_DAYS_SUPPLY_SECTION_RE = re.compile(r"Market\s*Days\s*Supply(.{0,200})", re.IGNORECASE | re.DOTALL)
+_OVERALL_DAYS_RE = re.compile(r"Overall\D*?(\d+)", re.IGNORECASE)
+# Matches either a real number or the literal "N/A" — N/A must be checked
+# for explicitly and short-circuit to None, never skipped over while
+# hunting for the next digit elsewhere on the page (that's how an unrelated
+# stray number from later in the page text was getting misread as the
+# Matching days-supply figure when ACV Max itself was showing N/A due to a
+# too-thin comparable set).
+_MATCHING_DAYS_RE = re.compile(r"Matching\s*(N/A|\d+)", re.IGNORECASE)
 # Sanity ceiling for the two day-supply numbers above. When the chart's
 # label text overlaps itself in the DOM (a rendering glitch, not a text
 # format change), inner_text() can read the same 2-digit number twice back
@@ -2678,10 +2683,15 @@ class ACVMaxScraper(_BrowserSession):
             overall_count = _int(m.group(2))
 
         overall_market_days = matching_market_days = None
-        m = _MARKET_DAYS_SUPPLY_RE.search(text)
-        if m:
-            overall_market_days = _int(_undouble_digits(m.group(1)))
-            matching_market_days = _int(_undouble_digits(m.group(2)))
+        m_section = _MARKET_DAYS_SUPPLY_SECTION_RE.search(text)
+        if m_section:
+            section = m_section.group(1)
+            m_overall = _OVERALL_DAYS_RE.search(section)
+            if m_overall:
+                overall_market_days = _int(_undouble_digits(m_overall.group(1)))
+            m_matching = _MATCHING_DAYS_RE.search(section)
+            if m_matching and m_matching.group(1).upper() != "N/A":
+                matching_market_days = _int(_undouble_digits(m_matching.group(1)))
 
         if overall_market_days is not None and overall_market_days > _MAX_PLAUSIBLE_DAYS_SUPPLY:
             print(

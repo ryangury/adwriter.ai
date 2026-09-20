@@ -2060,7 +2060,15 @@ def build_proof_point_sentence(
         percent_over_market = (current_price - market_price) / market_price
 
     def _with_scarcity(sentence: str) -> str:
-        if matching_count is not None and matching_count < _VELOCITY_ANCHOR_SCARCITY_THRESHOLD:
+        # A thin comp count only means something as a rarity claim when the
+        # search actually went nationwide — a thin count from a 500-mile
+        # regional search just means the search radius should be widened
+        # when pricing this vehicle, not a selling point for the ad.
+        if (
+            matching_count is not None
+            and matching_count < _VELOCITY_ANCHOR_SCARCITY_THRESHOLD
+            and market_scope == "nationwide"
+        ):
             return sentence + (
                 f" Fewer than {matching_count} comparable examples are actively listed nationwide."
             )
@@ -2151,9 +2159,9 @@ def build_msrp_sentence(
     equipment-anchor framing (the factory window sticker figure, no dollar
     gap) instead of the straight depreciation story.
 
-    status_code is accepted for call-site compatibility but no longer drives
-    the threshold — the luxury-make/age-gate/percent-drop tree above replaced
-    the old MB-CPO-vs-everyone-else split.
+    status_code only matters for courtesy vehicles (16), which skip the dollar
+    floor entirely; every other status uses the luxury-make/age-gate/
+    percent-drop tree above.
     """
     if not total_msrp or not advertised_price:
         return None
@@ -2182,7 +2190,14 @@ def build_msrp_sentence(
         return None
 
     pct_drop = msrp_gap / total_msrp
-    min_dollar_threshold = 15000 if is_luxury else 5000
+    # Courtesy/loaner vehicles (status 16) always get an MSRP comparison
+    # regardless of the usual luxury/non-luxury dollar floor — the market
+    # comp story is frequently weak or unavailable on these (unusual
+    # pricing distance from a normal CPO comp pool, thin comp sets), so the
+    # MSRP anchor is often the strongest or only compelling number
+    # available. The age gate above still applies, but these vehicles are
+    # always current-model-year so it never actually blocks them.
+    min_dollar_threshold = 0 if status_code == 16 else (15000 if is_luxury else 5000)
     print(
         f"[aggregator] MSRP check: model_year={model_year}, age={vehicle_age}, "
         f"gap=${msrp_gap:,.0f}, pct={pct_drop:.1%}, threshold=${min_dollar_threshold:,}",
