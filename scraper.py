@@ -3333,14 +3333,12 @@ class ACVMaxScraper(_BrowserSession):
     # and "Find Packages" headings and returns one {code, name, description}
     # dict per row directly — no separate Python-side grouping pass needed.
     #
-    # The interactive-browser capture that motivated the previous version of
-    # this fix (scraper_debug/20260913-164719-acvmax-options-empty-87242359.png)
-    # showed each row as a CODE cell next to an <input> (name) and a
-    # <textarea> (description). In headless mode those never render — the
-    # same page comes back as a plain read-only table instead: <tr> with
-    # <td> cells (code, name, description in that order). This reads the
-    # <td>-based structure directly rather than depending on which markup
-    # variant happened to render.
+    # Live DOM of the LoadPackages.aspx iframe (confirmed 2026-09-20, headless):
+    # table#SelectedOptions, one <tr> per package with THREE <td>s — an
+    # action cell (empty-text "Remove Option From Vehicle" link), the CODE
+    # cell, then an "Ad Text" cell holding <input type=text> (name) and
+    # <textarea> (description). The code cell is located by content, not
+    # position, and name/description are read from the form controls.
     _SELECTED_PACKAGES_JS = """
     () => {
         function cellText(el) { return (el.textContent || '').replace(/\\s+/g, ' ').trim(); }
@@ -3367,10 +3365,27 @@ class ACVMaxScraper(_BrowserSession):
         for (const tr of rows) {
             const tds = [...tr.querySelectorAll('td')];
             if (tds.length < 2) continue;
-            const code = cellText(tds[0]);
-            if (!CODE_RE.test(code) || EXCLUDE.has(code.toUpperCase())) continue;
-            const name = cellText(tds[1]);
-            const description = tds.length > 2 ? cellText(tds[2]) : name;
+            // Find the code cell by content, not fixed position: each row
+            // starts with an action cell (a "Remove Option From Vehicle"
+            // link with no text) before the CODE column, which shifted every
+            // index by one and caused every row to be silently skipped.
+            const codeIdx = tds.findIndex(td => {
+                const t = cellText(td);
+                return CODE_RE.test(t) && !EXCLUDE.has(t.toUpperCase());
+            });
+            if (codeIdx === -1) continue;
+            const code = cellText(tds[codeIdx]);
+            // The cell after CODE holds an <input type=text> (short package
+            // name) and a <textarea> (long description) — form-control values,
+            // which textContent doesn't return for the <input>. Prefer them;
+            // fall back to plain cell text for a read-only rendering.
+            const adCell = tds.length > codeIdx + 1 ? tds[codeIdx + 1] : null;
+            const nameInput = adCell ? adCell.querySelector('input[type=text]') : null;
+            const descArea = adCell ? adCell.querySelector('textarea') : null;
+            const cellFallback = adCell ? cellText(adCell) : '';
+            const name = ((nameInput && nameInput.value) || cellFallback).trim();
+            const description = ((descArea && (descArea.value || descArea.textContent)) || '').trim() ||
+                (tds.length > codeIdx + 2 ? cellText(tds[codeIdx + 2]) : name);
             out.push({ code: code.toUpperCase(), name, description });
         }
         return out;
