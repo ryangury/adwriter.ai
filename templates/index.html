@@ -519,8 +519,7 @@
   var DASHBOARD_SCRAPER_LABELS = [
     ["acvmax", "ACV Max"],
     ["autoipacket", "AutoiPacket"],
-    ["reconvision", "ReconVision"],
-    ["carfax", "Carfax"]
+    ["reconvision", "ReconVision"]
   ];
 
   function cardScrapers(detail) {
@@ -577,6 +576,35 @@
       "</div>";
   }
 
+  function cardCarfax(d) {
+    if (!d) return "";
+    var owners = d.number_of_owners != null ?
+      esc(d.number_of_owners) + (d.owner_type ? " (" + esc(d.owner_type) + ")" : "") : "—";
+    var rows = '<div class="dline"><span class="dtext">Owners: ' + owners + "</span></div>";
+    var clean = d.no_accidents === true;
+    var known = d.no_accidents === true || d.no_accidents === false;
+    rows += '<div class="dline ' + (clean ? "d-ok" : known ? "d-warn" : "d-skip") + '"><span class="glyph">' +
+      (clean ? "&#10003;" : known ? "&#9888;" : "?") + '</span><span class="dtext">' +
+      (clean ? "No accidents reported" : known ?
+        "Accident reported" + (d.accident_details ? " &mdash; " + esc(typeof d.accident_details === "string" ? d.accident_details : JSON.stringify(d.accident_details)) : "") :
+        "Accident status unknown") + "</span></div>";
+    var brands = d.title_brands;
+    var hasBrands = Array.isArray(brands) ? brands.length > 0 : !!brands;
+    if (hasBrands) {
+      rows += '<div class="dline d-warn"><span class="glyph">&#9888;</span><span class="dtext">Title brands: ' +
+        esc(Array.isArray(brands) ? brands.join(", ") : brands) + "</span></div>";
+    }
+    if (d.carfax_date) {
+      rows += '<div class="dline"><span class="dtext">Report date: ' + esc(d.carfax_date) + "</span></div>";
+    }
+    if (d.image_available && d.vin) {
+      var url = "/carfax-image/" + encodeURIComponent(d.vin);
+      rows += '<div class="dline"><a href="' + url + '" target="_blank" rel="noopener">' +
+        '<img src="' + url + '" alt="Cached Carfax report" style="max-width:100%;max-height:160px;border:1px solid #ccc"></a></div>';
+    }
+    return '<div class="dcard"><h3>Carfax</h3>' + rows + "</div>";
+  }
+
   function cardProofPoints(points) {
     points = points || [];
     if (!points.length) {
@@ -626,6 +654,7 @@
     if (!data || !data.scraper_status_detail) return "";
     var cards = cardScrapers(data.scraper_status_detail) +
       cardRecon(data.recon_included, data.recon_excluded) +
+      cardCarfax(data.carfax_detail) +
       cardProofPoints(data.proof_points_all) +
       cardMarketData(data.market_data);
     return '<div class="dashboard">' + cards + "</div>";

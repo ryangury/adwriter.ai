@@ -1075,36 +1075,57 @@ def _best_by_key(recalced: list[dict[str, Any]], key: str) -> dict[str, Any] | N
 def _select_proof_points(recalced: list[dict[str, Any]]) -> dict[str, Any]:
     """Decide the primary and secondary proof-point anchors for the ad — the
     PROOF POINT DECISION TREE described in SYSTEM_PROMPT's PRICING PROOF
-    POINT RULES:
+    POINT RULES.
 
-    1. Primary (book value) — Kelley Blue Book's "Typical Listing Price"
-       benchmark when it's favorable; J.D. Power's own "Typical Listing
-       Price" benchmark as the fallback ONLY when KBB isn't favorable (or
-       isn't present on this vehicle's pricing screen at all). This is a
-       strict either/or, not "whichever gap is larger" — KBB wins whenever
-       it's favorable at all, even if J.D. Power's gap happens to be bigger.
+    This MUST match build_proof_point_sentence()'s actual selection logic
+    exactly — that function writes the real ad sentence, this one only
+    drives the review dashboard's Primary/Secondary badges. The two used to
+    disagree (this function had no dollar floor and strictly preferred
+    Typical Listing Price regardless of gap size; build_proof_point_sentence
+    requires a $1,000 floor and picks the larger favorable gap between J.D.
+    Power and Typical Listing Price). Confirmed via live ad testing that the
+    old version showed the wrong benchmark as "Primary" on the dashboard
+    while the ad correctly used the larger, doc-compliant gap. Do not let
+    these drift apart again — any change to one's selection rule must be
+    mirrored in the other, or ideally both should eventually call one
+    shared function.
+
+    1. Primary (book value) — whichever of J.D. Power / Typical Listing
+       Price ("KBB" internally) has the LARGER favorable gap, but only if
+       that gap clears _PROOF_POINT_FAVORABLE_THRESHOLD ($1,000). Max-gap-
+       wins, not KBB-always-wins.
     2. Secondary (market reality) — the market-average benchmark, only when
-       it's independently favorable. Never a second book value (KBB and J.D.
-       Power are never both selected — see step 1).
-    3. If no book value is favorable but market is, market is promoted into
-       the primary slot instead, so a single available anchor always lands
-       in primary_proof_point — the ad's ONE ANCHOR sentence format only
-       ever reads from that slot, never secondary_proof_point alone.
+       it independently clears the same $1,000 floor.
+    3. If neither book value clears the floor but market does, market is
+       promoted into the primary slot instead, so a single available anchor
+       always lands in primary_proof_point.
 
-    ACV Max Retail is never selected here — it's excluded from buyer-facing
-    copy entirely (see "Never reference ACV Max Retail" in PRICING PROOF
-    POINT RULES) and isn't one of the three keys checked above.
+    ACV Max Retail is never selected here — never buyer-facing.
     """
-    book = _best_by_key(recalced, _KBB_PROOF_POINT_KEY)
-    book_label = _BOOK_VALUE_LABELS[_KBB_PROOF_POINT_KEY]
-    if book is None:
-        book = _best_by_key(recalced, _JD_POWER_PROOF_POINT_KEY)
-        book_label = _BOOK_VALUE_LABELS[_JD_POWER_PROOF_POINT_KEY]
+    def _favorable_by_key(key: str) -> dict[str, Any] | None:
+        p = _best_by_key(recalced, key)
+        if p is None or (p.get("gap") or 0) <= _PROOF_POINT_FAVORABLE_THRESHOLD:
+            return None
+        return p
 
-    market = _best_by_key(recalced, _MARKET_PROOF_POINT_KEY)
+    jdp = _favorable_by_key(_JD_POWER_PROOF_POINT_KEY)
+    kbb = _favorable_by_key(_KBB_PROOF_POINT_KEY)
+    market = _favorable_by_key(_MARKET_PROOF_POINT_KEY)
 
     def _anchor(p: dict[str, Any], label: str) -> dict[str, Any]:
         return {"label": label, "gap": p.get("gap"), "direction": p.get("direction")}
+
+    book_candidates = []
+    if jdp is not None:
+        book_candidates.append((jdp, _BOOK_VALUE_LABELS[_JD_POWER_PROOF_POINT_KEY]))
+    if kbb is not None:
+        book_candidates.append((kbb, _BOOK_VALUE_LABELS[_KBB_PROOF_POINT_KEY]))
+
+    book, book_label = (
+        max(book_candidates, key=lambda t: t[0].get("gap") or 0)
+        if book_candidates
+        else (None, None)
+    )
 
     if book is not None:
         primary = _anchor(book, book_label)

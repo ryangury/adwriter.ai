@@ -34,7 +34,7 @@ os.chdir("C:/adwriter")
 sys.path.insert(0, "C:/adwriter")
 
 import anthropic
-from flask import Flask, jsonify, redirect, render_template, request, session, url_for
+from flask import Flask, abort, jsonify, redirect, render_template, request, send_file, session, url_for
 
 # Imported exactly as orchestrator.py does.
 from adwriter import (
@@ -47,7 +47,7 @@ from adwriter import (
 )
 from aggregator import ScraperError, aggregate
 from scraper import WorkOrderNotFoundError
-from vehicle_cache import get_carfax, get_recon, get_vehicle_by_stock, get_window_sticker, needs_recon
+from vehicle_cache import get_carfax, get_carfax_image_path, get_recon, get_vehicle_by_stock, get_window_sticker, needs_recon
 from credentials import DEMO_PASSWORD
 from run_lock import acquire_scraper_lock, release_scraper_lock, ScraperBusyError, SCRAPER_LOCK_PATH
 
@@ -211,6 +211,27 @@ def _slugify(text: str | None) -> str | None:
     data (see _filter_recon()'s excluded_line_items), only for kept items."""
     slug = re.sub(r"[^a-z0-9]+", "_", (text or "").strip().lower()).strip("_")
     return slug or None
+
+
+def _carfax_dashboard(pkg: dict[str, Any]) -> dict[str, Any]:
+    """Raw cached Carfax fields plus a link to the cached report image, for
+    a side-by-side 'what Carfax says vs. what the ad says' review — replaces
+    the old boolean Carfax checkmark in the Scrapers box, which only showed
+    whether the scrape succeeded, not what it actually found."""
+    cf = pkg.get("carfax") or {}
+    vin = (pkg.get("vehicle") or {}).get("vin")
+    image_path = get_carfax_image_path(vin) if vin else None
+    return {
+        "number_of_owners": cf.get("number_of_owners"),
+        "owner_type": cf.get("owner_type"),
+        "no_accidents": cf.get("no_accidents"),
+        "accident_details": cf.get("accident_details"),
+        "title_brands": cf.get("title_brands"),
+        "carfax_date": cf.get("carfax_date"),
+        "image_available": bool(image_path and os.path.isfile(image_path)),
+        "vin": vin,
+        "image_path": image_path,
+    }
 
 
 def _recon_dashboard(pkg: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -428,6 +449,7 @@ def generate():
         "data_package": None,
         "recon_included": [],
         "recon_excluded": [],
+        "carfax_detail": None,
         "proof_points_all": [],
         "scraper_status_detail": dict(_EMPTY_SCRAPER_STATUS_DETAIL),
         "market_data": None,
@@ -541,6 +563,7 @@ def generate():
         result["vehicle"] = _vehicle_summary(pkg)
         result["peacock_mode"] = bool(pkg.get("peacock_mode"))
         result["recon_included"], result["recon_excluded"] = _recon_dashboard(pkg)
+        result["carfax_detail"] = _carfax_dashboard(pkg)
         result["proof_points_all"] = _proof_points_all(pkg)
         result["scraper_status_detail"] = _scraper_status_detail(pkg)
         result["market_data"] = _market_data(pkg)
@@ -657,6 +680,19 @@ def _last_written(entry: dict[str, Any]) -> str | None:
     # last_ad_date is bumped on every record_ad() call (fresh ad, reprice, or
     # recon update); first_ad_date never changes after the initial write.
     return entry.get("last_ad_date") or entry.get("first_ad_date")
+
+
+@app.get("/carfax-image/<vin>")
+def carfax_image(vin: str):
+    """Serve the cached Carfax report screenshot for the review panel."""
+    if not session.get("authed"):
+        return redirect(url_for("home"))
+    if not re.fullmatch(r"[A-Za-z0-9]{11,17}", vin):
+        abort(404)
+    path = get_carfax_image_path(vin)
+    if not path or not os.path.isfile(path):
+        abort(404)
+    return send_file(path, mimetype="image/png")
 
 
 @app.get("/check")
