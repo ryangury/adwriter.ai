@@ -144,7 +144,7 @@ _TIER_SUFFIX: dict[int, str] = {
     16: "to meet Mercedes-Benz Certified Pre-Owned standards",
     11: "prior to delivery",
     12: "before being offered for sale",
-    13: "before being offered for sale — our team addressed all items identified during inspection",
+    13: "before being offered for sale. Our team addressed all items identified during inspection",
 }
 
 
@@ -1446,7 +1446,7 @@ def build_provenance_sentence(
             "owner on record, eligible for first-owner financing through "
             "Mercedes-Benz Financial Services. Used briefly in our courtesy "
             "fleet and professionally detailed before delivery, this vehicle "
-            "carries more warranty coverage than a comparable new purchase — "
+            "carries more warranty coverage than a comparable new purchase. "
             "MB CPO certification adds a full year of unlimited-mile coverage "
             "on top of the remaining factory warranty, typically resulting in "
             "more total coverage and thousands less than buying new."
@@ -1592,13 +1592,13 @@ def build_carfax_sentence(
             count_word = "one"
         if provenance_has_carfax:
             base = (
-                f"{count_word.capitalize()} {sev} accident event reported — "
-                "no title brands, no airbag deployment."
+                f"{count_word.capitalize()} {sev} accident event reported. "
+                "No title brands, no airbag deployment."
             )
         else:
             base = (
                 f"{count_word.capitalize()} {sev} accident event reported on "
-                "Carfax — no title brands, no airbag deployment."
+                "Carfax. No title brands, no airbag deployment."
             )
 
     if 0 < miles_per_year < 10000:
@@ -1771,7 +1771,7 @@ def build_recon_sentence(
 
     # 2. TIRES
     if recon_data.get("all_tires_replaced"):
-        components.append(f"four manufacturer-recommended tires installed {suffix}")
+        components.append(f"four new manufacturer-recommended tires installed {suffix}")
     elif recon_data.get("single_tire_replaced"):
         components.append(f"one new manufacturer-recommended tire installed {suffix}")
 
@@ -1803,12 +1803,22 @@ def build_recon_sentence(
 
     if not components:
         return None
-    if len(components) == 1:
-        return _upper_first(components[0]) + "."
-    if len(components) == 2:
-        return f"{_upper_first(components[0])} and {components[1]}."
+    # Each component may carry the tier suffix already (either appended above
+    # or baked in upstream by _filter_recon()) — strip it from every
+    # component so it appears exactly once, at the end of the full sentence,
+    # regardless of how many recon items are present.
+    stripped = []
+    for c in components:
+        c = c.strip()
+        if c.endswith(suffix):
+            c = c[: -len(suffix)].rstrip()
+        stripped.append(c)
+    if len(stripped) == 1:
+        return f"{_upper_first(stripped[0])} {suffix}."
+    if len(stripped) == 2:
+        return f"{_upper_first(stripped[0])} and {stripped[1]}, all {suffix}."
     # Oxford comma for 3+.
-    return _upper_first(", ".join(components[:-1])) + f", and {components[-1]}."
+    return _upper_first(", ".join(stripped[:-1])) + f", and {stripped[-1]}, all {suffix}."
 
 
 _PROOF_POINT_FAVORABLE_THRESHOLD = 1000
@@ -2041,13 +2051,13 @@ def build_proof_point_sentence(
         velocity_sentence = (
             f"While broader {velocity_model} inventory averages {overall_days_supply:,.0f} "
             f"days on the market, comparable units with this configuration turn in just "
-            f"{matching_days_supply:,.0f} days {market_scope} — reflecting strong demand for "
+            f"{matching_days_supply:,.0f} days {market_scope}, reflecting strong demand for "
             f"this specific specification."
         )
     elif velocity_days_ok:
         velocity_sentence = (
             f"Comparable units with this configuration turn in an average of "
-            f"{matching_days_supply:,.0f} days {market_scope} — reflecting strong demand for "
+            f"{matching_days_supply:,.0f} days {market_scope}, reflecting strong demand for "
             f"this specific specification."
         )
     else:
@@ -2422,8 +2432,8 @@ def build_warranty_sentence(
         expiry_year = model_year + 10
         return (
             f"The powertrain warranty runs through January 1, {expiry_year} "
-            f"with {miles_remaining:,} miles of odometer room remaining — "
-            "whichever limit comes first ends coverage. The High-Tech "
+            f"with {miles_remaining:,} miles of odometer room remaining. "
+            "Whichever limit comes first ends coverage. The High-Tech "
             "Warranty adds 12 months or 12,000 miles of coverage from the "
             "date of purchase."
         )
@@ -2468,7 +2478,7 @@ def build_warranty_sentence(
 
 SHIPPING_SENTENCE = (
     "Nationwide transport and door-to-door carrier delivery are available "
-    "for out-of-state buyers — our team regularly coordinates seamless "
+    "for out-of-state buyers. Our team regularly coordinates seamless "
     "long-distance purchases across the country."
 )
 
