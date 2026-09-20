@@ -1,6 +1,6 @@
-"""Shared text blocks reused verbatim across the non-MB-CPO system prompts
-(system_prompt_hendrick_certified.py, system_prompt_hendrick_affordable.py,
-system_prompt_as_is.py). Extracted from system_prompt_hendrick_certified.py,
+"""Shared text blocks reused verbatim across the system prompts (adwriter.py's
+MB CPO SYSTEM_PROMPT for API_FEEDBACK_BLOCK; system_prompt_hendrick_certified.py,
+system_prompt_hendrick_affordable.py and system_prompt_as_is.py for all of them). Extracted from system_prompt_hendrick_certified.py,
 which is the source of truth for wording — the other prompts interpolate
 these constants via f-string rather than duplicating the text."""
 
@@ -26,6 +26,30 @@ Never put reasoning inside the tags.
 Never put ad copy outside the tags.
 
 Begin your response with <ad> immediately. Do not write any planning, decisions, or notes before the opening <ad> tag. Any text written before <ad> wastes token budget and will be discarded."""
+
+# The internal API-feedback block every tier's prompt asks for after the closing
+# </ad> tag (parsed by adwriter._FEEDBACK_RE). Moved verbatim out of the MB CPO
+# SYSTEM_PROMPT in adwriter.py — the wording there is the source of truth, and
+# every field applies to every tier. The last paragraph carves the block out of
+# each prompt's own "nothing after the last paragraph" rule.
+API_FEEDBACK_BLOCK = """\
+API FEEDBACK
+
+After the finished ad and before any other output, include a feedback block in this exact format:
+
+===FEEDBACK===
+CONFIDENCE: HIGH / MEDIUM / LOW
+EQUIPMENT_TIER: HIGH / MEDIUM / LOW / UNKNOWN
+PEACOCK_MODE: YES / NO
+PROOF_POINT_USED: [which one and dollar gap]
+PROOF_POINT_SKIPPED: [any skipped and why]
+WEB_SEARCH_FIRED: [feature names searched or None]
+COLOR_STORY: [brief note on color approach taken]
+WARRANTY_INCLUDED: YES / NO and why
+FLAGS: [anything unusual, uncertain, or worth human review]
+===END FEEDBACK===
+
+This block is for internal use only. It will be stripped from the posted ad copy. It is the one and only thing permitted after paragraph four — the "nothing after the last paragraph" rule in OUTPUT FORMAT refers to the posted ad, which ends before this block."""
 
 WEB_SEARCH_NON_MB_BLOCK = """\
 WEB SEARCH FOR NON-MERCEDES VEHICLES

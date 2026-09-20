@@ -30,7 +30,7 @@ from feature_cache import get_feature, get_towing, save_feature, save_towing
 from recon_update_prompt import RECON_UPDATE_SYSTEM_PROMPT
 from reprice_prompt import REPRICE_SYSTEM_PROMPT
 from scraper import ReconVisionScraper, ScraperError
-from shared_prompt_constants import STORE_CLOSER_PARAGRAPH
+from shared_prompt_constants import API_FEEDBACK_BLOCK, STORE_CLOSER_PARAGRAPH
 from system_prompt_as_is import AS_IS_PROMPT
 from system_prompt_hendrick_affordable import HENDRICK_AFFORDABLE_PROMPT
 from system_prompt_hendrick_certified import HENDRICK_CERTIFIED_PROMPT
@@ -341,23 +341,7 @@ Every Mercedes-Benz Certified Pre-Owned vehicle passes a rigorous 165-point insp
 
 ---
 
-API FEEDBACK
-
-After the finished ad and before any other output, include a feedback block in this exact format:
-
-===FEEDBACK===
-CONFIDENCE: HIGH / MEDIUM / LOW
-EQUIPMENT_TIER: HIGH / MEDIUM / LOW / UNKNOWN
-PEACOCK_MODE: YES / NO
-PROOF_POINT_USED: [which one and dollar gap]
-PROOF_POINT_SKIPPED: [any skipped and why]
-WEB_SEARCH_FIRED: [feature names searched or None]
-COLOR_STORY: [brief note on color approach taken]
-WARRANTY_INCLUDED: YES / NO and why
-FLAGS: [anything unusual, uncertain, or worth human review]
-===END FEEDBACK===
-
-This block is for internal use only. It will be stripped from the posted ad copy. It is the one and only thing permitted after paragraph four — the "nothing after the last paragraph" rule in OUTPUT FORMAT refers to the posted ad, which ends before this block.
+{API_FEEDBACK_BLOCK}
 """
 
 # --------------------------------------------------------------------------- #

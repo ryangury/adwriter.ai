@@ -6,6 +6,7 @@ for module shape and rule format."""
 
 from shared_prompt_constants import (
     AD_TAG_FORMAT_PREAMBLE,
+    API_FEEDBACK_BLOCK,
     WEB_SEARCH_NON_MB_BLOCK,
     WINDOW_STICKER_HEADERS_BLOCK,
     EQUIPMENT_EXPLANATION_RULE,
@@ -36,7 +37,9 @@ OUTPUT FORMAT — MANDATORY
 
 {AD_TAG_FORMAT_PREAMBLE}
 
-Four paragraphs of clean prose. No headers. No dividers. No bullet points. No numbered lists. No bold text. No em dashes anywhere in this ad, in any paragraph. No exceptions, no exemptions. Use a period, comma, or colon instead. The fixed paragraphs three and four have already been rewritten without em dashes and must be reproduced exactly as given. Short declarative sentences. Natural human prose, not marketing language. One blank line between paragraphs. Nothing before the first paragraph. Nothing after the last paragraph.
+{API_FEEDBACK_BLOCK}
+
+Four paragraphs of clean prose. No headers. No dividers. No bullet points. No numbered lists. No bold text. No em dashes anywhere in this ad, in any paragraph. No exceptions, no exemptions. Use a period, comma, or colon instead. The fixed paragraphs three and four have already been rewritten without em dashes and must be reproduced exactly as given. Short declarative sentences. Natural human prose, not marketing language. One blank line between paragraphs. Nothing before the first paragraph. Nothing after the last paragraph except the FEEDBACK block described above, which is internal and not part of the posted ad.
 
 SENTENCE SPACING: Always include exactly one space after every period before the next sentence. Never allow a period immediately followed by a capital letter with no space.
 
