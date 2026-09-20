@@ -178,7 +178,18 @@ def _load_image_bytes(image_bytes_or_path: bytes | str | Path) -> bytes | None:
 CARFAX_VISION_PROMPT = """\
 This is a CARFAX vehicle history report. Extract and return ONLY a JSON object with these exact fields:
 {
-  'owners': integer,
+  'owners': integer,  # Read this number directly from the report's own
+                       # summary — either the "CARFAX 1-Owner Vehicle" badge
+                       # (means 1) or the "N Previous Owners" summary stat
+                       # near the top of the report (means N). Carfax has
+                       # already analyzed the full history and computed this
+                       # number; do not recompute or second-guess it by
+                       # counting dealer names, service visits, or
+                       # transaction rows in the Detailed History timeline.
+                       # If the Detailed History section has explicit
+                       # "Owner 1", "Owner 2", etc. headers, they will
+                       # always match the summary count — use them only to
+                       # confirm, never to override.
   'owner_type': 'personal' or 'lease' or 'corporate' or 'unknown',
   'accident_count': integer (0 if none reported),
   'accident_severity': 'none' or 'minor' or 'moderate' or 'severe',
