@@ -3227,9 +3227,18 @@ def aggregate(
     skip_recon: bool = False,
     expected_vin: str | None = None,
     vehicle_id: str | None = None,
+    status_code: int | None = None,
     bypass_rate_limits: bool = False,
 ) -> dict[str, Any]:
     """Run the scrapers for `stock_number` and return the unified package.
+
+    `status_code` (the vehicle's ACV Max status, e.g. from the same crawl
+    snapshot `vehicle_id` came from) is the caller's own source of truth for
+    it. A caller-supplied `vehicle_id` means find_vehicle() never runs for it,
+    so the scraper can't read a status code and returns None; a non-None
+    `status_code` here fills that gap. It never overrides one the scraper did
+    read for this vehicle. Left None, an unread status stays None and
+    adwriter._system_prompt_for() falls back to the As-Is prompt.
 
     `bypass_rate_limits=True` (the Flask /generate route only) skips the
     AutoiPacket business-hours / daily-count / minimum-delay gates on the live
@@ -3364,6 +3373,8 @@ def aggregate(
             pricing_raw = ax.scrape_pricing(
                 stock, vehicle_id=resolved_vehicle_id, expected_vin=expected_vin
             )
+            if pricing_raw.get("status_code") is None and status_code is not None:
+                pricing_raw["status_code"] = status_code
             vin = pricing_raw.get("vin") or vin
             try:
                 ctr_raw = ax.scrape_ctr(pricing_raw.get("vehicle_id"))

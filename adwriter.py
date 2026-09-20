@@ -363,8 +363,9 @@ def _system_prompt_for(status_code, stock_prefix) -> str:
         status 12              -> HENDRICK_AFFORDABLE_PROMPT
         status 13              -> AS_IS_PROMPT
         status 16              -> SYSTEM_PROMPT + Z stock addendum
+        None / anything else   -> AS_IS_PROMPT, with a warning (never MB CPO)
 
-    Any branch whose prompt/addendum is not yet supplied falls back to
+    Any status-10/16 branch whose Z addendum is not yet supplied falls back to
     SYSTEM_PROMPT.
     """
     is_z = (stock_prefix or "").upper().startswith("Z")
@@ -383,8 +384,24 @@ def _system_prompt_for(status_code, stock_prefix) -> str:
             return SYSTEM_PROMPT + "\n\n" + Z_STOCK_ADDENDUM
         return SYSTEM_PROMPT
 
-    # status 10 non-Z, and any unexpected code that still reaches ad generation.
-    return SYSTEM_PROMPT
+    if status_code == 10:
+        return SYSTEM_PROMPT
+
+    # status_code is None or any other unrecognized value — this must never
+    # silently fall back to SYSTEM_PROMPT (MB CPO), the most specific and
+    # warranty-generous claim of any tier. A vehicle whose status couldn't be
+    # determined should get the LEAST assertive option, not the strongest one.
+    # As-Is is the closest to a safe default (no CPO claims, no specific
+    # inspection-point count beyond its own, generic used-vehicle framing) —
+    # but this should be treated as a real failure worth surfacing, not a
+    # silent substitution.
+    print(
+        f"[adwriter] WARNING: unrecognized or missing status_code "
+        f"({status_code!r}) for stock prefix {stock_prefix!r} — falling back "
+        f"to AS_IS_PROMPT rather than risk an incorrect CPO/certified claim",
+        file=sys.stderr,
+    )
+    return AS_IS_PROMPT
 
 
 def read_vehicle_data() -> str:

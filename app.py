@@ -471,6 +471,10 @@ def generate():
     # a second independent search for the same stock number is a real race.
     snap = _snapshot_lookup(stock_number)
     snap_vehicle_id = snap.get("vehicle_id") if snap else None
+    # The snapshot's status_code travels with its vehicle_id: a pre-resolved id
+    # skips find_vehicle(), so it is the only place this run can learn the
+    # vehicle's status (and therefore which system prompt / warranty tier).
+    snap_status_code = snap.get("status_code") if snap else None
     print(
         f"[app] /generate: aggregate({stock_number!r}) starting  "
         f"(cwd={os.getcwd()}, vehicle_id={snap_vehicle_id!r})",
@@ -480,7 +484,7 @@ def generate():
     try:
         pkg = aggregate(
             stock_number, skip_recon=False, expected_vin=None, vehicle_id=snap_vehicle_id,
-            bypass_rate_limits=True,
+            status_code=snap_status_code, bypass_rate_limits=True,
         )
     except WorkOrderNotFoundError as exc:
         print(
@@ -503,7 +507,8 @@ def generate():
             try:
                 pkg = aggregate(
                     stock_number, skip_recon=False, expected_vin=vin,
-                    vehicle_id=snap_vehicle_id, bypass_rate_limits=True,
+                    vehicle_id=snap_vehicle_id, status_code=snap_status_code,
+                    bypass_rate_limits=True,
                 )
             except ScraperError as exc2:
                 traceback.print_exc()
@@ -520,7 +525,8 @@ def generate():
             try:
                 partial_pkg = aggregate(
                     stock_number, skip_recon=True, expected_vin=vin,
-                    vehicle_id=snap_vehicle_id, bypass_rate_limits=True,
+                    vehicle_id=snap_vehicle_id, status_code=snap_status_code,
+                    bypass_rate_limits=True,
                 )
                 result["scraper_status"] = _scraper_status(partial_pkg)
                 result["scraper_status"]["reconvision"] = "failed"

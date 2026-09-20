@@ -2344,6 +2344,27 @@ class ACVMaxScraper(_BrowserSession):
         super().__init__(**kwargs)
         self._last_row_text = ""
         self._last_status_code: int | None = None
+        # The vehicle id _last_status_code was read for. An instance variable
+        # that persists across calls would otherwise let one vehicle's status
+        # code ride along onto the next vehicle in a reused session.
+        self._last_status_vehicle_id: str | None = None
+
+    def _status_code_for(self, vehicle_id: str) -> int | None:
+        """The status code find_vehicle() read for THIS vehicle, else None.
+
+        A code recorded for a different vehicle is discarded (and cleared), not
+        passed along: when the caller supplies a pre-resolved vehicle id,
+        find_vehicle() never runs for it, so nothing in this session ever read
+        THIS vehicle's status. Returning whatever a previous vehicle left in
+        _last_status_code silently put a prior vehicle's status on this one —
+        how a plain used Buick ended up with an MB CPO warranty block. The
+        caller must get status from its own source (aggregate()'s
+        status_code argument) when this returns None."""
+        if self._last_status_vehicle_id != str(vehicle_id):
+            self._last_status_code = None
+            self._last_status_vehicle_id = None
+            return None
+        return self._last_status_code
 
     # -- auth ------------------------------------------------------------- #
 
@@ -2515,6 +2536,7 @@ class ACVMaxScraper(_BrowserSession):
         sc = re.search(r"Status:\s*(\d+)", self._last_row_text, re.IGNORECASE)
         self._last_status_code = int(sc.group(1)) if sc else None
         vehicle_id = href.rsplit("/", 1)[-1]
+        self._last_status_vehicle_id = vehicle_id
         print(
             f"[scraper] matched vehicle id {vehicle_id}"
             + (f" (status {self._last_status_code})" if self._last_status_code is not None else "")
@@ -2644,10 +2666,13 @@ class ACVMaxScraper(_BrowserSession):
         removes that race entirely.
 
         Note: when `vehicle_id` is supplied, find_vehicle()'s own inventory
-        search never runs, so status_code (normally read off the search-
-        result row) comes back None. Callers on this fast path that need it
-        should get it from wherever they already had `vehicle_id` (e.g. a
-        prior crawl snapshot).
+        search never runs for it, so status_code (normally read off the
+        search-result row) comes back None — even if an earlier vehicle in
+        this same session had set one (see _status_code_for()). It is only
+        kept when find_vehicle() itself resolved this exact id, as
+        aggregate() does when it has no id of its own. Callers on the
+        pre-resolved fast path that need status_code must get it from
+        wherever they already had `vehicle_id` (e.g. a prior crawl snapshot).
 
         This method never determines certification status — `certified` /
         `certified_detail` in the returned dict are always the None
@@ -2706,7 +2731,7 @@ class ACVMaxScraper(_BrowserSession):
         data = self._parse_pricing_text(text, stock_number)
         data["vehicle_id"] = vehicle_id
         data["source_url"] = url
-        data["status_code"] = self._last_status_code
+        data["status_code"] = self._status_code_for(vehicle_id)
         if list_price is not None:
             data["current_internet_price"] = list_price
         if stock_from_grid:
