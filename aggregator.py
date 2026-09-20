@@ -177,6 +177,11 @@ _WIPER_RE = re.compile(r"wiper[\s\-]*blade|wiper[\s\-]*insert", re.IGNORECASE)
 # only reaches the ad when at least one other includeable recon item is present.
 _AIR_FILTER_RE = re.compile(r"air[\s\-]*filter", re.IGNORECASE)
 
+# INCLUDE (conditionally) — oil/filter change. Same rule as air filter and wiper
+# blades: only reaches the ad when at least one other includeable recon item is
+# present.
+_OIL_CHANGE_RE = re.compile(r"engine oil.{0,20}filter|oil.{0,10}(?:and|&|/).{0,10}filter|\boil change\b", re.IGNORECASE)
+
 # INCLUDE — spark plug replacement. Stands alone: a meaningful enough engine
 # service signal to be mentioned even when it is the only recon item.
 _SPARK_PLUG_RE = re.compile(r"spark[\s\-]*plug", re.IGNORECASE)
@@ -262,6 +267,7 @@ def _filter_recon(line_items: list[dict[str, Any]], status_code: int = 10) -> di
     wiper_rear = False
     wiper_any = False
     air_filter_any = False
+    oil_change_any = False
     spark_plugs_replaced = False
 
     def _drop(li: dict[str, Any], reason: str) -> None:
@@ -312,6 +318,10 @@ def _filter_recon(line_items: list[dict[str, Any]], status_code: int = 10) -> di
 
         if _AIR_FILTER_RE.search(d):
             air_filter_any = True
+            continue
+
+        if _OIL_CHANGE_RE.search(d):
+            oil_change_any = True
             continue
 
         # Wheel bearing (As-Is only) must be checked before the tier's wheel/rim
@@ -518,6 +528,33 @@ def _filter_recon(line_items: list[dict[str, Any]], status_code: int = 10) -> di
                 }
             )
 
+    # Oil change: same rule as air filter and wiper blades — only counts
+    # alongside at least one other positive signal, never as the sole item.
+    oil_change_done = False
+    if oil_change_any:
+        other_includeable = bool(
+            kept or all_tires_replaced or scheduled_service_done or brake_service_done
+        )
+        if other_includeable:
+            oil_change_done = True
+            oil_li = {k: None for k in _SLIM_KEYS}
+            oil_li.update(
+                {
+                    "description": f"oil and filter changed {suffix}",
+                    "completion_status": "completed",
+                    "recon_reason": "oil_change",
+                }
+            )
+            kept.append(oil_li)
+        else:
+            excluded.append(
+                {
+                    "section": None,
+                    "description": "Oil and filter change",
+                    "reason": "only completed recon item — never mentioned alone",
+                }
+            )
+
     return {
         "line_items": kept,
         "excluded_line_items": excluded,
@@ -528,6 +565,7 @@ def _filter_recon(line_items: list[dict[str, Any]], status_code: int = 10) -> di
         "wiper_blades_replaced": wiper_blades_replaced,
         "spark_plugs_replaced": spark_plugs_replaced,
         "air_filter_replaced": air_filter_replaced,
+        "oil_change_done": oil_change_done,
     }
 
 
@@ -1711,7 +1749,7 @@ def build_recon_sentence(
     _filter_recon() output — i.e. aggregate()'s `recon_block`, which carries
     the summary flags (scheduled_service_done, all_tires_replaced,
     brake_service_done, spark_plugs_replaced, air_filter_replaced,
-    wiper_blades_replaced) and the already-filtered `line_items` list.
+    oil_change_done, wiper_blades_replaced) and the already-filtered `line_items` list.
     NOT the raw ReconVision scrape (`recon_raw`) — that dict has none of
     these summary flags, only a raw, unfiltered line-item list.
 
@@ -3124,6 +3162,7 @@ _EMPTY_RECON: dict[str, Any] = {
     "wiper_blades_replaced": False,
     "spark_plugs_replaced": False,
     "air_filter_replaced": False,
+    "oil_change_done": False,
     "pending": True,
 }
 
