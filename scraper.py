@@ -2716,17 +2716,18 @@ class ACVMaxScraper(_BrowserSession):
                 if list_price:
                     break
 
-        stock_from_grid = frame.evaluate(
+        grid_rows = frame.evaluate(
             """() => {
                 const rows = [...document.querySelectorAll('#UnitsInStockDesc tr[role=row]')];
+                const out = [];
                 for (const r of rows) {
                     const v = r.querySelector("td[aria-describedby='UnitsInStockDesc_VIN']");
                     const s = r.querySelector("td[aria-describedby='UnitsInStockDesc_StockNumber']");
-                    if (v && s) return {vin: v.innerText.trim(), stock: s.innerText.trim()};
+                    if (v && s) out.push({vin: v.innerText.trim(), stock: s.innerText.trim()});
                 }
-                return null;
+                return out;
             }"""
-        )
+        ) or []
 
         data = self._parse_pricing_text(text, stock_number)
         data["vehicle_id"] = vehicle_id
@@ -2734,9 +2735,13 @@ class ACVMaxScraper(_BrowserSession):
         data["status_code"] = self._status_code_for(vehicle_id)
         if list_price is not None:
             data["current_internet_price"] = list_price
-        if stock_from_grid:
-            data["vin"] = data["vin"] or stock_from_grid.get("vin")
-            data["stock_number"] = stock_from_grid.get("stock") or data["stock_number"]
+        grid_stock, grid_vin = self._grid_identity(
+            data.get("vin"), grid_rows, stock_number.strip().lstrip("#").upper()
+        )
+        if grid_stock:
+            data["stock_number"] = grid_stock
+        if grid_vin and not data.get("vin"):
+            data["vin"] = grid_vin
 
         print(
             f"[scraper] market velocity: {data.get('matching_count')} matching, "
@@ -2768,6 +2773,50 @@ class ACVMaxScraper(_BrowserSession):
                     f"vehicle, refusing to proceed."
                 )
         return data
+
+    # -- identity -------------------------------------------------- #
+
+    @staticmethod
+    def _grid_identity(
+        header_vin: str | None, grid_rows: list[dict[str, str]], requested_stock: str
+    ) -> tuple[str | None, str | None]:
+        """(stock, vin) that identifies THIS page's vehicle, read from the
+        pricing page's "Units in stock" grid — or (None, None) when there is
+        nothing to read.
+
+        That grid lists the dealer's comparable units of the same model, so its
+        first row is NOT necessarily the vehicle being viewed (two same-trim
+        units list each other, in the same order, on both pages). The header
+        carries the vehicle's VIN but not its stock number, so the row is found
+        by VIN, never by position:
+
+          * header VIN present -> the grid row with that VIN gives the stock. A
+            grid with rows but none for this VIN can't confirm identity: raise.
+          * header VIN missing, exactly one grid row -> trust that row.
+          * header VIN missing, several rows -> ambiguous: raise rather than guess.
+          * empty grid -> nothing to check (unchanged: the VIN check and the
+            caller's own stock number still apply).
+        """
+        rows = [r for r in (grid_rows or []) if r and r.get("stock")]
+        if not rows:
+            return None, None
+        hv = (header_vin or "").strip().upper()
+        if hv:
+            for r in rows:
+                if (r.get("vin") or "").strip().upper() == hv:
+                    return r["stock"].strip(), r.get("vin")
+            raise VehicleIdentityError(
+                f"Stock #{requested_stock}: pricing page VIN {hv!r} is not among the "
+                f"{len(rows)} unit(s) in its units-in-stock grid — cannot confirm "
+                f"which vehicle this is, refusing to proceed."
+            )
+        if len(rows) == 1:
+            return rows[0]["stock"].strip(), rows[0].get("vin")
+        raise VehicleIdentityError(
+            f"Stock #{requested_stock}: pricing page has no readable VIN and its "
+            f"units-in-stock grid lists {len(rows)} vehicles — cannot tell which one "
+            f"is this vehicle, refusing to proceed."
+        )
 
     # -- parsing --------------------------------------------------- #
 
