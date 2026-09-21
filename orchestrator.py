@@ -290,13 +290,19 @@ def _run_inner(
             f"[orchestrator] excluding {len(excluded_not_certified)} vehicle(s) "
             f"at status 1 (in stock, not yet certified) — never run by design"
         )
+    # Save the full, unfiltered (minus status-1) inventory as the snapshot. It is
+    # the ground truth behind Flask's vehicle_id / status_code lookups and the
+    # Inventory page, and must never shrink just because --status/--limit scoped
+    # this particular run's ad-generation work to a subset of vehicles. (Reprice
+    # detection is unaffected either way: it compares against ad_history.)
+    save_snapshot(retail)
+
     if status:
         retail = [v for v in retail if v.get("status_code") in status]
         print(f"[orchestrator] --status {status}: processing {len(retail)} vehicle(s)")
     if limit:
         retail = retail[:limit]
         print(f"[orchestrator] --limit {limit}: processing {len(retail)} vehicle(s)")
-    save_snapshot(retail)
 
     # --- 2. PRICE CHANGE HANDLING --------------------------------------- #
     #
