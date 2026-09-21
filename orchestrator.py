@@ -244,17 +244,27 @@ def _format_action_email(
 
 
 def run(
-    *, limit: int | None = None, send_email: bool = True, status: list[int] | None = None
+    *,
+    limit: int | None = None,
+    send_email: bool = True,
+    status: list[int] | None = None,
+    skip_benchmark: bool = False,
 ) -> int:
     try:
-        return _run_inner(limit=limit, send_email=send_email, status=status)
+        return _run_inner(
+            limit=limit, send_email=send_email, status=status, skip_benchmark=skip_benchmark
+        )
     except ScraperBusyError as exc:
         print(f"[orchestrator] {exc} — exiting", file=sys.stderr)
         return 0
 
 
 def _run_inner(
-    *, limit: int | None = None, send_email: bool = True, status: list[int] | None = None
+    *,
+    limit: int | None = None,
+    send_email: bool = True,
+    status: list[int] | None = None,
+    skip_benchmark: bool = False,
 ) -> int:
     started = time.monotonic()
     today = date.today().isoformat()
@@ -347,7 +357,12 @@ def _run_inner(
     #   has ad + price changed       -> reprice_queue    ("repriced")
     #   has ad, nothing pending      -> skip
     print("\n=== 3. RECON AND CERTIFICATION GATE ===")
-    needs_cert: list[dict[str, Any]] = []
+    # Status-1 vehicles are hard-excluded from `retail` in step 1 (never run by
+    # design), so the gate loop below can no longer see them. Seed the list from
+    # that exclusion so the Action Required email still reports them.
+    needs_cert: list[dict[str, Any]] = list(excluded_not_certified)
+    for v in excluded_not_certified:
+        print(f"[gate] {v.get('stock_number')}: status 1 — needs certification assigned")
     skipped_status: list[dict[str, Any]] = []
     waiting_recon: list[dict[str, Any]] = []
     build_queue: list[dict[str, Any]] = []
@@ -668,53 +683,60 @@ def _run_inner(
     # --- 6. BENCHMARK CTR CAPTURE ------------------------------- #
     print("\n=== 6. BENCHMARK CTR CAPTURE ===")
     benchmark_counts: dict[str, int] = {d: 0 for d in BENCHMARK_DEALERSHIPS}
-    try:
-        with ACVMaxScraper(headless=True) as bx:
-            bx.login()  # lands on Mercedes-Benz of Durham
-            for dealership_name in BENCHMARK_DEALERSHIPS:
-                short = dealership_name.split()[-1]
-                try:
-                    vehicles = bx.scrape_benchmark_inventory(dealership_name)
-                except Exception as exc:  # noqa: BLE001 - one store must not stop the other
-                    errors.append(
-                        {"stock": "-", "phase": "benchmark",
-                         "error": f"{dealership_name}: {exc}"}
-                    )
-                    print(f"[benchmark] {short} FAILED — {exc}", file=sys.stderr)
-                    continue
-
-                n_total = len(vehicles)
-                for i, veh in enumerate(vehicles, 1):
-                    tier = infer_tier(
-                        certified=veh.get("certified"),
-                        price=veh.get("current_price"),
-                    )
+    if skip_benchmark:
+        # Competitive benchmark: crawls every vehicle at Northlake and Charlotte and
+        # reads its CTR (~250 pricing-page loads) — the slowest part of a run, and it
+        # ignores --limit/--status. Skipping it leaves ctr_history.db's benchmark
+        # rows for this date unwritten.
+        print("[benchmark] skipped (--skip-benchmark)")
+    else:
+        try:
+            with ACVMaxScraper(headless=True) as bx:
+                bx.login()  # lands on Mercedes-Benz of Durham
+                for dealership_name in BENCHMARK_DEALERSHIPS:
+                    short = dealership_name.split()[-1]
                     try:
-                        record_ctr(
-                            veh,
-                            veh.get("ctr_data") or {},
-                            dealership_name=dealership_name,
-                            dealership_role="benchmark",
-                            certification_tier=tier,
-                        )
-                        benchmark_counts[dealership_name] += 1
-                    except Exception as exc:  # noqa: BLE001
+                        vehicles = bx.scrape_benchmark_inventory(dealership_name)
+                    except Exception as exc:  # noqa: BLE001 - one store must not stop the other
                         errors.append(
-                            {"stock": veh.get("stock_number"),
-                             "phase": "benchmark_db", "error": str(exc)}
+                            {"stock": "-", "phase": "benchmark",
+                             "error": f"{dealership_name}: {exc}"}
                         )
+                        print(f"[benchmark] {short} FAILED — {exc}", file=sys.stderr)
                         continue
+
+                    n_total = len(vehicles)
+                    for i, veh in enumerate(vehicles, 1):
+                        tier = infer_tier(
+                            certified=veh.get("certified"),
+                            price=veh.get("current_price"),
+                        )
+                        try:
+                            record_ctr(
+                                veh,
+                                veh.get("ctr_data") or {},
+                                dealership_name=dealership_name,
+                                dealership_role="benchmark",
+                                certification_tier=tier,
+                            )
+                            benchmark_counts[dealership_name] += 1
+                        except Exception as exc:  # noqa: BLE001
+                            errors.append(
+                                {"stock": veh.get("stock_number"),
+                                 "phase": "benchmark_db", "error": str(exc)}
+                            )
+                            continue
+                        print(
+                            f"[benchmark] {short}: {i} of {n_total} vehicles — "
+                            f"{veh.get('year_make_model') or '?'} "
+                            f"{veh.get('stock_number') or '?'}"
+                        )
                     print(
-                        f"[benchmark] {short}: {i} of {n_total} vehicles — "
-                        f"{veh.get('year_make_model') or '?'} "
-                        f"{veh.get('stock_number') or '?'}"
+                        f"[benchmark] {short} complete — {n_total} vehicles, CTR recorded"
                     )
-                print(
-                    f"[benchmark] {short} complete — {n_total} vehicles, CTR recorded"
-                )
-    except ScraperError as exc:
-        errors.append({"stock": "-", "phase": "benchmark_login", "error": str(exc)})
-        print(f"[benchmark] ACV MAX login failed — {exc}", file=sys.stderr)
+        except ScraperError as exc:
+            errors.append({"stock": "-", "phase": "benchmark_login", "error": str(exc)})
+            print(f"[benchmark] ACV MAX login failed — {exc}", file=sys.stderr)
 
     # --- 7. AD POSTING VERIFICATION ------------------------------ #
     print("\n=== 7. AD POSTING VERIFICATION ===")
@@ -887,8 +909,18 @@ def main(argv: list[str] | None = None) -> int:
         "--status", nargs="+", type=int,
         help="only process vehicles with these status codes",
     )
+    parser.add_argument(
+        "--skip-benchmark", action="store_true",
+        help="skip step 6 (Northlake/Charlotte benchmark CTR capture) — it walks both "
+             "stores' full inventory regardless of --limit/--status",
+    )
     args = parser.parse_args(argv)
-    return run(limit=args.limit, send_email=not args.no_email, status=args.status)
+    return run(
+        limit=args.limit,
+        send_email=not args.no_email,
+        status=args.status,
+        skip_benchmark=args.skip_benchmark,
+    )
 
 
 if __name__ == "__main__":
