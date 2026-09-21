@@ -1,0 +1,101 @@
+{% extends "layout.html" %}
+{% block title %}Inventory — Mercedes-Benz of Durham{% endblock %}
+{% block content %}
+<div class="wrap-wide">
+  <h1 class="page-title">Inventory</h1>
+  <p class="page-sub">
+    {{ rows|length }} vehicle{{ '' if rows|length == 1 else 's' }}
+    {% if snapshot_time %} &middot; snapshot from {{ snapshot_time }}{% endif %}
+    &middot; price is the raw list price (no admin fee) &middot; click Age or Status to sort
+  </p>
+
+  {% if not rows %}
+  <div class="inv-wrap"><div class="empty-note">
+    No inventory snapshot found. It is written by each orchestrator run.
+  </div></div>
+  {% else %}
+  <div class="inv-wrap">
+    <table class="inv-table" id="inv-table">
+      <thead>
+        <tr>
+          <th>Stock</th>
+          <th>Year / Make / Model</th>
+          <th>Trim</th>
+          <th class="num">Mileage</th>
+          <th class="num">Price</th>
+          <th class="sortable num" data-sort="age">Age</th>
+          <th class="sortable" data-sort="status">Status</th>
+          <th class="has-ad">Has Ad</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        {% set href = url_for('inventory_detail', stock_number=r.stock_number) %}
+        <tr data-href="{{ href }}"
+            data-age="{{ r.days_on_lot if r.days_on_lot is not none else '' }}"
+            data-status="{{ r.status_code if r.status_code is not none else '' }}">
+          <td><a href="{{ href }}">{{ r.stock_number }}</a></td>
+          <td>{{ r.year_make_model or '—' }}</td>
+          <td>{{ r.trim or '—' }}</td>
+          <td class="num">{{ '{:,.0f}'.format(r.mileage) if r.mileage is not none else '—' }}</td>
+          <td class="num">{{ '${:,.0f}'.format(r.current_price) if r.current_price is not none else '—' }}</td>
+          <td class="num" data-age-cell>{{ r.days_on_lot if r.days_on_lot is not none else '—' }}</td>
+          <td><span class="status-pill st-{{ r.status_code }}">{{ r.status_label }}</span></td>
+          <td class="has-ad" title="{{ ('Last ad ' ~ r.last_ad_date) if r.last_ad_date else 'No ad on file' }}">
+            {% if r.has_ad %}<span class="has-ad-yes">&#10003;</span>{% else %}<span class="has-ad-no">&ndash;</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  "use strict";
+  var table = document.getElementById("inv-table");
+  if (!table) return;
+  var tbody = table.tBodies[0];
+
+  // Age cells reuse the same day-bucket chip as the Ad Writer's market-data card.
+  Array.prototype.forEach.call(tbody.querySelectorAll("[data-age-cell]"), function (td) {
+    var chip = Cards.daysChip(td.parentNode.getAttribute("data-age"));
+    if (chip) td.innerHTML = chip;
+  });
+
+  // Whole row is a link (the stock number is also a real <a> for keyboard / middle-click).
+  tbody.addEventListener("click", function (e) {
+    if (e.target.closest("a")) return;
+    var tr = e.target.closest("tr");
+    if (tr && tr.getAttribute("data-href")) window.location.href = tr.getAttribute("data-href");
+  });
+
+  // Click-to-sort on Age and Status: first click ascending, then toggles.
+  var state = { key: null, dir: 1 };
+  var headers = table.querySelectorAll("th.sortable");
+  Array.prototype.forEach.call(headers, function (th) {
+    th.addEventListener("click", function () {
+      var key = th.getAttribute("data-sort");
+      state.dir = state.key === key ? -state.dir : 1;
+      state.key = key;
+      var rows = Array.prototype.slice.call(tbody.rows);
+      rows.sort(function (a, b) {
+        var av = a.getAttribute("data-" + key), bv = b.getAttribute("data-" + key);
+        var an = av === "" ? null : Number(av), bn = bv === "" ? null : Number(bv);
+        if (an === null && bn === null) return 0;
+        if (an === null) return 1;            // missing values always sort last
+        if (bn === null) return -1;
+        return (an - bn) * state.dir;
+      });
+      rows.forEach(function (r) { tbody.appendChild(r); });
+      Array.prototype.forEach.call(headers, function (h) { h.classList.remove("sort-asc", "sort-desc"); });
+      th.classList.add(state.dir === 1 ? "sort-asc" : "sort-desc");
+    });
+  });
+})();
+</script>
+{% endblock %}

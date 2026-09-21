@@ -45,9 +45,9 @@ from adwriter import (
     save_ad_history,
     source_status,
 )
-from aggregator import ScraperError, aggregate
+from aggregator import ScraperError, _filter_recon, aggregate
 from scraper import WorkOrderNotFoundError
-from vehicle_cache import get_carfax, get_carfax_image_path, get_recon, get_vehicle_by_stock, get_window_sticker, needs_recon
+from vehicle_cache import get_carfax, get_carfax_image_path, get_recon, get_vehicle, get_vehicle_by_stock, get_window_sticker, needs_recon
 from credentials import DEMO_PASSWORD
 from run_lock import ScraperBusyError
 
@@ -428,6 +428,177 @@ def auth():
 def logout():
     session.pop("authed", None)
     return redirect(url_for("home"))
+
+
+# --------------------------------------------------------------------------- #
+# Inventory + CTR pages (share templates/layout.html with the Ad Writer page)
+# --------------------------------------------------------------------------- #
+
+# ACV Max status code -> label shown on the Inventory pages.
+_STATUS_LABELS = {
+    1: "Not certified",
+    10: "MB CPO",
+    11: "Hendrick Certified",
+    12: "Hendrick Affordable",
+    13: "As-Is",
+    16: "Courtesy (MB CPO)",
+}
+
+
+def _status_label(code: Any) -> str:
+    if code is None:
+        return "Unknown"
+    return _STATUS_LABELS.get(code, f"Status {code}")
+
+
+@app.context_processor
+def _asset_helpers() -> dict[str, Any]:
+    """asset_v('site.css') -> the file's mtime, appended to static URLs so a
+    browser never keeps serving a stale copy after the file changes."""
+
+    def asset_v(name: str) -> int:
+        try:
+            return int((Path(app.static_folder or "static") / name).stat().st_mtime)
+        except OSError:
+            return 0
+
+    return {"asset_v": asset_v}
+
+
+def _load_snapshot() -> tuple[list[dict[str, Any]], str | None]:
+    """(vehicles, snapshot timestamp) from last_inventory_snapshot.json.
+
+    The file is {timestamp, dealership, count, vehicles: [...]} — not a bare
+    list. Missing or unreadable -> ([], None) so the page shows an empty state
+    instead of a 500."""
+    try:
+        data = json.loads(SNAPSHOT_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return [], None
+    if isinstance(data, dict):
+        vehicles, stamp = data.get("vehicles"), data.get("timestamp")
+    else:  # tolerate a bare list
+        vehicles, stamp = data, None
+    return [v for v in (vehicles or []) if isinstance(v, dict)], stamp
+
+
+def _fmt_snapshot_time(stamp: str | None) -> str | None:
+    if not stamp:
+        return None
+    try:
+        return datetime.fromisoformat(stamp).astimezone().strftime("%b %d, %Y %I:%M %p").replace(" 0", " ")
+    except ValueError:
+        return stamp
+
+
+def _sticker_card(sticker: dict[str, Any] | None, source: str | None = None) -> dict[str, Any] | None:
+    """Trim a cached window sticker down to what the sticker card shows (no
+    raw_text / full option lists sent to the browser)."""
+    if not sticker:
+        return None
+    return {
+        "source": source or sticker.get("source"),
+        "total_msrp": sticker.get("total_msrp"),
+        "base_price": sticker.get("base_price"),
+        "freight": sticker.get("freight"),
+        "packages": [
+            {"code": p.get("code"), "name": p.get("name"), "price": p.get("price")}
+            for p in sticker.get("option_packages") or []
+        ],
+        "standard_count": len(sticker.get("standard_options") or []),
+    }
+
+
+def _inventory_detail_data(vehicle: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Cached scraper data for one vehicle, shaped for the same card renderers
+    (static/cards.js) the Ad Writer page uses. Built with the same helpers
+    /generate uses: _carfax_dashboard(), aggregator._filter_recon() and
+    _recon_dashboard(). Returns ({recon, carfax, sticker}, notes)."""
+    vin = vehicle.get("vin")
+    status = vehicle.get("status_code")
+    notes: list[str] = []
+    row = get_vehicle(vin) if vin else None
+
+    carfax = None
+    if row and row.get("carfax_json"):
+        cf = json.loads(row["carfax_json"])
+        cf["carfax_date"] = row.get("carfax_date")
+        carfax = _carfax_dashboard({"carfax": cf, "vehicle": {"vin": vin}})
+        # get_carfax() hides a row once it is past its TTL; the page still shows
+        # it (with its date) rather than pretending nothing was ever cached.
+        if get_carfax(vin) is None:
+            notes.append(f"Carfax cached {row.get('carfax_date')} (older than its refresh window)")
+
+    recon = None
+    raw_recon = get_recon(vin) if vin else None
+    if raw_recon and raw_recon.get("line_items") is not None:
+        filtered = _filter_recon(raw_recon.get("line_items") or [], status_code=status or 10)
+        included, excluded = _recon_dashboard({"recon": filtered})
+        recon = {"included": included, "excluded": excluded}
+
+    sticker = get_window_sticker(vin) if vin else None
+    sticker_card = _sticker_card(sticker, (row or {}).get("window_sticker_source"))
+    return {"recon": recon, "carfax": carfax, "sticker": sticker_card}, notes
+
+
+@app.get("/inventory")
+def inventory():
+    if not session.get("authed"):
+        return render_template("login.html", error=request.args.get("error"))
+    vehicles, stamp = _load_snapshot()
+    ad_history = load_ad_history()
+    rows = []
+    for v in vehicles:
+        stock = normalize_stock(v.get("stock_number"))
+        entry = ad_history.get(stock)
+        rows.append(
+            {
+                "stock_number": stock,
+                "vin": v.get("vin"),
+                "year_make_model": v.get("year_make_model"),
+                "trim": v.get("trim"),
+                "mileage": v.get("mileage"),
+                "current_price": v.get("current_price"),
+                "days_on_lot": v.get("days_on_lot"),
+                "status_code": v.get("status_code"),
+                "status_label": _status_label(v.get("status_code")),
+                "has_ad": bool(entry and entry.get("current_ad_text")),
+                "last_ad_date": entry.get("last_ad_date") if entry else None,
+            }
+        )
+    return render_template("inventory.html", rows=rows, snapshot_time=_fmt_snapshot_time(stamp))
+
+
+@app.get("/inventory/<stock_number>")
+def inventory_detail(stock_number: str):
+    if not session.get("authed"):
+        return render_template("login.html", error=request.args.get("error"))
+    stock = normalize_stock(stock_number)
+    vehicles, _stamp = _load_snapshot()
+    vehicle = next((v for v in vehicles if normalize_stock(v.get("stock_number")) == stock), None)
+    if vehicle is None:
+        abort(404)
+    vehicle = {**vehicle, "stock_number": stock}
+    data, notes = _inventory_detail_data(vehicle)
+    ad_entry = load_ad_history().get(stock)
+    ad_text = (ad_entry or {}).get("current_ad_text") or ""
+    ad_paras = [p.strip() for p in re.split(r"\n\s*\n", ad_text) if p.strip()]
+    return render_template(
+        "inventory_detail.html",
+        vehicle=vehicle,
+        status_label=_status_label(vehicle.get("status_code")),
+        data=data,
+        notes=notes,
+        ad_entry=ad_entry,
+        ad_paras=ad_paras,
+    )
+
+
+@app.get("/ctr")
+def ctr():
+    if not session.get("authed"):
+        return render_template("login.html", error=request.args.get("error"))
+    return render_template("ctr.html")
 
 
 @app.post("/generate")

@@ -1,0 +1,74 @@
+{% extends "layout.html" %}
+{% block title %}{{ vehicle.stock_number }} — Inventory — Mercedes-Benz of Durham{% endblock %}
+{% block content %}
+<div class="wrap-wide">
+  <div class="detail-head">
+    <div>
+      <h1 class="page-title">{{ vehicle.year_make_model or vehicle.stock_number }}</h1>
+      <p class="page-sub"><a href="/inventory">&larr; Inventory</a> &middot; Stock {{ vehicle.stock_number }}</p>
+    </div>
+    <span class="status-pill st-{{ vehicle.status_code }}">{{ status_label }}</span>
+  </div>
+
+  <div class="detail-grid">
+    <div><div class="k">Stock</div><div class="v">{{ vehicle.stock_number }}</div></div>
+    <div><div class="k">Trim</div><div class="v">{{ vehicle.trim or '—' }}</div></div>
+    <div><div class="k">Mileage</div><div class="v">{{ '{:,.0f} mi'.format(vehicle.mileage) if vehicle.mileage is not none else '—' }}</div></div>
+    <div><div class="k">VIN</div><div class="v">{{ vehicle.vin or '—' }}</div></div>
+    <div><div class="k">Price (list, no admin fee)</div><div class="v">{{ '${:,.0f}'.format(vehicle.current_price) if vehicle.current_price is not none else '—' }}</div></div>
+    <div><div class="k">Status</div><div class="v">{{ vehicle.status_code if vehicle.status_code is not none else '—' }} &middot; {{ status_label }}</div></div>
+    <div><div class="k">Age</div><div class="v" id="age-val" data-age="{{ vehicle.days_on_lot if vehicle.days_on_lot is not none else '' }}">{{ vehicle.days_on_lot if vehicle.days_on_lot is not none else '—' }}{{ ' days' if vehicle.days_on_lot is not none else '' }}</div></div>
+    {% if vehicle.exterior_color %}<div><div class="k">Exterior</div><div class="v">{{ vehicle.exterior_color }}</div></div>{% endif %}
+  </div>
+
+  {% if notes %}
+  <p class="page-sub">{% for n in notes %}{{ n }}{% if not loop.last %} &middot; {% endif %}{% endfor %}</p>
+  {% endif %}
+
+  <div class="dashboard detail-cards" id="detail-cards"></div>
+
+  {% if ad_entry and ad_paras %}
+  <div class="ad-block">
+    <h2>Cached ad</h2>
+    <div class="ad-meta">
+      {{ ad_entry.lifecycle_stage or 'active' }}
+      &middot; written {{ ad_entry.last_ad_date or '—' }}
+      &middot; {{ ad_entry.ad_count or 1 }} generation{{ '' if (ad_entry.ad_count or 1) == 1 else 's' }}
+      {% if ad_entry.last_price_at_write is not none %}&middot; list price at write {{ '${:,.0f}'.format(ad_entry.last_price_at_write) }}{% endif %}
+      {% if ad_entry.verification_verdict %}&middot; site check: {{ ad_entry.verification_verdict }}{% if ad_entry.match_score is not none %} ({{ ad_entry.match_score }}){% endif %}{% endif %}
+      &middot; <a href="/?stock={{ vehicle.stock_number }}">Open in Ad Writer</a>
+    </div>
+    {% for p in ad_paras %}<p>{{ p }}</p>{% endfor %}
+  </div>
+  {% else %}
+  <div class="ad-none">
+    No ad generated yet for this vehicle.
+    <a href="/?stock={{ vehicle.stock_number }}">Generate one in the Ad Writer &rarr;</a>
+  </div>
+  {% endif %}
+</div>
+
+<script id="detail-data" type="application/json">{{ data|tojson }}</script>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  "use strict";
+  var data = JSON.parse(document.getElementById("detail-data").textContent);
+
+  // Same card renderers the Ad Writer page uses (static/cards.js), fed from cached data.
+  var html =
+    (data.recon ? Cards.cardRecon(data.recon.included, data.recon.excluded)
+                : Cards.cardEmpty("Recon", "No recon cached")) +
+    (data.carfax ? Cards.cardCarfax(data.carfax)
+                 : Cards.cardEmpty("Carfax", "No Carfax cached")) +
+    Cards.cardSticker(data.sticker);
+  document.getElementById("detail-cards").innerHTML = html;
+
+  var age = document.getElementById("age-val");
+  var chip = age && Cards.daysChip(age.getAttribute("data-age"));
+  if (chip) age.innerHTML = chip;
+})();
+</script>
+{% endblock %}

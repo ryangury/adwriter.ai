@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Mercedes-Benz of Durham{% endblock %}</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='site.css', v=asset_v('site.css')) }}">
+{% block head %}{% endblock %}
+</head>
+<body>
+<div class="app">
+  {% set ep = request.endpoint %}
+  <nav class="sidebar" aria-label="Main navigation">
+    <div class="brand">Mercedes-Benz of Durham</div>
+    <a class="nav-link{{ ' active' if ep == 'home' }}" href="/">Ad Writer</a>
+    <a class="nav-link{{ ' active' if ep in ('inventory', 'inventory_detail') }}" href="/inventory">Inventory</a>
+    <a class="nav-link{{ ' active' if ep == 'ctr' }}" href="/ctr">Click Through Rate</a>
+    <a class="nav-signout" href="/logout">Sign out</a>
+  </nav>
+  <main class="content">
+{% block content %}{% endblock %}
+  </main>
+</div>
+<script src="{{ url_for('static', filename='cards.js', v=asset_v('cards.js')) }}"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>
