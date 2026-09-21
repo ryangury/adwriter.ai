@@ -40,6 +40,7 @@ from flask import Flask, abort, jsonify, redirect, render_template, request, sen
 from adwriter import (
     _generate_from_package,
     load_ad_history,
+    normalize_stock,
     record_ad,
     save_ad_history,
     source_status,
@@ -433,7 +434,7 @@ def logout():
 def generate():
     if not session.get("authed"):
         return redirect(url_for("home"))
-    stock_number = (request.form.get("stock_number") or "").strip().lstrip("#")
+    stock_number = normalize_stock(request.form.get("stock_number"))
     empty = {name: "failed" for name in _ALL_SOURCES}
     if not stock_number:
         return (
@@ -643,7 +644,7 @@ def save_ad():
         return jsonify({"saved": False, "error": "Not authenticated."}), 401
 
     data = request.get_json(silent=True) or {}
-    stock_number = (data.get("stock_number") or "").strip().lstrip("#")
+    stock_number = normalize_stock(data.get("stock_number"))
     ad_copy = data.get("ad_copy") or ""
     if not stock_number or not ad_copy:
         return (
@@ -687,7 +688,7 @@ def save_ad():
 def _ad_history_lookup(raw_stock: str | None) -> tuple[str, dict[str, Any] | None]:
     """Normalized stock number + its ad_history.json entry (or None if there's
     no entry, or it has never had `current_ad_text` set)."""
-    stock_number = (raw_stock or "").strip().lstrip("#")
+    stock_number = normalize_stock(raw_stock)
     if not stock_number:
         return stock_number, None
     entry = load_ad_history().get(stock_number)

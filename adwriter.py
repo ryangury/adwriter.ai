@@ -1660,6 +1660,16 @@ def _recon_has_includeable(recon: dict) -> bool:
     )
 
 
+def normalize_stock(stock: str | None) -> str:
+    """The one canonical form of a stock number — stripped, no leading '#',
+    UPPERCASE — used as the ad_history.json key everywhere. Stock numbers are
+    displayed and typed in uppercase throughout the UI; a key written in any
+    other case (e.g. a lowercase stock typed into the Flask box and saved as-is)
+    becomes a second, orphaned entry for the same vehicle that the orchestrator,
+    verifier and reprice/recon-update paths never see."""
+    return (stock or "").strip().lstrip("#").upper()
+
+
 def record_ad(
     history: dict,
     stock: str,
@@ -1673,7 +1683,9 @@ def record_ad(
     last_feedback: str | None = None,
 ) -> dict:
     """Write a freshly generated ad into `history` under the full schema. Bumps
-    ad_count and last_ad_date; sets first_ad_date on the first write."""
+    ad_count and last_ad_date; sets first_ad_date on the first write. The key
+    is always normalize_stock(stock), whatever case the caller passed."""
+    stock = normalize_stock(stock)
     today = today or date.today().isoformat()
     paras = split_ad_paragraphs(ad_text)
     entry = history.get(stock)
@@ -1755,7 +1767,7 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
     return the reconstructed four-paragraph ad. Updates ad_history.json in place
     (current_ad_text, paragraph_two, last_price_at_write, lifecycle_stage).
     """
-    stock = stock_number.strip().lstrip("#").upper()
+    stock = normalize_stock(stock_number)
     history = load_ad_history()
     entry = history.get(stock)
     if not entry:
@@ -1868,7 +1880,7 @@ def update_recon(stock_number: str) -> str:
       * includeable items    -> ask Claude to top up paragraph one, reconstruct
         the ad, persist it, and return it.
     """
-    stock = stock_number.strip().lstrip("#").upper()
+    stock = normalize_stock(stock_number)
     history = load_ad_history()
     entry = history.get(stock)
     if not entry:
@@ -2050,7 +2062,7 @@ def _lookup_vehicle_meta(stock_number: str) -> dict:
 def _classify_stock(stock_number: str) -> dict:
     """Run the pipeline for one stock number and bucket the outcome into a
     daily-report section (1-5). Never raises."""
-    stock = stock_number.strip().lstrip("#").upper()
+    stock = normalize_stock(stock_number)
     print(f"[adwriter] processing {stock} ...")
 
     try:
