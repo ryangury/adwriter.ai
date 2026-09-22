@@ -197,6 +197,7 @@
   }
 
   .adwrap { position: relative; }
+  .fb-body { position: relative; }
   .adwrap pre, .fb pre {
     white-space: pre-wrap;
     word-wrap: break-word;
@@ -232,7 +233,7 @@
     text-decoration: underline;
     cursor: pointer;
   }
-  .fb-body { margin-top: 10px; }
+  .fb-body { margin-top: 10px; padding-top: 32px; }
 
   .error-box {
     border: 1px solid var(--fail);
@@ -287,7 +288,7 @@
   <header>
     <div>
       <h1>Mercedes-Benz of Durham Ad Writer</h1>
-      <p>Enter a stock number to run the pipeline and draft a CPO ad.</p>
+      <p>Enter a stock number to run the pipeline and draft an ad.</p>
     </div>
   </header>
 
@@ -566,7 +567,9 @@
     if (!text) return "";
     return '<div class="section fb">' +
       '<button type="button" class="link-toggle" id="fb-toggle">Show AI thinking</button>' +
-      '<div class="fb-body" id="fb-body" hidden><pre>' + esc(text) + "</pre></div>" +
+      '<div class="fb-body" id="fb-body" hidden>' +
+      '<button type="button" class="copy-btn" id="copy-fb">Copy</button>' +
+      '<pre id="fb-text">' + esc(text) + "</pre></div>" +
       "</div>";
   }
 
@@ -585,7 +588,27 @@
     var copyBtn = document.getElementById("copy-ad");
     if (!copyBtn) return;
     copyBtn.addEventListener("click", function () {
-      var t = document.getElementById("ad-text").innerText;
+      var t = document.getElementById("ad-text").textContent;
+      var done = function () {
+        copyBtn.textContent = "Copied";
+        setTimeout(function () { copyBtn.textContent = "Copy"; }, 1600);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(t).then(done, done);
+      } else {
+        var ta = document.createElement("textarea");
+        ta.value = t; document.body.appendChild(ta); ta.select();
+        try { document.execCommand("copy"); } catch (e) {}
+        document.body.removeChild(ta); done();
+      }
+    });
+  }
+
+  function wireFeedbackCopyButton() {
+    var copyBtn = document.getElementById("copy-fb");
+    if (!copyBtn) return;
+    copyBtn.addEventListener("click", function () {
+      var t = document.getElementById("fb-text").textContent;
       var done = function () {
         copyBtn.textContent = "Copied";
         setTimeout(function () { copyBtn.textContent = "Copy"; }, 1600);
@@ -616,6 +639,7 @@
     results.innerHTML = html;
     wireCopyButton();
     wireFeedbackToggle();
+    wireFeedbackCopyButton();
     wireSaveDiscard();
   }
 
@@ -646,6 +670,7 @@
     results.innerHTML = html;
     wireCopyButton();
     wireFeedbackToggle();
+    wireFeedbackCopyButton();
 
     var regenBtn = document.getElementById("regen-btn");
     if (regenBtn) {
