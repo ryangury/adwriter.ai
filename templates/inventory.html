@@ -14,6 +14,10 @@
     No inventory snapshot found. It is written by each orchestrator run.
   </div></div>
   {% else %}
+  <div class="inv-search">
+    <input type="text" id="inv-search-input" placeholder="Search by stock number…" autocomplete="off">
+    <span class="inv-search-count" id="inv-search-count"></span>
+  </div>
   <div class="inv-wrap">
     <table class="inv-table" id="inv-table">
       <thead>
@@ -26,6 +30,8 @@
           <th class="sortable num" data-sort="age">Age</th>
           <th class="sortable" data-sort="status">Status</th>
           <th class="has-ad">Has Ad</th>
+          <th class="check-col">Posted</th>
+          <th class="check-col">Price Accurate</th>
         </tr>
       </thead>
       <tbody>

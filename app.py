@@ -451,6 +451,21 @@ def _status_label(code: Any) -> str:
     return _STATUS_LABELS.get(code, f"Status {code}")
 
 
+# verifier.compare_ad()'s match_score is a composite of several signals (VIN,
+# mileage, proof-point dollar figure, a package name, paragraph-one opener) —
+# not a price-specific check. This is a first-pass proxy, not a real price
+# check: see /inventory route notes on isolating price as its own signal.
+_PRICE_ACCURATE_MATCH_SCORE_THRESHOLD = 80
+
+
+def _price_accurate(match_score: Any) -> bool | None:
+    """True/False from verifier's composite match_score, or None if this
+    stock has never been checked (score unknown, not "inaccurate")."""
+    if match_score is None:
+        return None
+    return match_score >= _PRICE_ACCURATE_MATCH_SCORE_THRESHOLD
+
+
 @app.context_processor
 def _asset_helpers() -> dict[str, Any]:
     """asset_v('site.css') -> the file's mtime, appended to static URLs so a
@@ -564,6 +579,10 @@ def inventory():
                 "status_label": _status_label(v.get("status_code")),
                 "has_ad": bool(entry and entry.get("current_ad_text")),
                 "last_ad_date": entry.get("last_ad_date") if entry else None,
+                "posted": entry.get("verification_verdict") is not None if entry else False,  # has verification ever run against this stock
+                "verdict": entry.get("verification_verdict") if entry else None,  # "current", "outdated", "not_posted", "not_found"
+                "match_score": entry.get("match_score") if entry else None,
+                "price_accurate": _price_accurate(entry.get("match_score") if entry else None),
             }
         )
     return render_template("inventory.html", rows=rows, snapshot_time=_fmt_snapshot_time(stamp))
