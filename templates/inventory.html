@@ -50,6 +50,12 @@
           <td class="has-ad" title="{{ ('Last ad ' ~ r.last_ad_date) if r.last_ad_date else 'No ad on file' }}">
             {% if r.has_ad %}<span class="has-ad-yes">&#10003;</span>{% else %}<span class="has-ad-no">&ndash;</span>{% endif %}
           </td>
+          <td class="check-col" title="{{ ('Verdict: ' ~ r.verdict) if r.verdict else 'Never verified against the live site' }}">
+            {% if r.posted %}<span class="has-ad-yes">&#10003;</span>{% else %}<span class="has-ad-no">&ndash;</span>{% endif %}
+          </td>
+          <td class="check-col" title="{{ ('Match score: ' ~ r.match_score) if r.match_score is not none else 'Never verified against the live site' }}">
+            {% if r.price_accurate is sameas true %}<span class="has-ad-yes">&#10003;</span>{% elif r.price_accurate is sameas false %}<span class="has-ad-fail">&#10007;</span>{% else %}<span class="has-ad-no">&ndash;</span>{% endif %}
+          </td>
         </tr>
         {% endfor %}
       </tbody>
@@ -66,6 +72,29 @@
   var table = document.getElementById("inv-table");
   if (!table) return;
   var tbody = table.tBodies[0];
+  var totalRows = tbody.rows.length;
+
+  // Live search by stock number — no reload, filters via style.display so
+  // sort (below) still reorders every row correctly by its data-* attributes
+  // regardless of which rows are currently hidden by a search.
+  var searchInput = document.getElementById("inv-search-input");
+  var searchCount = document.getElementById("inv-search-count");
+  function applySearch() {
+    var q = (searchInput.value || "").trim().toUpperCase();
+    var visible = 0;
+    Array.prototype.forEach.call(tbody.rows, function (tr) {
+      var stock = (tr.cells[0].textContent || "").toUpperCase();
+      var match = !q || stock.indexOf(q) !== -1;
+      tr.style.display = match ? "" : "none";
+      if (match) visible++;
+    });
+    searchCount.textContent = q
+      ? visible + " of " + totalRows + " match" + (visible === 1 ? "" : "es")
+      : "";
+  }
+  if (searchInput) {
+    searchInput.addEventListener("input", applySearch);
+  }
 
   // Age cells reuse the same day-bucket chip as the Ad Writer's market-data card.
   Array.prototype.forEach.call(tbody.querySelectorAll("[data-age-cell]"), function (td) {

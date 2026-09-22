@@ -187,9 +187,10 @@
 .inv-table tbody tr:hover { background: var(--card); }
 .inv-table td.num, .inv-table th.num { text-align: right; }
 .inv-table td a { color: var(--accent); font-weight: 600; text-decoration: none; }
-.inv-table td.has-ad { text-align: center; }
+.inv-table td.has-ad, .inv-table td.check-col { text-align: center; }
 .has-ad-yes { color: var(--ok); font-weight: 700; }
 .has-ad-no { color: var(--muted); }
+.has-ad-fail { color: var(--fail); font-weight: 700; }
 .status-pill {
   display: inline-block;
   font-size: 0.72rem;
