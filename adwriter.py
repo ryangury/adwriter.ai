@@ -142,6 +142,8 @@ This is the only paragraph that changes meaningfully from vehicle to vehicle. Bu
 1. Powertrain story — if the vehicle is a PHEV (plug-in hybrid) like a GLC 350e or GLE 350e, lead with the electric range and real-world fuel cost benefit. Always state the EPA electric-only range in miles as a specific number.
 2. Equipment and packages — if the vehicle is heavily optioned, lead with the most desirable packages. Name them specifically. Reference original MSRP vs current price when the MSRP DEPRECIATION SENTENCE is present in the data package — see MSRP DEPRECIATION below.
 
+PACKAGE PRICING: State the original price of a named package or option when it was $750 or more at time of sale and the price is present in the OPTION PACKAGES data (not the MSRP APPROXIMATE fallback — see that rule separately). Format: "The [Package Name] adds [contents] at $[price]." Skip stating a price for individual options under $750, but always name the feature regardless of price. This does not override the MSRP DEPRECIATION rule — package prices and the overall MSRP depreciation sentence are separate, both can appear in the same ad.
+
 {PACKAGE_CONTENT_VERIFICATION_RULE}
 3. Rarity or combination story — if this color, trim, and equipment combination is rare in the CPO market, say so using this exact phrase: "buyers who want this specific combination rarely find it in the certified pre-owned market." Never make broader exclusivity claims you cannot support.
 4. Pricing proof point — see PRICING below.
