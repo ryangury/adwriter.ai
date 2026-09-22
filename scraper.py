@@ -4334,7 +4334,7 @@ class ReconVisionScraper(_BrowserSession):
             return False
         if _exists(self.page, "rv_signin_form_marker", timeout_ms=2_000):
             return False
-        return _exists(self.page, "rv_home_marker", timeout_ms=8_000)
+        return _exists(self.page, "rv_home_marker", timeout_ms=15_000)
 
     def login(self, *, force: bool = False) -> None:
         assert self.page is not None
@@ -4352,6 +4352,28 @@ class ReconVisionScraper(_BrowserSession):
 
         print(f"[scraper] ReconVision login (step 1: username) at {RECONVISION_SIGNIN_URL}")
         self.page.goto(RECONVISION_SIGNIN_URL, wait_until="domcontentloaded")
+
+        # ReconVision can render its own dashboard behind /user/sign_in instead of
+        # the login form when the session cookie is actually still valid — this
+        # happens whenever is_logged_in() gave a false negative (e.g. a slow page
+        # load ate its timeout) and login() proceeded here anyway. The URL still
+        # says sign_in, but the DOM is the dashboard with a "You are already
+        # signed in." banner and no credential fields at all — confirmed live
+        # 2026-09-21 (scraper_debug/20260921-110201-reconvision-login-step1.png).
+        # Detect that and treat it as a successful, already-authenticated login
+        # instead of trying (and failing) to fill in fields that don't exist.
+        try:
+            already_dashboard = "dashboard" in (self.page.title() or "").lower()
+        except Exception:  # noqa: BLE001 - title() during a mid-navigation page is best-effort
+            already_dashboard = False
+        if already_dashboard or _exists(self.page, "rv_home_marker", timeout_ms=2_000):
+            print(
+                "[scraper] ReconVision redirected straight to dashboard — already "
+                "authenticated, skipping login form"
+            )
+            self._save_session()
+            return
+
         try:
             _first_visible(self.page, "rv_username", self.timeout_ms).fill(username)
             _first_visible(self.page, "rv_next", self.timeout_ms).click()
