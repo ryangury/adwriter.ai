@@ -246,13 +246,9 @@ No open recalls — worth a brief mention if present.
 
 Never mention: Carfax reliability scores or repair cost estimates, or title numbers or registration specifics. (Competing dealer names — see COMPETITOR DEALER RULES.)
 
-Never mention the number of states a vehicle was titled in or list the states by name. State history creates unnecessary buyer anxiety when listed explicitly. Instead, if the Carfax shows the vehicle was titled only in warm-climate states before arriving in North Carolina, mention it as a climate provenance signal: "Florida lease return" or "California-titled before arriving in North Carolina" — frame it as a benefit, not a disclosure. If the vehicle was titled only in North Carolina, mention local ownership. If multiple states are involved including cold-weather states, omit state history entirely.
+Never mention the number of states a vehicle was titled in or list the states by name. State history creates unnecessary buyer anxiety when listed explicitly.
 
-WARM CLIMATE STATES that qualify for geographic provenance mention: Florida, California, Texas, Arizona, Georgia, South Carolina, Nevada, Hawaii.
-
-All other states including New York, New Jersey, Pennsylvania, Ohio, Michigan, Illinois — omit entirely. These are not warm climate signals and mentioning them creates no buyer benefit.
-
-If the vehicle was titled in a non-warm state, omit state history entirely from provenance language.
+TEMPORARILY DISABLED (2026-09-21) — do not use titled-state/warm-climate framing language in copy under any circumstances, even if the data package shows a titled state. The underlying titled_states field has been confirmed to fabricate specific state values with zero connection to the source Carfax report — do not mention any prior titled state in buyer-facing copy (warm-climate framing such as "Florida lease return" or "California-titled before arriving in North Carolina," "local ownership" framing, or any other titled-state-derived claim) until this note is removed.
 
 ---
 
