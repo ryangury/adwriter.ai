@@ -469,12 +469,24 @@ def _filter_recon(line_items: list[dict[str, Any]], status_code: int = 10) -> di
         )
         kept.append(brake_li)
 
+    # The three "minor" categories (wiper blades, air filter, oil change) are
+    # checked sequentially below, and each one only looks at what's already
+    # in `kept` at that exact moment — none of them adds itself first, so if
+    # a vehicle has ONLY these three minor items (no tires/service/brakes),
+    # every one of them saw an empty `kept` and excluded itself, even though
+    # three minor items together is not "mentioned alone." Pre-compute
+    # whether 2+ minor signals are present as a group, so they can validate
+    # each other regardless of check order.
+    minor_signal_count = sum([wiper_any, air_filter_any, oil_change_any])
+    minor_signals_qualify = minor_signal_count >= 2
+
     # Wiper blades: include only alongside at least one other positive signal;
     # never on their own.
     wiper_blades_replaced = False
     if wiper_any:
         other_includeable = bool(
-            kept or all_tires_replaced or scheduled_service_done or brake_service_done
+            kept or all_tires_replaced or scheduled_service_done
+            or brake_service_done or minor_signals_qualify
         )
         if other_includeable:
             wiper_blades_replaced = True
@@ -505,7 +517,8 @@ def _filter_recon(line_items: list[dict[str, Any]], status_code: int = 10) -> di
     air_filter_replaced = False
     if air_filter_any:
         other_includeable = bool(
-            kept or all_tires_replaced or scheduled_service_done or brake_service_done
+            kept or all_tires_replaced or scheduled_service_done
+            or brake_service_done or minor_signals_qualify
         )
         if other_includeable:
             air_filter_replaced = True
@@ -532,7 +545,8 @@ def _filter_recon(line_items: list[dict[str, Any]], status_code: int = 10) -> di
     oil_change_done = False
     if oil_change_any:
         other_includeable = bool(
-            kept or all_tires_replaced or scheduled_service_done or brake_service_done
+            kept or all_tires_replaced or scheduled_service_done
+            or brake_service_done or minor_signals_qualify
         )
         if other_includeable:
             oil_change_done = True
@@ -1899,22 +1913,42 @@ def build_recon_sentence(
         desc = items[0].get("description") if items else None
         components.append(_lower_first(desc) if desc else f"spark plugs replaced {suffix}")
 
+    # Same "needs company" rule _filter_recon() enforces on wiper/air-filter/
+    # oil-change (see its minor_signals_qualify comment): this is meant to be
+    # a redundant belt-and-suspenders check on that already-correct gate, not
+    # an independent, stricter one. Before the fix below, requiring `components`
+    # to already be non-empty made this check STRICTER than _filter_recon()'s —
+    # a vehicle with only these three minor items (no tires/service/brakes)
+    # would have all three correctly flagged True by _filter_recon(), then
+    # silently produce no sentence at all here, since none of steps 5-7 ever
+    # added the first component for the others to find.
+    minor_signals_qualify = (
+        sum(
+            [
+                bool(recon_data.get("wiper_blades_replaced")),
+                bool(recon_data.get("air_filter_replaced")),
+                bool(recon_data.get("oil_change_done")),
+            ]
+        )
+        >= 2
+    )
+
     # 5. AIR FILTER — only alongside another item. _filter_recon() already
     # enforces this on its own; the `components` check here is redundant
     # belt-and-suspenders, not the primary gate.
-    if recon_data.get("air_filter_replaced") and components:
+    if recon_data.get("air_filter_replaced") and (components or minor_signals_qualify):
         items = by_reason.get("air_filter") or []
         desc = items[0].get("description") if items else None
         components.append(_lower_first(desc) if desc else f"air filter replaced {suffix}")
 
     # 6. WIPER BLADES — same rule as air filter.
-    if recon_data.get("wiper_blades_replaced") and components:
+    if recon_data.get("wiper_blades_replaced") and (components or minor_signals_qualify):
         items = by_reason.get("wiper_blades") or []
         desc = items[0].get("description") if items else None
         components.append(_lower_first(desc) if desc else f"wiper blades replaced {suffix}")
 
     # 7. OIL CHANGE — same rule as air filter and wiper blades.
-    if recon_data.get("oil_change_done") and components:
+    if recon_data.get("oil_change_done") and (components or minor_signals_qualify):
         items = by_reason.get("oil_change") or []
         desc = items[0].get("description") if items else None
         components.append(_lower_first(desc) if desc else f"oil and filter changed {suffix}")
