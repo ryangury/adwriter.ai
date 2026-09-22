@@ -2636,13 +2636,21 @@ def _shipping_trigger_flags(
     year_make_model: str | None,
 ) -> bool:
     """Shared status 11/13 trigger check: enthusiast make, manual
-    transmission, tight regional scarcity, price above $60k, or an
+    transmission, genuine nationwide scarcity, price above $60k, or an
     aggressively-priced-vs-market gap."""
     words = (year_make_model or "").split()
     make = words[1].lower() if len(words) > 1 else ""
     is_enthusiast = make in _ENTHUSIAST_MAKES
     has_manual = "manual" in str(pricing_raw.get("transmission", "")).lower()
     matching_count = pricing_raw.get("matching_count", 999)
+    # A thin comp count only signals genuine national scarcity when the
+    # search that produced it actually went nationwide — the same fix
+    # applied to the velocity-anchor scarcity sentence earlier. A vehicle
+    # with 9 matches within a 750-mile regional search says nothing about
+    # national rarity; a wider search could easily turn up 50 more.
+    search_distance = pricing_raw.get("search_distance")
+    market_scope = _get_market_scope(search_distance)
+    tight_national_scarcity = matching_count < 10 and market_scope == "nationwide"
     price_above_60k = advertised_price is not None and advertised_price > 60000
 
     proof_points = pricing_raw.get("pricing_proof_points") or []
@@ -2657,7 +2665,7 @@ def _shipping_trigger_flags(
     return (
         is_enthusiast
         or has_manual
-        or matching_count < 10
+        or tight_national_scarcity
         or price_above_60k
         or aggressively_priced
     )
