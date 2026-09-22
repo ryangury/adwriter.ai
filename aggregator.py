@@ -1303,6 +1303,96 @@ def _set_owner_count(
         carfax_raw["number_of_owners"] = vision_count  # fallback: no pattern matched
 
 
+# Real US state names/abbreviations — used only to validate a titled-state
+# candidate string before accepting it (see _titled_states_from_raw_text()).
+# A multi-owner Carfax report's "Owned in the following states/provinces" row
+# is one column per owner, tab/newline-separated; the earliest owner's column
+# is often the literal placeholder text "See Details" rather than a state, and
+# a naive extraction can grab that instead of a real state name.
+_US_STATE_ABBR = {
+    "Alabama": "AL", "Alaska": "AK", "Arizona": "AZ", "Arkansas": "AR", "California": "CA",
+    "Colorado": "CO", "Connecticut": "CT", "Delaware": "DE", "Florida": "FL", "Georgia": "GA",
+    "Hawaii": "HI", "Idaho": "ID", "Illinois": "IL", "Indiana": "IN", "Iowa": "IA",
+    "Kansas": "KS", "Kentucky": "KY", "Louisiana": "LA", "Maine": "ME", "Maryland": "MD",
+    "Massachusetts": "MA", "Michigan": "MI", "Minnesota": "MN", "Mississippi": "MS",
+    "Missouri": "MO", "Montana": "MT", "Nebraska": "NE", "Nevada": "NV", "New Hampshire": "NH",
+    "New Jersey": "NJ", "New Mexico": "NM", "New York": "NY", "North Carolina": "NC",
+    "North Dakota": "ND", "Ohio": "OH", "Oklahoma": "OK", "Oregon": "OR", "Pennsylvania": "PA",
+    "Rhode Island": "RI", "South Carolina": "SC", "South Dakota": "SD", "Tennessee": "TN",
+    "Texas": "TX", "Utah": "UT", "Vermont": "VT", "Virginia": "VA", "Washington": "WA",
+    "West Virginia": "WV", "Wisconsin": "WI", "Wyoming": "WY", "District of Columbia": "DC",
+}
+_US_STATE_VALID_NAMES = {k.upper() for k in _US_STATE_ABBR} | set(_US_STATE_ABBR.values())
+
+
+def _is_us_state(candidate: str | None) -> bool:
+    """True if `candidate` is a real US state name or abbreviation (case-
+    insensitive) — rejects placeholder table text like 'See Details' that a
+    naive extraction could otherwise mistake for a state."""
+    c = (candidate or "").strip()
+    return bool(c) and c.upper() in _US_STATE_VALID_NAMES
+
+
+def _titled_states_from_raw_text(raw_text: str | None) -> list[str] | None:
+    """Deterministic titled-states extraction from the report's own
+    'Owned in the following states/provinces' table row, or 'Last Owned in
+    X' summary line. Vision's 'titled_states' field has been confirmed to
+    fabricate state values with zero textual basis (a CA claim on a report
+    that explicitly says 'Last Owned in North Carolina' twice, with no CA
+    mention anywhere) — this is the source of truth going forward, vision
+    is fallback only when no pattern matches.
+
+    The 'Owned in...' row can be single-owner (one state, or several
+    comma-separated on one line) or multi-owner (one column per owner,
+    separated by tab/newline runs, where an early owner's column is often
+    literal placeholder text rather than a state — see _US_STATE_ABBR's
+    comment). Every candidate token is validated against a real US state
+    list before being accepted, and the match window is widened to the row's
+    actual boundary (the next 'Estimated miles driven per year' label) so a
+    multi-column row isn't truncated at its first token."""
+    if not raw_text:
+        return None
+    m = re.search(
+        r"Owned in the following states?/provinces?\s*\n?\s*(.+?)(?=\n\s*\n\s*Estimated)",
+        raw_text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if m:
+        candidates = re.split(r"[,\t\n]+", m.group(1))
+        states: list[str] = []
+        seen: set[str] = set()
+        for c in candidates:
+            c = c.strip()
+            if _is_us_state(c) and c.upper() not in seen:
+                seen.add(c.upper())
+                states.append(c)
+        if states:
+            return states
+    m = re.search(r"Last Owned in\s+([A-Za-z\s]+?)(?:\.|$|\n)", raw_text, re.IGNORECASE)
+    if m and _is_us_state(m.group(1).strip()):
+        return [m.group(1).strip()]
+    return None
+
+
+def _set_titled_states(
+    carfax_raw: dict[str, Any], vision_states: list[str] | None, vin: str | None
+) -> None:
+    """Set carfax_raw["titled_states"]: the text-pattern result when the raw
+    text has one (logging any disagreement with vision), else vision's
+    result, else whatever value the text parser already left there."""
+    deterministic_states = _titled_states_from_raw_text(carfax_raw.get("raw_text"))
+    if deterministic_states is not None:
+        if vision_states is not None and vision_states != deterministic_states:
+            print(
+                f"[carfax] titled_states disagreement for {vin}: vision said "
+                f"{vision_states}, text pattern says {deterministic_states} — "
+                f"using text pattern"
+            )
+        carfax_raw["titled_states"] = deterministic_states
+    elif vision_states is not None:
+        carfax_raw["titled_states"] = vision_states  # fallback: no pattern matched
+
+
 def _apply_carfax_vision(
     carfax_raw: dict[str, Any], vin: str | None
 ) -> dict[str, Any]:
@@ -1324,12 +1414,14 @@ def _apply_carfax_vision(
     image_path = carfax_raw.get("carfax_image_path")
     if not image_path:
         _set_owner_count(carfax_raw, None, vin)
+        _set_titled_states(carfax_raw, None, vin)
         carfax_raw.setdefault("carfax_parse_source", "text_regex")
         return carfax_raw
 
     vjson = parse_carfax_image(image_path, vin)
     if vjson is None:
         _set_owner_count(carfax_raw, None, vin)
+        _set_titled_states(carfax_raw, None, vin)
         carfax_raw.setdefault("carfax_parse_source", "text_regex")
         return carfax_raw
 
@@ -1368,8 +1460,8 @@ def _apply_carfax_vision(
     # non-MB vehicle regardless of how good that vehicle's service history was.
     if "all_service_authorized_dealer" in vjson:
         carfax_raw["all_service_mercedes_benz"] = bool(vjson["all_service_authorized_dealer"])
-    if vjson.get("geographic_states"):
-        carfax_raw["titled_states"] = vjson["geographic_states"]
+    # Titled states: deterministic text pattern first, vision only as a fallback.
+    _set_titled_states(carfax_raw, vjson.get("geographic_states"), vin)
     if vjson.get("annual_mileage") is not None:
         carfax_raw["miles_per_year"] = vjson["annual_mileage"]
     if vjson.get("service_record_count") is not None:

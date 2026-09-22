@@ -183,6 +183,9 @@ def _load_image_bytes(image_bytes_or_path: bytes | str | Path) -> bytes | None:
 
 CARFAX_VISION_PROMPT = """\
 This is a CARFAX vehicle history report. Extract and return ONLY a JSON object with these exact fields:
+
+For every field in this schema: if the report does not explicitly state a value, return null or an empty value for that field. Never infer, estimate, or fill in a plausible-sounding answer based on general knowledge, similar vehicles, or partial evidence. A wrong guess is worse than an honest "not found" — a null value can be corrected, a confident wrong answer usually isn't caught. This applies especially to any field describing dates, locations, counts, or specific technical content, where a plausible-sounding wrong answer could produce a real business or legal problem downstream.
+
 {
   'owners': integer,  # Read this number directly from the report's own
                        # summary — either the "CARFAX 1-Owner Vehicle" badge
@@ -234,6 +237,7 @@ This is a CARFAX vehicle history report. Extract and return ONLY a JSON object w
   'low_mileage': boolean
 }
 For 'structural_damage': read the report's actual Structural Damage verdict line ("No Issues Reported" -> false, "Issues Reported" -> true). The report also prints "Structural Damage" once more, elsewhere, as a plain legend/glossary heading with no verdict attached (usually in a pipe-separated list of damage-brand terms) — that occurrence names no finding and must not be read as true. Only the line stating an actual verdict for this vehicle counts.
+For 'geographic_states': read this only from the report's own explicit statements — the "Owned in the following states/provinces" table row, or a "Last Owned in X" summary line. Do not infer a state from indirect signals (a dealer's location in the service history, a phone area code, an emissions certification type, or any other secondary evidence). If the report does not explicitly name a titled state, return an empty list — do not guess, and do not default to a plausible-sounding state. A specific wrong state is a specific factual claim about this vehicle's history that can end up in buyer-facing copy.
 Return only valid JSON. No explanation, no markdown, no code blocks."""
 
 STICKER_VISION_PROMPT = """\
