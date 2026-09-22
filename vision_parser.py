@@ -219,7 +219,15 @@ This is a CARFAX vehicle history report. Extract and return ONLY a JSON object w
   'title_brands': array of strings (empty array if none),
   'airbag_deployed': boolean,
   'structural_damage': boolean,
-  'all_service_authorized_dealer': boolean,
+  'all_service_authorized_dealer': boolean,  # True only if every service record
+                       # in the history was performed at a dealer of THIS
+                       # vehicle's own brand (read the make from the report's own
+                       # vehicle description at the top — e.g. a Honda's service
+                       # history must show authorized Honda dealers, not any
+                       # dealer in general, and never assume Mercedes-Benz).
+                       # False if any service was at an independent shop, a
+                       # different brand's dealer, or if service history is
+                       # absent/unclear.
   'geographic_states': array of state abbreviations where titled,
   'annual_mileage': integer or null,
   'service_record_count': integer or null,

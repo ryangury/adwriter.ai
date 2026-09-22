@@ -1605,6 +1605,7 @@ def build_carfax_sentence(
     carfax_data: dict[str, Any] | None,
     status_code: int | None,
     provenance_sentence: str | None = None,
+    make: str | None = None,
 ) -> str | None:
     """Pre-written sentence for paragraph one sentence three, built from
     Carfax accident/service/mileage signals. Returns None when the sentence
@@ -1624,6 +1625,10 @@ def build_carfax_sentence(
     "annual_mileage", "titled_states" not "geographic_states". "accident_count"
     is only present when the vision parser ran (see _apply_carfax_vision) —
     the text-regex parser only ever produces the "no_accidents" boolean.
+
+    `make` (the vehicle's own make, e.g. from _make_from_ymm()) drives the
+    authorized-dealer phrase below — never hardcoded to Mercedes-Benz, since
+    this function runs for every tier, not just MB CPO.
     """
     if status_code == 16:
         return None
@@ -1640,6 +1645,8 @@ def build_carfax_sentence(
     provenance_has_clean_history = "clean vehicle history" in str(provenance_sentence or "").lower()
     all_service_mb = cf.get("all_service_mercedes_benz", False)
     miles_per_year = cf.get("miles_per_year") or 0
+    make_label = make.strip() if make else "the manufacturer's"
+    dealer_phrase = f"authorized {make_label} dealers" if make else "authorized dealers"
 
     if no_accidents:
         if provenance_has_clean_history:
@@ -1650,7 +1657,7 @@ def build_carfax_sentence(
             additional_signals = []
             if all_service_mb:
                 additional_signals.append(
-                    "all service performed at authorized Mercedes-Benz dealers"
+                    f"all service performed at {dealer_phrase}"
                 )
             if miles_per_year and miles_per_year < 10000:
                 additional_signals.append(
@@ -1669,14 +1676,14 @@ def build_carfax_sentence(
             if all_service_mb:
                 base = (
                     "Clean vehicle history, with all service performed at "
-                    "authorized Mercedes-Benz dealers."
+                    f"{dealer_phrase}."
                 )
         else:
             base = "Clean vehicle history confirmed by Carfax."
             if all_service_mb:
                 base = (
                     "Clean vehicle history confirmed by Carfax, with all service "
-                    "performed at authorized Mercedes-Benz dealers."
+                    f"performed at {dealer_phrase}."
                 )
     else:
         # Title brands / airbag deployment are disqualifying events handled
@@ -3765,6 +3772,7 @@ def aggregate(
             carfax_raw,
             pricing_raw.get("status_code"),
             provenance_sentence=provenance_sentence,
+            make=make,
         ),
         "recon_sentence": build_recon_sentence(
             recon_block, pricing_raw.get("status_code"), pricing_raw.get("mileage")
