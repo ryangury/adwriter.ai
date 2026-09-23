@@ -285,7 +285,7 @@ STICKER_TOTAL_LABELS = (SEC_TOTAL, "TOTAL PREDICTED PRICE", "TOTAL PRICE")
 _CHROME_LINES = {"Single Page", "Multi Page", "Text Only", ""}
 
 _MONEY_LINE = re.compile(r"^\$?\s*[\d,]+(?:\.\d{2})?$")
-_OPTION_LINE = re.compile(r"^([0-9A-Z]{2,4})\s+-\s+(.+)$")
+_OPTION_LINE = re.compile(r"^([0-9A-Z]{2,6})\s+-\s+(.+)$")
 _VIN_RE = re.compile(r"[A-HJ-NPR-Z0-9]{11,17}")
 
 # Mercedes-Benz VIN manufacturer/make prefixes. W1 and WDx are MB's German

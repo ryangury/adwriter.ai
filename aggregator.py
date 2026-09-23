@@ -884,10 +884,29 @@ def _packages_with_sub_items(
     return grouped, standalone
 
 
+PREDICTIVE_STICKER_SOURCE = "autoipacket_predictive"
+
+
+def _is_predictive_sticker(ap: dict[str, Any] | None) -> bool:
+    """True for AutoiPacket's predictive build (watermarked PREDICTIVE DATA,
+    totalled as TOTAL PREDICTED PRICE) rather than a manufacturer sticker.
+    The pull result carries no flag for it and its `source` names only the
+    iPacket path that answered, so the sticker's own text decides."""
+    if not ap:
+        return False
+    if ap.get("source") == PREDICTIVE_STICKER_SOURCE:
+        return True
+    text = (ap.get("raw_text") or "").upper()
+    return "TOTAL PREDICTED PRICE" in text or "PREDICTIVE DATA" in text
+
+
 def _sticker_source(ap: dict[str, Any]) -> str:
     """The tier that answered a window-sticker pull (rarity_db_cache /
-    ipacket_browse / ipacket_stickerpull / carfax_sticker_link); falls back to
-    the render kind for older/simple returns."""
+    ipacket_browse / ipacket_stickerpull / carfax_sticker_link), or
+    autoipacket_predictive for a predictive build whichever tier answered;
+    falls back to the render kind for older/simple returns."""
+    if _is_predictive_sticker(ap):
+        return PREDICTIVE_STICKER_SOURCE
     return ap.get("source") or {
         "html": "autoipacket_html",
         "pdf": "autoipacket_pdf",
@@ -3917,6 +3936,16 @@ def aggregate(
         )
         return gate_failure
 
+    # Predictive (AutoiPacket-estimated) sticker: flagged for the prompts, and
+    # no MSRP depreciation sentence is built from its estimated total. A cache
+    # hit's stored JSON keeps the pull's own source, so the cached row's
+    # window_sticker_source is checked too.
+    sticker_is_predictive = _is_predictive_sticker(msrp_raw) or bool(
+        vin
+        and sticker_status == "cache_hit"
+        and (get_vehicle(vin) or {}).get("window_sticker_source") == PREDICTIVE_STICKER_SOURCE
+    )
+
     recon_block = (
         dict(_EMPTY_RECON)
         if skip_recon
@@ -3952,6 +3981,7 @@ def aggregate(
             **_resolve_colors(pricing_raw, msrp_data, msrp_raw),
         },
         "msrp_data": msrp_data,
+        "sticker_is_predictive": sticker_is_predictive,
         "pricing": _pricing(
             pricing_raw.get("pricing_proof_points", []),
             pricing_raw.get("current_internet_price"),
@@ -3974,7 +4004,7 @@ def aggregate(
         ),
         "proof_point_sentence": proof_point_sentence,
         "proof_point_type": proof_point_type,
-        "msrp_sentence": build_msrp_sentence(
+        "msrp_sentence": None if sticker_is_predictive else build_msrp_sentence(
             (msrp_data or {}).get("total_msrp"),
             _advertised_price(pricing_raw),
             pricing_raw.get("status_code"),

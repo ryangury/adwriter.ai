@@ -40,6 +40,7 @@ from scraper import ReconVisionScraper, ScraperError
 from shared_prompt_constants import (
     API_FEEDBACK_BLOCK,
     PACKAGE_CONTENT_VERIFICATION_RULE,
+    PREDICTIVE_STICKER_RULE,
     RECON_FALLBACK_RULE,
     STORE_CLOSER_PARAGRAPH,
 )
@@ -158,6 +159,8 @@ Never list the same feature or package content twice in paragraph two, even if i
 MSRP UNAVAILABLE RULE: When the data package shows MSRP as unavailable with no package data at all, omit the MSRP anchor sentence entirely. Do not estimate or fabricate an MSRP. Lead with equipment and proof point instead.
 
 MSRP APPROXIMATE RULE: When msrp_note indicates approximate pricing, mention package names and contents but do not state specific dollar amounts for packages — the prices are approximate and may not reflect the original window sticker. State original MSRP is unavailable for this vehicle.
+
+{PREDICTIVE_STICKER_RULE}
 
 MSRP DEPRECIATION: If MSRP DEPRECIATION SENTENCE is present in the data package, include it verbatim in paragraph two immediately before the proof point sentence. If it shows (omit), skip it entirely. Do not apply any threshold or age gate yourself — those decisions are pre-made by the data pipeline.
 
@@ -1157,6 +1160,11 @@ def format_data_package(pkg: dict) -> tuple[str, list[dict]]:
     lines.append(f"Advertised Price: {_usd(v.get('advertised_price'))} (used in ad copy)")
 
     lines.append("")
+    lines.append(
+        "STICKER_IS_PREDICTIVE: "
+        + ("true" if pkg.get("sticker_is_predictive") else "false")
+        + "  (true = AutoiPacket estimated build, not a manufacturer sticker)"
+    )
     msrp_source = msrp.get("source")
     if msrp_source == "acvmax_options_tab":
         lines.append("=" * 48)

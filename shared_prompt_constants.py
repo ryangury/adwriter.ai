@@ -123,3 +123,17 @@ RECON_FALLBACK_RULE = (
     "package and is not null, include it verbatim as the closing sentence of "
     "paragraph one. If it is null, omit it entirely."
 )
+
+# Paragraph-two rule for aggregate()'s sticker_is_predictive flag (an
+# AutoiPacket predictive build rather than a manufacturer sticker), shared by
+# all four tier prompts.
+PREDICTIVE_STICKER_RULE = (
+    "PREDICTIVE STICKER RULE: If STICKER_IS_PREDICTIVE is true in the data package, "
+    "the sticker data is an AutoiPacket estimated build, not a confirmed manufacturer "
+    "sticker. Do not state a specific MSRP dollar figure as the original factory "
+    "price. Do not state specific package prices as confirmed factory costs. You may "
+    "reference the equipment and features by name as likely equipment based on the "
+    "build estimate, but use language that does not imply factory confirmation: "
+    "'equipped with' rather than 'from the original window sticker'. Omit MSRP "
+    "depreciation framing entirely for predictive stickers."
+)
