@@ -114,7 +114,7 @@ _STATE_INSPECTION_RE = re.compile(r"state inspection", re.IGNORECASE)
 _TIER_EXTRA_EXCLUDE: dict[int, tuple[re.Pattern, ...]] = {
     10: (_CV_BOOT_RE, _WHEEL_RIM_RE, _BATTERY_RE, _ALIGNMENT_RE, _WASH_BUFF_RE, _STATE_INSPECTION_RE),
     16: (_CV_BOOT_RE, _WHEEL_RIM_RE, _BATTERY_RE, _ALIGNMENT_RE, _WASH_BUFF_RE, _STATE_INSPECTION_RE),
-    11: (_CV_BOOT_RE, _WHEEL_RIM_RE, _WASH_BUFF_RE, _STATE_INSPECTION_RE),
+    11: (_CV_BOOT_RE, _WHEEL_RIM_RE, _BATTERY_RE, _WASH_BUFF_RE, _STATE_INSPECTION_RE),
     12: (_WASH_BUFF_RE, _STATE_INSPECTION_RE),
     13: (_WASH_BUFF_RE,),
 }
@@ -228,22 +228,106 @@ def _is_tire_replacement(desc_low: str) -> bool:
     )
 
 
-# A tire-replacement description that names a specific position/count rather
-# than the set — "front tire," "one tire," "driver side tire" — is a partial
-# replacement, not "all four." Status 13 (As-Is) is the only tier that gets
-# credit for a partial replacement; on every other tier it is dropped, since a
-# single replaced tire isn't the same confidence signal as a full set.
-_PARTIAL_TIRE_INDICATOR_RE = re.compile(
-    r"\b(?:one|single|1)\b"
-    r"|front\s*(?:left|right|driver|passenger)"
-    r"|rear\s*(?:left|right|driver|passenger)"
-    r"|driver\s*side|passenger\s*side",
-    re.IGNORECASE,
-)
-
 
 def _slim(li: dict[str, Any]) -> dict[str, Any]:
     return {k: li.get(k) for k in _SLIM_KEYS}
+
+
+# Tire lines are aggregated across the whole work order (see
+# _aggregate_tires()): quantity, axle and side per line, then one decision.
+_TIRE_QTY_RE = re.compile(
+    r"\bM\s*&\s*B\s*(\d)\b|\b(\d)\s*(?:new\s+)?tires?\b|\((\d)\)|\b(one|two|three|four|pair)\b",
+    re.IGNORECASE,
+)
+_TIRE_QTY_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "pair": 2}
+_TIRE_ALL_RE = re.compile(r"\ball\s*(?:4|four)\b|\bset\s+of\s+(?:4|four)\b|\bfull\s+set\b", re.IGNORECASE)
+# Tier wording for tire callouts: (tire noun, standard reached).
+_TIRE_TIER_WORDING: dict[int, tuple[str, str]] = {
+    10: ("manufacturer-recommended tires", "to meet Mercedes-Benz Certified Pre-Owned standards"),
+    16: ("manufacturer-recommended tires", "to meet Mercedes-Benz Certified Pre-Owned standards"),
+    11: ("tires", "to meet Hendrick Certified standards"),
+    12: ("tires", "to meet Hendrick Affordable standards"),
+    13: ("tires", "to meet Hendrick standards"),
+}
+
+
+def _tire_line_detail(desc_low: str) -> tuple[int, str | None, str | None]:
+    """(quantity, axle 'front'/'rear'/None, side 'driver'/'passenger'/None)
+    for one tire-replacement line. Quantity comes from "M&B N", "N tires",
+    "(N)" or a number word; "all four" / "set of 4" / "full set" is 4. A line
+    with no stated quantity is one tire when it names a position, else the
+    full set of four (e.g. "Replace tires")."""
+    axle = "front" if "front" in desc_low else ("rear" if "rear" in desc_low else None)
+    side = (
+        "driver" if re.search(r"driver|\bleft\b|\blf\b|\blr\b", desc_low)
+        else "passenger" if re.search(r"passenger|\bright\b|\brf\b|\brr\b", desc_low)
+        else None
+    )
+    if _TIRE_ALL_RE.search(desc_low):
+        return 4, axle, side
+    m = _TIRE_QTY_RE.search(desc_low)
+    if m:
+        raw = next(g for g in m.groups() if g)
+        qty = _TIRE_QTY_WORDS.get(raw.lower()) if not raw.isdigit() else int(raw)
+        return qty, axle, side
+    return (1 if (axle or side) else 4), axle, side
+
+
+def _aggregate_tires(
+    tire_lines: list[dict[str, Any]], status_code: int
+) -> tuple[dict[str, Any] | None, bool, bool, list[dict[str, Any]]]:
+    """One tire decision for the whole work order, from every completed
+    tire-replacement line together (three "M&B 1" lines are three tires, not
+    three rejected single-tire jobs). Returns (kept tire item or None,
+    all_tires_replaced, single_tire_replaced, excluded entries):
+      * 4+ tires  -> "Four new ... tires installed <standard>"
+      * 2 tires   -> "Two new <axle> ... tires installed <standard>" when both
+                     are on the same axle; skipped when mixed or unknown.
+      * 3 tires   -> the matched same-axle pair is called out by axle, the odd
+                     tire skipped; all skipped when there is no matched pair.
+      * 1 tire    -> skipped, except As-Is (13), which keeps its existing
+                     single-tire credit (the As-Is prompt states tire counts
+                     below four).
+    Wording per tier from _TIRE_TIER_WORDING."""
+    if not tire_lines:
+        return None, False, False, []
+    details = [(li, *_tire_line_detail((li.get("description") or "").lower())) for li in tire_lines]
+    total = sum(qty for _, qty, _, _ in details)
+    noun, standard = _TIRE_TIER_WORDING.get(status_code, ("tires", "prior to delivery"))
+
+    def _item(text: str) -> dict[str, Any]:
+        item = {k: None for k in _SLIM_KEYS}
+        item.update({"description": text, "completion_status": "completed", "recon_reason": "tires"})
+        return item
+
+    def _skip(lines, reason: str) -> list[dict[str, Any]]:
+        return [
+            {"section": li.get("section"), "description": li.get("description"), "reason": reason}
+            for li in lines
+        ]
+
+    if total >= 4:
+        return _item(f"Four new {noun} installed {standard}"), True, False, []
+    if total == 1:
+        if status_code == 13:
+            return None, False, True, []
+        return None, False, False, _skip(tire_lines, "single tire replacement — not mentioned")
+    per_axle = {"front": 0, "rear": 0}
+    for _, qty, axle, _ in details:
+        if axle:
+            per_axle[axle] += qty
+    pair_axle = next((a for a in ("front", "rear") if per_axle[a] >= 2), None)
+    if pair_axle is None:
+        return None, False, False, _skip(
+            tire_lines, f"{total} tires replaced with no matched same-axle pair — not mentioned"
+        )
+    odd = [li for li, _, axle, _ in details if axle != pair_axle]
+    return (
+        _item(f"Two new {pair_axle} {noun} installed {standard}"),
+        False,
+        False,
+        _skip(odd, f"odd tire outside the {pair_axle} pair — not mentioned"),
+    )
 
 
 def _filter_recon(line_items: list[dict[str, Any]], status_code: int = 10) -> dict[str, Any]:
@@ -257,8 +341,6 @@ def _filter_recon(line_items: list[dict[str, Any]], status_code: int = 10) -> di
 
     kept: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = []
-    all_tires_replaced = False
-    single_tire_replaced = False
     scheduled_service_done = False
     brake_service_done = False
     brake_front = False
@@ -279,6 +361,22 @@ def _filter_recon(line_items: list[dict[str, Any]], status_code: int = 10) -> di
             }
         )
 
+    # Tires first, across every completed line at once — the alignment rule
+    # below depends on whether they produced a callout.
+    tire_lines = [
+        li for li in line_items
+        if li.get("completed")
+        and not _WORKFLOW_STEP_RE.search((li.get("description") or "").lower())
+        and _is_tire_replacement((li.get("description") or "").lower())
+    ]
+    tire_item, all_tires_replaced, single_tire_replaced, tire_excluded = _aggregate_tires(
+        tire_lines, status_code
+    )
+    tire_output = bool(tire_item or all_tires_replaced or single_tire_replaced)
+    if tire_item:
+        kept.append(tire_item)
+    excluded.extend(tire_excluded)
+
     for li in line_items:
         if not li.get("completed"):
             continue  # incomplete items are "not done", not "excluded"
@@ -290,14 +388,7 @@ def _filter_recon(line_items: list[dict[str, Any]], status_code: int = 10) -> di
             continue
 
         if _is_tire_replacement(d):
-            if _PARTIAL_TIRE_INDICATOR_RE.search(d):
-                if status_code == 13:
-                    single_tire_replaced = True
-                else:
-                    _drop(li, "partial tire replacement — not a full set")
-            else:
-                all_tires_replaced = True
-            continue  # flag only — not added to the line-item list
+            continue  # already decided above, with every other tire line
 
         # Wiper blades are checked before the EXCLUDE list (a "windshield wiper"
         # line must not be swallowed by the windshield rule). The decision to
@@ -334,16 +425,24 @@ def _filter_recon(line_items: list[dict[str, Any]], status_code: int = 10) -> di
             kept.append({**_slim(li), "recon_reason": "suspension"})
             continue
 
-        # Battery / alignment — includeable starting at Hendrick Certified (11)
-        # and every looser tier above it; still excluded on MB CPO (10/16) via
-        # _TIER_EXTRA_EXCLUDE. Not excluded for 11+ alone doesn't make these
+        # Battery — includeable on Hendrick Affordable (12) and As-Is (13) only;
+        # excluded on MB CPO (10/16) and Hendrick Certified (11) via
+        # _TIER_EXTRA_EXCLUDE. Not excluded for 12/13 alone doesn't make it
         # positive — same gap the CV boot check needed fixing for.
-        if status_code not in (10, 16) and _BATTERY_RE.search(d):
+        if status_code not in (10, 11, 16) and _BATTERY_RE.search(d):
             kept.append({**_slim(li), "recon_reason": "battery"})
             continue
-        if status_code not in (10, 16) and _ALIGNMENT_RE.search(d):
-            kept.append({**_slim(li), "recon_reason": "alignment"})
-            continue
+        # Alignment — a confidence signal only alongside tire work that made it
+        # into the copy; on its own it raises doubt, so without a tire callout
+        # it is excluded on every tier. With one, it stays includeable from
+        # Hendrick Certified (11) down (still excluded on MB CPO 10/16).
+        if _ALIGNMENT_RE.search(d):
+            if not tire_output:
+                _drop(li, "alignment without a tire callout — excluded on every tier")
+                continue
+            if status_code not in (10, 16):
+                kept.append({**_slim(li), "recon_reason": "alignment"})
+                continue
 
         # Transmission: an explicit repair/replace/rebuild is never a selling
         # signal, on any tier. Routine service is tier-gated; anything else
@@ -1746,7 +1845,7 @@ def build_provenance_sentence(
             return f"Single-owner lease return, {tail}"
         if method:
             return f"One owner, {method}, {tail}"
-        return f"1 owner, {tail}"
+        return f"One owner, {tail}"
     if method:
         return f"{owners} owners, most recently a {method}, {tail}"
     return f"{owners} owners, {tail}"
@@ -2095,8 +2194,12 @@ def build_recon_sentence(
 
         components.append(service_component)
 
-    # 2. TIRES
-    if recon_data.get("all_tires_replaced"):
+    # 2. TIRES — _aggregate_tires()'s callout (tier wording baked in) when
+    # present; the bare flags are the fallback for recon blocks without one.
+    tire_items = by_reason.get("tires") or []
+    if tire_items and tire_items[0].get("description"):
+        components.append(_lower_first(tire_items[0]["description"]))
+    elif recon_data.get("all_tires_replaced"):
         components.append(f"four new manufacturer-recommended tires installed {suffix}")
     elif recon_data.get("single_tire_replaced"):
         components.append(f"one new manufacturer-recommended tire installed {suffix}")
