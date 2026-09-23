@@ -137,3 +137,12 @@ PREDICTIVE_STICKER_RULE = (
     "'equipped with' rather than 'from the original window sticker'. Omit MSRP "
     "depreciation framing entirely for predictive stickers."
 )
+
+# Paragraph-one sentence-two rule for aggregator.build_provenance_sentence()'s
+# PROVENANCE_SENTENCE, shared by all four tier prompts.
+PROVENANCE_RULE = (
+    "PROVENANCE SENTENCE: Use PROVENANCE_SENTENCE from the data package verbatim "
+    "as the second sentence of paragraph one. Do not infer owner count from the "
+    "stock number prefix. Do not modify this sentence. If it shows (omit), leave "
+    "sentence two out."
+)

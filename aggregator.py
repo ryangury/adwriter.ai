@@ -913,6 +913,42 @@ def _sticker_source(ap: dict[str, Any]) -> str:
     }.get(ap.get("render"), "autoipacket")
 
 
+def _reconciliation_failed(sticker: dict[str, Any], vin: str | None, source: str) -> bool:
+    """True (and logged) when a freshly fetched sticker's parse failed the
+    parser's reconciliation check (base + options + destination vs the printed
+    total — see scraper._reconcile_sticker()). aggregate() then drops it: not
+    cached, and the next sticker source is tried, as if nothing was found.
+    None (no total to check) passes."""
+    if sticker.get("reconciliation_ok") is not False:
+        return False
+    base = sticker.get("base_price") or 0
+    opts = sum(p.get("price") or 0 for p in sticker.get("option_packages") or [])
+    opts += sticker.get("unlisted_options_total") or 0
+    gap = round((sticker.get("total_msrp") or 0) - (base + opts + (sticker.get("freight") or 0)), 2)
+    print(
+        f"[aggregator] WARNING: {source} sticker for {vin} failed reconciliation "
+        f"(gap ${gap:,.2f}) — discarded, not cached; trying the next sticker source",
+        file=sys.stderr,
+    )
+    return True
+
+
+def _buyer_facing_options(msrp_data: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Drop negative-priced lines (package discounts, credits, adjustments)
+    from option_packages, the list the ad writer reads, so they never reach
+    ad copy. The complete list, negatives included, is kept as
+    option_packages_all for reconciliation only; format_data_package() never
+    shows it to Claude."""
+    if not msrp_data or msrp_data.get("error"):
+        return msrp_data
+    packages = msrp_data.get("option_packages") or []
+    msrp_data["option_packages_all"] = packages
+    msrp_data["option_packages"] = [
+        p for p in packages if p.get("price") is None or p["price"] >= 0
+    ]
+    return msrp_data
+
+
 def _msrp_data(ap: dict[str, Any] | None) -> dict[str, Any] | None:
     if ap is None:
         return None
@@ -1647,28 +1683,32 @@ def build_provenance_sentence(
     status_code: int | None,
     clean_history: bool | None = None,
 ) -> str:
-    """Pre-written provenance sentence for paragraph one sentence two, decoded
-    from the stock number prefix/suffix, Carfax data, and ACV Max status code
-    (see STOCK NUMBER AND PROVENANCE RULES in SYSTEM_PROMPT). Claude uses this
-    verbatim instead of decoding the stock number itself.
+    """PROVENANCE_SENTENCE for paragraph one sentence two, on every tier.
+    Built entirely here from the stock number and the Carfax owner count;
+    Claude uses it verbatim and never decodes the stock number itself.
 
-    `clean_history` defaults to carfax_data["no_accidents"] is True when not
-    given explicitly — the trailing-letter (trade-in) branch folds a clean
-    Carfax into this sentence directly, so build_carfax_sentence() (passed
-    this sentence as its own provenance_sentence argument) knows attribution
-    is already stated and returns None instead of repeating it.
+    Acquisition method: a trailing letter is a local trade-in (it outranks the
+    prefix: PM10954A is a trade-in); otherwise PS = private purchase,
+    PM = lease return, anything else (P, X, ...) = no method stated.
+
+    Owner count: status 12 (Hendrick Affordable) states it only for a single
+    owner ("One owner"); two or more owners are left out entirely. Every other
+    tier always states it. A missing Carfax owner count is never guessed —
+    the sentence then carries no count and no Carfax attribution.
+
+    Status 16 (courtesy vehicle) keeps its fixed language, no owner count.
+
+    `clean_history` is unused (kept for callers): clean history is stated by
+    build_carfax_sentence() in sentence three.
 
     Note: carfax_data is the raw Carfax dict (carfax_raw), whose owner-count
     field is "number_of_owners", not "owners".
     """
     cf = carfax_data if isinstance(carfax_data, dict) else {}
-    owners = cf.get("number_of_owners") or 1
-    owner_type = (cf.get("owner_type") or "").lower()
+    owners = cf.get("number_of_owners")
     s = (stock_number or "").strip().lstrip("#").upper()
-    if clean_history is None:
-        clean_history = cf.get("no_accidents") is True
 
-    # Layer 1 — status code override: Z stock loaner. Ignore everything else.
+    # Status 16 — courtesy/loaner vehicle. Ignore everything else.
     if status_code == 16:
         return (
             "Former Mercedes-Benz of Durham courtesy vehicle, never titled to "
@@ -1682,44 +1722,34 @@ def build_provenance_sentence(
             "more total coverage and thousands less than buying new."
         )
 
-    # Layer 2 — trailing letter = trade-in against the preceding stock number.
     if s and s[-1].isalpha():
-        if clean_history:
-            return (
-                f"Local trade-in, {owners} owner{'s' if owners > 1 else ''}, "
-                "personal use with clean vehicle history confirmed by Carfax."
-            )
-        return (
-            f"Local trade-in, {owners} owner{'s' if owners > 1 else ''}, "
-            "personal use confirmed by Carfax."
-        )
+        method = "local trade-in"
+    elif s.startswith("PS"):
+        method = "private purchase"
+    elif s.startswith("PM"):
+        method = "lease return"
+    else:
+        method = None
+    tail = "personal use confirmed by Carfax."
 
-    # Layer 3 — stock prefix decode. Two-letter prefixes are checked before
-    # the generic single-letter "P" they would otherwise also match.
-    if s.startswith("PM"):
-        if "lease" in owner_type:
-            return "One owner, off-lease, personal use."
-        return "One owner, personal use."
+    if not isinstance(owners, int) or owners < 1:
+        # No Carfax owner count: state only what the stock number establishes.
+        return f"{_upper_first(method)}." if method else ""
 
-    if s.startswith("PS"):
-        return "One owner, local private purchase, personal use confirmed by Carfax."
-
-    if s.startswith("X"):
-        return (
-            f"{owners} owner{'s' if owners > 1 else ''}, "
-            "personal use confirmed by Carfax."
-        )
-
-    if s.startswith("P"):
+    if status_code == 12:
         if owners == 1:
-            return "One owner, personal use confirmed by Carfax."
-        return f"{owners} owners, personal use confirmed by Carfax."
+            return f"One owner, {method}, {tail}" if method else f"One owner, {tail}"
+        return _upper_first(tail)
 
-    # Default — unknown prefix.
-    return (
-        f"{owners} owner{'s' if owners > 1 else ''}, "
-        "personal use confirmed by Carfax."
-    )
+    if owners == 1:
+        if method == "lease return":
+            return f"Single-owner lease return, {tail}"
+        if method:
+            return f"One owner, {method}, {tail}"
+        return f"1 owner, {tail}"
+    if method:
+        return f"{owners} owners, most recently a {method}, {tail}"
+    return f"{owners} owners, {tail}"
 
 
 _ACCIDENT_SEVERITY_MAP = {"minor": "minor", "moderate": "moderate", "severe": "significant"}
@@ -2469,10 +2499,14 @@ def build_msrp_sentence(
     equipment-anchor framing (the factory window sticker figure, no dollar
     gap) instead of the straight depreciation story.
 
-    status_code only matters for courtesy vehicles (16), which skip the dollar
-    floor entirely; every other status uses the luxury-make/age-gate/
-    percent-drop tree above.
+    TIERS — status 12 (Hendrick Affordable) never gets an MSRP sentence.
+    Status 11 (Hendrick Certified) and 13 (As-Is) get the same age gate and
+    tree as MB CPO (10). Courtesy vehicles (16) skip the dollar floor
+    entirely. A None return shows as (omit) in the data package.
     """
+    if status_code == 12:
+        print("[aggregator] MSRP check: status 12 (Hendrick Affordable) — always omitted", file=sys.stderr)
+        return None
     if not total_msrp or not advertised_price:
         return None
 
@@ -3691,6 +3725,8 @@ def aggregate(
                     file=sys.stderr,
                 )
                 return None
+            if _reconciliation_failed(fallback, vin, "Carfax sticker link"):
+                return None
             save_window_sticker(
                 vin,
                 stock,
@@ -3835,6 +3871,11 @@ def aggregate(
                 except ScraperError as exc:
                     msrp_raw = {"error": str(exc)}
 
+            if msrp_raw and _reconciliation_failed(msrp_raw, vin, "AutoiPacket"):
+                # Treated exactly like a failed pull: never cached, and the
+                # fallbacks below (stale cache, Carfax link, options tab) run.
+                msrp_raw = {"error": "sticker parse failed reconciliation"}
+
             if msrp_raw and not msrp_raw.get("error"):
                 sticker_status = "scraped"
                 save_window_sticker(
@@ -3918,6 +3959,7 @@ def aggregate(
     msrp_data = _msrp_data(msrp_raw)
     msrp_data = _apply_sticker_vision(msrp_data, msrp_raw, vin)
     msrp_data = _filter_feature_noise(msrp_data)
+    msrp_data = _buyer_facing_options(msrp_data)
 
     # Data-completeness gates before we spend a Claude call. Carfax /
     # ReconVision failures never block here, on any tier.

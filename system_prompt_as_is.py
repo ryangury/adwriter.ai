@@ -13,6 +13,7 @@ from shared_prompt_constants import (
     EQUIPMENT_EXPLANATION_RULE,
     HENDRICK_STORE_CLOSER_PARAGRAPH,
     PREDICTIVE_STICKER_RULE,
+    PROVENANCE_RULE,
     RECON_FALLBACK_RULE,
 )
 
@@ -69,9 +70,11 @@ PARAGRAPH ONE — IDENTITY AND PROVENANCE (same structure for both sub-categorie
 Four sentences, in this order:
 
 1. Year, full model name, mileage, exterior color, interior color, VIN. No certification prefix of any kind. Never say "Hendrick Certified," "Hendrick Affordable," or "Certified Pre-Owned" anywhere in this ad.
-2. Owner count, owner type, and provenance drawn from the stock number decode below.
+2. PROVENANCE_SENTENCE from the data package, verbatim (see PROVENANCE SENTENCE below).
 3. Carfax highlights — clean history, service records if notable. Same rules as every other program: no defensive absence statements such as "no accidents" or "no structural damage." State the positive only.
 4. Recon callouts that survive the RECON RULES filter below. Be more generous with inclusion here than on MB CPO or Hendrick Certified — recon is the primary confidence signal on As-Is inventory, since there is no certification program backing the sale.
+
+{PROVENANCE_RULE}
 
 {RECON_FALLBACK_RULE}
 
@@ -142,11 +145,11 @@ Most other makes: 3yr/36,000mi basic
 
 For each period: expiry date = January 1 of (model_year + warranty_years); miles remaining = warranty_miles - current_mileage. The warranty is active only if both the calendar limit and the mileage limit have not yet been reached as of today's date.
 
-After the warranty sentence (or in its place if no factory warranty remains): the MSRP depreciation story — always include when original MSRP data is available, these gaps are often large on As-Is inventory. Then the pricing proof point.
+After the warranty sentence (or in its place if no factory warranty remains): the MSRP depreciation story. Include the MSRP DEPRECIATION SENTENCE only when it is provided in the data package and does not say (omit). If it says (omit), skip it entirely. Then the pricing proof point.
 
 RECONDITIONED SUB-CATEGORY (8 years or older, or 75,000 miles or more):
 
-Recon gets more prominence here than on any other tier — frame it as the confidence signal, using specific language: "Before delivery our service team [list the specific completed items]." Then the MSRP depreciation story — always include when available. Then the pricing proof point. Never mention the absence of a warranty in this paragraph — warranty status is stated once, in paragraph three, and the ad moves on from there.
+Recon gets more prominence here than on any other tier — frame it as the confidence signal, using specific language: "Before delivery our service team [list the specific completed items]." Then the MSRP depreciation story. Include the MSRP DEPRECIATION SENTENCE only when it is provided in the data package and does not say (omit). If it says (omit), skip it entirely. Then the pricing proof point. Never mention the absence of a warranty in this paragraph — warranty status is stated once, in paragraph three, and the ad moves on from there.
 
 PRICING PROOF POINT — BOTH SUB-CATEGORIES
 

@@ -41,6 +41,7 @@ from shared_prompt_constants import (
     API_FEEDBACK_BLOCK,
     PACKAGE_CONTENT_VERIFICATION_RULE,
     PREDICTIVE_STICKER_RULE,
+    PROVENANCE_RULE,
     RECON_FALLBACK_RULE,
     STORE_CLOSER_PARAGRAPH,
 )
@@ -131,7 +132,9 @@ PARAGRAPH ONE — CERTIFICATION AND PROVENANCE
 This paragraph establishes trust and specifics. Use the pre-built sentences from the data package:
 
 - Sentence 1: no pre-built sentence exists for this one — build it yourself. Lead with Mercedes-Benz Certified Pre-Owned status, and include year, model, mileage, exterior color, interior color, and VIN.
-- Sentence 2: PROVENANCE SENTENCE — use verbatim. Do not derive provenance from raw data. Do not decode the stock number.
+- Sentence 2: PROVENANCE_SENTENCE — see PROVENANCE SENTENCE below. Do not derive provenance from raw data. Do not decode the stock number.
+
+{PROVENANCE_RULE}
 - Sentence 3: CARFAX SENTENCE — use verbatim, omit if null. Do not derive accident history or service history from raw Carfax fields.
 - Sentence 4: RECON SENTENCE — use verbatim, omit if null. Do not interpret raw recon line items yourself.
 
@@ -1381,8 +1384,8 @@ def format_data_package(pkg: dict) -> tuple[str, list[dict]]:
         lines.append(f"Titled in: {', '.join(cf.get('titled_states') or []) or 'n/a'}")
 
     lines.append("")
-    lines.append("PROVENANCE SENTENCE (use verbatim in paragraph one sentence two):")
-    lines.append(pkg.get("provenance_sentence") or "n/a")
+    lines.append("PROVENANCE_SENTENCE (use verbatim as paragraph one sentence two, omit if (omit)):")
+    lines.append(pkg.get("provenance_sentence") or "(omit — no Carfax owner data)")
 
     lines.append("")
     lines.append("CARFAX SENTENCE (use verbatim in paragraph one sentence three, omit if null):")
