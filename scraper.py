@@ -53,6 +53,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urljoin
 
 from playwright.sync_api import (
     Frame,
@@ -78,6 +79,11 @@ STICKER_FRAME_HINT = "document-viewer.autoipacket.com/sticker"
 # instead of the document-viewer iframe. The PDF is fetched from this endpoint.
 STICKER_PDF_RENDER_SELECTOR = "div.module-pdf, .react-pdf__Page"
 STICKER_PDF_DOWNLOAD_HINT = "sticker-puller/download/"
+# Some packet pages (e.g. GM trade-ins) embed the sticker as a plain PDF
+# <object>/<embed> pointing at the S3 CDN instead of either render above;
+# headless Chromium shows "Couldn't load plugin." for it, so the URL is read
+# from the element and the PDF is downloaded directly.
+STICKER_PDF_EMBED_SELECTOR = "object[type='application/pdf'], embed[type='application/pdf']"
 
 # Rate limiting for the /stickerpull endpoint specifically (pull_sticker_endpoint()
 # below) — NOT the packets-browse tiers (pull_sticker() tiers 1/2, sticker_from_packet(),
@@ -1215,17 +1221,33 @@ class AutoiPacketScraper(_BrowserSession):
         self.page.wait_for_timeout(1_500)
 
         def _open_msrp_tab() -> None:
-            btn = self.page.get_by_role(
-                "button", name=re.compile(r"Original MSRP", re.IGNORECASE)
-            ).first
+            # The left nav is built per vehicle, so position varies; match on
+            # label text (partial, case-insensitive — the rail truncates it
+            # visually to "Original MSRP / Opt..."). Fallbacks, tried only
+            # after the usual button misses: the same label as a link, then
+            # any button/link labelled just "MSRP" or "Window Sticker".
+            primary = re.compile(r"Original MSRP", re.IGNORECASE)
+            loose = re.compile(r"\bMSRP\b|Window Sticker", re.IGNORECASE)
+            btn = self.page.get_by_role("button", name=primary).first
             try:
                 btn.wait_for(state="visible", timeout=self.timeout_ms)
             except PlaywrightTimeoutError as exc:
-                self._dump_debug(f"packet-no-msrp-tab-{vin}")
-                raise StickerNotFoundError(
-                    f"{vin}: 'Original MSRP / Options Info' tab not found on "
-                    f"{packet_url}."
-                ) from exc
+                btn = None
+                for role, pattern in (("link", primary), ("button", loose), ("link", loose)):
+                    cand = self.page.get_by_role(role, name=pattern).first
+                    try:
+                        cand.wait_for(state="visible", timeout=2_000)
+                    except PlaywrightTimeoutError:
+                        continue
+                    print(f"[scraper] {vin}: MSRP tab matched by fallback ({role} /{pattern.pattern}/)")
+                    btn = cand
+                    break
+                if btn is None:
+                    self._dump_debug(f"packet-no-msrp-tab-{vin}")
+                    raise StickerNotFoundError(
+                        f"{vin}: 'Original MSRP / Options Info' tab not found on "
+                        f"{packet_url}."
+                    ) from exc
             btn.click()
 
         return self._render_and_parse_sticker(vin, _open_msrp_tab)
@@ -1284,8 +1306,8 @@ class AutoiPacketScraper(_BrowserSession):
 
         Returns ("html", Frame) if the document-viewer iframe appears (within 8s,
         or later if the PDF hasn't shown either), or ("pdf", download_url) if the
-        div.module-pdf render appears instead. Raises StickerNotFoundError if
-        neither shows within 15s total.
+        div.module-pdf render or an embedded PDF <object>/<embed> appears
+        instead. Raises StickerNotFoundError if none shows within 15s total.
         """
         assert self.page is not None
         iframe_sel = f"iframe[src*='{STICKER_FRAME_HINT}']"
@@ -1300,7 +1322,8 @@ class AutoiPacketScraper(_BrowserSession):
         # Phase 2 — wait for whichever path appears, up to 15s total.
         try:
             self.page.wait_for_selector(
-                f"{iframe_sel}, {STICKER_PDF_RENDER_SELECTOR}", timeout=7_000
+                f"{iframe_sel}, {STICKER_PDF_RENDER_SELECTOR}, {STICKER_PDF_EMBED_SELECTOR}",
+                timeout=7_000,
             )
         except PlaywrightTimeoutError as exc:
             self._dump_debug(f"no-sticker-{vin}")
@@ -1314,12 +1337,35 @@ class AutoiPacketScraper(_BrowserSession):
             handle = self.page.query_selector(iframe_sel)
             return ("html", self._resolve_sticker_frame(handle, vin))
 
+        embed_url = self._embedded_sticker_pdf_url()
+        if embed_url and not self.page.locator(STICKER_PDF_RENDER_SELECTOR).count():
+            print(f"[scraper] sticker for {vin} is an embedded PDF — downloading it directly")
+            return ("pdf", embed_url)
+
         # PDF render path. Give the download request a moment to fire if needed.
         for _ in range(10):
             if self._captured_pdf_url:
                 break
             self.page.wait_for_timeout(500)
         return ("pdf", self._captured_pdf_url)
+
+    def _embedded_sticker_pdf_url(self) -> str | None:
+        """Absolute URL of the sticker PDF embedded as an <object>/<embed> on
+        the page, preferring the one labelled 'Original MSRP' (a packet page
+        can embed other PDFs too). None when there isn't one."""
+        assert self.page is not None
+        urls = self.page.eval_on_selector_all(
+            STICKER_PDF_EMBED_SELECTOR,
+            """els => els.map(e => ({
+                url: e.getAttribute('data') || e.getAttribute('src') || '',
+                label: e.getAttribute('aria-label') || ''
+            }))""",
+        ) or []
+        urls = [u for u in urls if u.get("url")]
+        if not urls:
+            return None
+        best = next((u for u in urls if re.search(r"original\s+msrp", u["label"], re.I)), urls[0])
+        return urljoin(self.page.url, best["url"])
 
     def _resolve_sticker_frame(self, handle, vin: str) -> Frame:
         """Turn a document-viewer <iframe> element handle into its Frame and wait
@@ -1404,7 +1450,9 @@ class AutoiPacketScraper(_BrowserSession):
             import pdfplumber  # type: ignore
 
             with pdfplumber.open(buf) as pdf:
-                return "\n".join((p.extract_text() or "") for p in pdf.pages)
+                text = "\n".join((p.extract_text() or "") for p in pdf.pages)
+                column = _gm_options_column_text(pdf)
+                return f"{text}\n{_OPTIONS_COLUMN_MARK}\n{column}" if column else text
         except ImportError:
             pass
         try:
@@ -1434,9 +1482,16 @@ class AutoiPacketScraper(_BrowserSession):
 
     @staticmethod
     def _parse_sticker_text(text: str, vin: str) -> dict[str, Any]:
-        """Dispatch to the Mercedes-Benz (HTML) or non-Mercedes (PDF) parser
-        based on which label set the sticker text uses. Both return the same
-        dict schema."""
+        """Dispatch to the right parser. A GM / FCA / Ford OEM sticker (make
+        from the VIN, else from the sticker's own section labels) goes to its
+        OEM parser first; otherwise, or when that parse comes back empty, the
+        Mercedes-Benz (HTML) or generic non-Mercedes (PDF) parser, picked by
+        which label set the sticker text uses. All return the same schema."""
+        family = _oem_sticker_family(vin, text)
+        if family:
+            data = _OEM_STICKER_PARSERS[family](text)
+            if data.get("total_msrp") is not None or data.get("option_packages"):
+                return _oem_sticker_result(data, text, vin)
         up = text.upper()
         if "STANDARD FEATURES" in up and "STANDARD OPTIONS" not in up:
             return AutoiPacketScraper._parse_sticker_text_nonmb(text, vin)
@@ -2155,7 +2210,136 @@ def _parse_ford_sticker_text(text: str) -> dict[str, Any]:
     return _finalize_oem_totals(data, text)
 
 
+# --- OEM family routing ------------------------------------------------- #
+# VIN world-manufacturer-identifier prefixes per OEM sticker family. Checked
+# before the sticker text, since a make is what decides the layout.
+_OEM_WMI_PREFIXES = {
+    "gm": ("1G", "2G", "3G", "KL", "5GA", "6G1", "LRB", "LRE"),
+    "fca": ("1C", "2C", "3C", "1J", "1D", "2D", "3D", "ZAC", "ZFB"),
+    "ford": ("1F", "2F", "3F", "1L", "2L", "3L", "5L", "MAJ", "NM0"),
+}
+# Fallback when the VIN prefix isn't recognized: each family's own label set.
+_OEM_TEXT_MARKERS = {
+    "gm": ("OPTIONS INSTALLED BY THE MANUFACTURER",),
+    "fca": ("OPTIONAL EQUIPMENT (MAY REPLACE STANDARD EQUIPMENT)",),
+    "ford": ("OPTIONAL EQUIPMENT/OTHER",),
+}
+
+
+def _oem_sticker_family(vin: str | None, text: str) -> str | None:
+    """'gm' / 'fca' / 'ford' for a sticker one of the OEM parsers handles, else
+    None (Mercedes-Benz and every other make keep the existing parsers)."""
+    v = (vin or "").strip().upper()
+    for family, prefixes in _OEM_WMI_PREFIXES.items():
+        if v.startswith(prefixes):
+            return family
+    up = (text or "").upper()
+    for family, markers in _OEM_TEXT_MARKERS.items():
+        if any(m in up for m in markers):
+            return family
+    return None
+
+
+# Plain PDF text extraction runs a GM Monroney's side-by-side columns together
+# line by line, so every OPTIONS & PRICING line comes out prefixed with
+# standard-equipment text from the columns to its left. _pdf_bytes_to_text()
+# appends the options column, cropped by position, after this marker.
+_OPTIONS_COLUMN_MARK = "=== OPTIONS COLUMN (position-cropped) ==="
+
+
+def _gm_options_column_text(pdf) -> str | None:
+    """Text of a GM sticker's OPTIONS & PRICING column (header down to TOTAL
+    OPTIONS), cropped by word position from an open pdfplumber document. None
+    when the page doesn't have that column. Never raises."""
+    try:
+        for page in pdf.pages:
+            words = page.extract_words()
+            hdr = next(
+                (
+                    w for i, w in enumerate(words[:-2])
+                    if w["text"] == "OPTIONS"
+                    and words[i + 1]["text"] == "&"
+                    and words[i + 2]["text"].startswith("PRICING")
+                ),
+                None,
+            )
+            if hdr is None:
+                continue
+            tot = next(
+                (
+                    w for i, w in enumerate(words[:-1])
+                    if w["text"] == "TOTAL"
+                    and words[i + 1]["text"].startswith("OPTION")
+                    and w["top"] > hdr["top"]
+                    and abs(w["x0"] - hdr["x0"]) < 5
+                ),
+                None,
+            )
+            if tot is None:
+                continue
+            right = max(
+                w["x1"] for w in words
+                if abs(w["top"] - tot["top"]) < 3 and w["x0"] >= hdr["x0"] - 2
+            )
+            box = (hdr["x0"] - 2, hdr["top"] - 1, min(right + 2, page.width), tot["top"] - 0.5)
+            return page.crop(box).extract_text() or None
+    except Exception:  # noqa: BLE001 - a crop failure just means no column text
+        return None
+    return None
+
+
+_COLUMN_PRICE_LINE_RE = re.compile(
+    r"^(.+?):?\s+(?:\$?\s*(-?[\d,]+\.\d{2})|(NO\s+CHARGE))\s*$", re.IGNORECASE
+)
+_COLUMN_BULLET_RE = re.compile(r"^(?:\(cid:\d+\)|[•·\-*])\s*")
+
+
+def _parse_options_column(column: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """(option_packages, added_options_all) from a position-cropped options
+    column: each priced line is a package/option; the bulleted lines under it
+    (wrapped continuation lines re-joined) are its contents, kept in order in
+    added_options_all as unpriced entries — the shape
+    aggregator._packages_with_sub_items() groups into sub_items."""
+    packages: list[dict[str, Any]] = []
+    added: list[dict[str, Any]] = []
+    for raw in column.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        m = _COLUMN_PRICE_LINE_RE.match(line)
+        if m and re.search(r"[A-Za-z]{3,}", m.group(1)):
+            price = 0.0 if m.group(3) else float(m.group(2).replace(",", ""))
+            entry = {"code": None, "name": _clean(m.group(1)), "price": price}
+            packages.append(entry)
+            added.append(dict(entry))
+        elif not packages:
+            continue  # column header lines before the first priced option
+        elif _COLUMN_BULLET_RE.match(line):
+            added.append({"code": None, "name": _clean(_COLUMN_BULLET_RE.sub("", line)), "price": None})
+        elif added and added[-1]["price"] is None:
+            added[-1]["name"] = f"{added[-1]['name']} {_clean(line)}"  # wrapped line
+    return packages, added
+
+
 def _parse_gm_sticker_text(text: str) -> dict[str, Any]:
+    if _OPTIONS_COLUMN_MARK in text:
+        body, column = text.split(_OPTIONS_COLUMN_MARK, 1)
+        packages, added = _parse_options_column(column)
+        data = {
+            "base_price": _find_oem_amount(
+                body, "STANDARD VEHICLE PRICE", "BASE PRICE", "BASE MSRP"
+            ),
+            "freight": _find_oem_amount(
+                body, "DESTINATION FREIGHT CHARGE", "DESTINATION CHARGE", "FREIGHT"
+            ),
+            "total_msrp": _find_oem_amount(
+                body, "TOTAL VEHICLE PRICE", "TOTAL MSRP", "TOTAL PRICE"
+            ),
+            "option_packages": packages,
+            "added_options_all": added,
+            "standard_options": [],
+        }
+        return _finalize_oem_totals(data, body)
     options_region = (
         _slice_between(
             text, "OPTIONS INSTALLED BY THE MANUFACTURER", ("TOTAL OPTIONS",)
@@ -2194,6 +2378,88 @@ def _parse_generic_oem_sticker_text(text: str) -> dict[str, Any]:
         "standard_options": [],
     }
     return _finalize_oem_totals(data, text)
+
+
+_FCA_OPTION_LINE_RE = re.compile(r"^(.+?)\s+\$([\d,]+(?:\.\d{2})?)\s*$")
+
+
+def _parse_fca_sticker_text(text: str) -> dict[str, Any]:
+    """FCA (Jeep / Ram / Dodge / Chrysler) Monroney: 'Base Price:', 'Destination
+    Charge', 'TOTAL PRICE:', and an 'OPTIONAL EQUIPMENT (May Replace Standard
+    Equipment)' block of 'Name $price' lines, each followed by its unpriced
+    contents.
+
+    Only that block is trusted for option lines. Some options on these stickers
+    sit in a column that plain text extraction runs together with the
+    standard-equipment and EPA fuel-economy columns ('... $6,250' there is the
+    EPA five-year fuel-cost figure, '... 7600' after the VIN is barcode data),
+    so those lines can't be named or priced reliably from text alone. Their
+    combined value is still reported as unlisted_options_total (TOTAL PRICE
+    minus base, destination and the listed options) so the gap is visible
+    rather than silently dropped."""
+    block = _slice_between(
+        text,
+        "OPTIONAL EQUIPMENT (May Replace Standard Equipment)",
+        ("Assembly Point", "SHIP TO", "SOLDTO", "THIS LABEL IS ADDED"),
+    )
+    packages: list[dict[str, Any]] = []
+    added: list[dict[str, Any]] = []
+    for raw in block.splitlines():
+        line = _clean(raw)
+        if not line:
+            continue
+        m = _FCA_OPTION_LINE_RE.match(line)
+        if m and re.search(r"[A-Za-z]{3,}", m.group(1)):
+            entry = {"code": None, "name": m.group(1).strip(), "price": float(m.group(2).replace(",", ""))}
+            packages.append(entry)
+            added.append(dict(entry))
+        elif packages and re.search(r"[A-Za-z]{3,}", line):
+            added.append({"code": None, "name": line, "price": None})
+    data = {
+        "base_price": _find_oem_amount(text, "Base Price"),
+        "freight": _find_oem_amount(text, "Destination Charge"),
+        "total_msrp": _find_oem_amount(text, "TOTAL PRICE"),
+        "option_packages": packages,
+        "added_options_all": added,
+        "standard_options": [],
+    }
+    if None not in (data["total_msrp"], data["base_price"]):
+        gap = round(
+            data["total_msrp"] - data["base_price"] - (data["freight"] or 0)
+            - sum(p["price"] for p in packages),
+            2,
+        )
+        if gap > 0:
+            data["unlisted_options_total"] = gap
+    return data
+
+
+_OEM_STICKER_PARSERS = {
+    "gm": _parse_gm_sticker_text,
+    "fca": _parse_fca_sticker_text,
+    "ford": _parse_ford_sticker_text,
+}
+
+
+def _oem_sticker_result(data: dict[str, Any], text: str, vin: str) -> dict[str, Any]:
+    """An OEM parser's output in the full AutoiPacketScraper._parse_sticker_text()
+    schema. Colors are left None: on these stickers they share lines with other
+    columns and aren't reliably separable, and the aggregator already resolves
+    color from ACV Max."""
+    return {
+        "source": "autoipacket",
+        "source_url": STICKER_PULL_URL,
+        "sticker_url": None,
+        "scraped_at": datetime.now(timezone.utc).isoformat(),
+        "vin": vin,
+        "year_make_model": None,
+        "exterior_color": None,
+        "interior_color": None,
+        "section_headers": [],
+        "added_options_all": [],
+        **data,
+        "raw_text": text,
+    }
 
 
 _STICKER_FETCH_UA = (
@@ -2281,6 +2547,10 @@ def _parse_oem_sticker(url: str, vin: str, make: str | None = None) -> dict[str,
         data = _parse_ford_sticker_text(text)
     elif any(m in make_low for m in ("chevrolet", "chevy", "buick", "gmc", "cadillac")):
         data = _parse_gm_sticker_text(text)
+    elif any(m in make_low for m in ("jeep", "ram", "dodge", "chrysler")):
+        data = _parse_fca_sticker_text(text)
+    elif _oem_sticker_family(vin, text):
+        data = _OEM_STICKER_PARSERS[_oem_sticker_family(vin, text)](text)
     else:
         data = _parse_generic_oem_sticker_text(text)
 
@@ -2292,7 +2562,7 @@ def _parse_oem_sticker(url: str, vin: str, make: str | None = None) -> dict[str,
 
     data.update(
         vin=vin,
-        added_options_all=[],
+        added_options_all=data.get("added_options_all") or [],
         raw_text=text,
         render=render,
         sticker_url=url,
