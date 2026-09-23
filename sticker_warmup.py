@@ -83,12 +83,23 @@ def _load_retail_vehicles() -> list[dict[str, Any]]:
 
 
 def _usable(sticker: dict[str, Any] | None) -> bool:
-    """Same bar aggregate() uses: no error, and a total MSRP or any package."""
+    """aggregate()'s bar (no error, and a total MSRP or any package), plus the
+    parsers' reconciliation check: a sticker whose base + options + destination
+    doesn't land within $500 of its printed total (reconciliation_ok False) is
+    rejected like an empty parse. True or None (no total to check) passes."""
     return bool(
         sticker
         and not sticker.get("error")
         and (sticker.get("total_msrp") is not None or sticker.get("option_packages"))
+        and sticker.get("reconciliation_ok") is not False
     )
+
+
+def _rejection(sticker: dict[str, Any] | None) -> str:
+    """Why _usable() turned a result down, for the log."""
+    if sticker and sticker.get("reconciliation_ok") is False:
+        return "parsed but failed reconciliation (base + options + destination != total)"
+    return "parsed but unusable"
 
 
 def _reset_attempts(vin: str) -> None:
@@ -254,7 +265,7 @@ def _run(
                     if _usable(data):
                         sticker, source = data, "carfax_sticker_link"
                     else:
-                        print(f"{tag} — Carfax link parsed but unusable")
+                        print(f"{tag} — Carfax link {_rejection(data)}")
             else:
                 print(f"{tag} — no Carfax sticker link on record")
 
@@ -280,6 +291,8 @@ def _run(
                         source = PREDICTIVE_SOURCE if _is_predictive(data) else _sticker_source(data)
                     elif data and data.get("rate_limited"):
                         print(f"{tag} — iPacket held back by rate limit: {data.get('error')}")
+                    elif data and data.get("reconciliation_ok") is False:
+                        print(f"{tag} — iPacket {_rejection(data)}")
                     else:
                         print(f"{tag} — iPacket returned nothing usable")
 

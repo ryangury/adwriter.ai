@@ -1494,8 +1494,8 @@ class AutoiPacketScraper(_BrowserSession):
 
             with pdfplumber.open(buf) as pdf:
                 text = "\n".join((p.extract_text() or "") for p in pdf.pages)
-                column = _gm_options_column_text(pdf)
-                return f"{text}\n{_OPTIONS_COLUMN_MARK}\n{column}" if column else text
+                blocks = _position_blocks_text(pdf)
+                return f"{text}\n{blocks}" if blocks else text
         except ImportError:
             pass
         try:
@@ -1525,20 +1525,21 @@ class AutoiPacketScraper(_BrowserSession):
 
     @staticmethod
     def _parse_sticker_text(text: str, vin: str) -> dict[str, Any]:
-        """Dispatch to the right parser. A GM / FCA / Ford OEM sticker (make
-        from the VIN, else from the sticker's own section labels) goes to its
-        OEM parser first; otherwise, or when that parse comes back empty, the
-        Mercedes-Benz (HTML) or generic non-Mercedes (PDF) parser, picked by
-        which label set the sticker text uses. All return the same schema."""
+        """Dispatch to the right parser. A GM / FCA / Ford / Toyota OEM sticker
+        (make from the VIN, else from the sticker's own section labels) goes to
+        its OEM parser first; otherwise, or when that parse comes back empty,
+        the Mercedes-Benz (HTML) or generic non-Mercedes (PDF) parser, picked by
+        which label set the sticker text uses. All return the same schema, with
+        reconciliation_ok set by _reconcile_sticker()."""
         family = _oem_sticker_family(vin, text)
         if family:
             data = _OEM_STICKER_PARSERS[family](text)
             if data.get("total_msrp") is not None or data.get("option_packages"):
-                return _oem_sticker_result(data, text, vin)
+                return _reconcile_sticker(_oem_sticker_result(data, text, vin), vin)
         up = text.upper()
         if "STANDARD FEATURES" in up and "STANDARD OPTIONS" not in up:
-            return AutoiPacketScraper._parse_sticker_text_nonmb(text, vin)
-        return AutoiPacketScraper._parse_sticker_text_mb(text, vin)
+            return _reconcile_sticker(AutoiPacketScraper._parse_sticker_text_nonmb(text, vin), vin)
+        return _reconcile_sticker(AutoiPacketScraper._parse_sticker_text_mb(text, vin), vin)
 
     @staticmethod
     def _parse_sticker_text_mb(text: str, vin: str) -> dict[str, Any]:
@@ -2192,21 +2193,28 @@ def _scan_oem_priced_lines(text: str, *, max_desc_len: int = 80) -> list[dict[st
     return out
 
 
-def _find_oem_amount(text: str, *labels: str) -> float | None:
+def _find_oem_amount(
+    text: str, *labels: str, min_value: float | None = None
+) -> float | None:
     # Require a real-looking amount (>= 3 digits) so a label that happens to sit
     # near unrelated boilerplate ("...THE STANDARD VEHICLE PRICE SHOWN\nCREW CAB
     # SHORT BOX 4WD") can't match a stray single digit like the "4" in "4WD".
+    # min_value skips matches below a floor: GM's fine print "...IN THE STANDARD
+    # VEHICLE PRICE SHOWN" is followed by the "(cid:129)" bullet glyph, whose
+    # "129" would otherwise read as the base price.
     for label in labels:
-        m = re.search(
+        for m in re.finditer(
             re.escape(label) + r"\D{0,25}\$?\s?(\d[\d,]{2,}(?:\.\d{2})?|\d+\.\d{2})",
             text,
             re.IGNORECASE,
-        )
-        if m:
+        ):
             try:
-                return float(m.group(1).replace(",", ""))
+                value = float(m.group(1).replace(",", ""))
             except ValueError:
                 continue
+            if min_value is not None and value < min_value:
+                continue
+            return value
     return None
 
 
@@ -2228,29 +2236,96 @@ def _finalize_oem_totals(data: dict[str, Any], text: str) -> dict[str, Any]:
     return data
 
 
+_FORD_GROUP_RE = re.compile(r"^(.*?\bGROUP\s+[0-9A-Z]+)\s+\$?([\d,]+\.\d{2})\s*$", re.IGNORECASE)
+_FORD_HEADINGS = ("INCLUDED ON THIS VEHICLE", "OPTIONAL EQUIPMENT/OTHER")
+
+
+def _parse_ford_options_block(block: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """(option_packages, added_options_all, standard_options) from Ford's
+    position-cropped "INCLUDED ON THIS VEHICLE" block. Priced lines (a trailing
+    amount, 'NO CHARGE', or a '- 20.00' credit) are options, 'EQUIPMENT GROUP
+    401A 5,890.00' included; '.'-prefixed lines are the contents of the option
+    above; other unpriced lines are equipment included in the build. Items
+    after the DEALER INSTALLED heading are options too, flagged dealer_installed."""
+    packages: list[dict[str, Any]] = []
+    added: list[dict[str, Any]] = []
+    included: list[dict[str, Any]] = []
+    dealer = False
+    for raw in block.splitlines():
+        line = _clean(re.sub(r"[\x00-\x1f\x7f-\x9f]", "", raw))  # stray control glyphs
+        if not line or line.count("(cid:") >= 3 or set(line) <= set("_ "):
+            continue
+        up = line.upper()
+        if up.startswith("SOLD TO"):  # dealer/ship-to address block
+            continue
+        if up.startswith("DEALER INSTALLED"):
+            dealer = True
+            continue
+        if any(up.startswith(h) for h in _FORD_HEADINGS):
+            continue
+        m = _FORD_GROUP_RE.match(line) or _OEM_PRICE_LINE_RE.match(line)
+        if m and re.search(r"[A-Za-z]{3,}", m.group(1)) and not _OEM_TOTAL_KEYWORDS_RE.search(m.group(1)):
+            if m.re is _FORD_GROUP_RE or not m.group(3):
+                price = float(re.sub(r"[\s,$]", "", m.group(2)))
+            else:
+                price = 0.0  # NO CHARGE
+            entry = {"code": None, "name": m.group(1).strip(), "price": price}
+            if dealer:
+                entry["dealer_installed"] = True
+            packages.append(entry)
+            added.append({"code": None, "name": entry["name"], "price": price})
+        elif line.startswith(".") and packages:
+            added.append({"code": None, "name": line.lstrip(". "), "price": None})
+        else:
+            included.append({"code": None, "name": line})
+    return packages, added, included
+
+
 def _parse_ford_sticker_text(text: str) -> dict[str, Any]:
-    # The option lines live in one clean block; scanning the whole document also
-    # picks up fuel-economy, safety-rating, and dealer-address noise that happens
-    # to end in a number too.
-    options_region = (
-        _slice_between(text, "OPTIONAL EQUIPMENT/OTHER", ("PRICE INFORMATION",))
-        or _slice_between(text, "INCLUDED ON THIS VEHICLE", ("PRICE INFORMATION",))
-        or text
-    )
+    options_block = _marked_block(text, _OPTIONS_COLUMN_MARK)
+    price_block = _marked_block(text, _PRICE_COLUMN_MARK)
+    body = _body_text(text)
+    prices = price_block or body
+    if options_block:
+        # Position-cropped: the option list and the price block no longer
+        # share lines ("FLR LINERS ... 160.00 TOTAL VEHICLE & OPTIONS/OTHER").
+        packages, added, included = _parse_ford_options_block(options_block)
+    else:
+        # The option lines live in one clean block; scanning the whole document
+        # also picks up fuel-economy, safety-rating, and dealer-address noise
+        # that happens to end in a number too.
+        options_region = (
+            _slice_between(text, "OPTIONAL EQUIPMENT/OTHER", ("PRICE INFORMATION",))
+            or _slice_between(text, "INCLUDED ON THIS VEHICLE", ("PRICE INFORMATION",))
+            or text
+        )
+        packages = _scan_oem_priced_lines(options_region)
+        # "EQUIPMENT GROUP 401A 5,890.00" sits above the OPTIONAL EQUIPMENT/OTHER
+        # heading, outside that region.
+        for ln in _slice_between(text, "INCLUDED ON THIS VEHICLE", ("OPTIONAL EQUIPMENT/OTHER",)).splitlines():
+            m = _FORD_GROUP_RE.search(_clean(ln))
+            if m and not any(p["name"] == m.group(1).strip() for p in packages):
+                packages.insert(0, {"code": None, "name": m.group(1).strip(), "price": float(m.group(2).replace(",", ""))})
+        added, included = [], []
     data = {
-        "base_price": _find_oem_amount(text, "BASE VEHICLE PRICE", "BASE PRICE"),
+        "base_price": _find_oem_amount(prices, "BASE VEHICLE PRICE", "BASE PRICE"),
         "freight": _find_oem_amount(
-            text, "DESTINATION AND DELIVERY", "DESTINATION & DELIVERY",
+            prices, "DESTINATION AND DELIVERY", "DESTINATION & DELIVERY",
             "DESTINATION CHARGE", "DELIVERY",
         ),
-        # the grand total's label and figure are often pages apart here (a
-        # dealer/shipping address block sits between them) — _finalize_oem_totals
-        # reconstructs it from base + freight + total options when this misses.
-        "total_msrp": _find_oem_amount(text, "TOTAL VEHICLE PRICE", "TOTAL PRICE"),
-        "option_packages": _scan_oem_priced_lines(options_region),
-        "standard_options": [],
+        # Ford labels the grand total "TOTAL MSRP". Its label and figure can be
+        # far apart in the plain text (a dealer/shipping address block sits
+        # between them) — _finalize_oem_totals reconstructs it from base +
+        # freight + total options when every label misses.
+        "total_msrp": _find_oem_amount(
+            prices, "TOTAL MSRP", "TOTAL VEHICLE PRICE", "TOTAL PRICE", min_value=10_000
+        ) or _find_oem_amount(body, "TOTAL MSRP", min_value=10_000),
+        "option_packages": packages,
+        "standard_options": included,
     }
-    return _finalize_oem_totals(data, text)
+    if added:
+        data["added_options_all"] = added
+    return _finalize_oem_totals(data, body)
 
 
 # --- OEM family routing ------------------------------------------------- #
@@ -2260,17 +2335,19 @@ _OEM_WMI_PREFIXES = {
     "gm": ("1G", "2G", "3G", "KL", "5GA", "6G1", "LRB", "LRE"),
     "fca": ("1C", "2C", "3C", "1J", "1D", "2D", "3D", "ZAC", "ZFB"),
     "ford": ("1F", "2F", "3F", "1L", "2L", "3L", "5L", "MAJ", "NM0"),
+    "toyota": ("JT", "2T", "3T", "4T", "5T", "58A"),
 }
 # Fallback when the VIN prefix isn't recognized: each family's own label set.
 _OEM_TEXT_MARKERS = {
     "gm": ("OPTIONS INSTALLED BY THE MANUFACTURER",),
     "fca": ("OPTIONAL EQUIPMENT (MAY REPLACE STANDARD EQUIPMENT)",),
     "ford": ("OPTIONAL EQUIPMENT/OTHER",),
+    "toyota": ("DELIVERY, PROCESSING AND HANDLING FEE",),
 }
 
 
 def _oem_sticker_family(vin: str | None, text: str) -> str | None:
-    """'gm' / 'fca' / 'ford' for a sticker one of the OEM parsers handles, else
+    """'gm' / 'fca' / 'ford' / 'toyota' for a sticker one of the OEM parsers handles, else
     None (Mercedes-Benz and every other make keep the existing parsers)."""
     v = (vin or "").strip().upper()
     for family, prefixes in _OEM_WMI_PREFIXES.items():
@@ -2283,105 +2360,264 @@ def _oem_sticker_family(vin: str | None, text: str) -> str | None:
     return None
 
 
-# Plain PDF text extraction runs a GM Monroney's side-by-side columns together
-# line by line, so every OPTIONS & PRICING line comes out prefixed with
-# standard-equipment text from the columns to its left. _pdf_bytes_to_text()
-# appends the options column, cropped by position, after this marker.
+# Plain PDF text extraction runs a Monroney's side-by-side columns together
+# line by line, so option lines come out prefixed with standard-equipment text
+# from the columns to their left (and, on Ford, suffixed with the price block to
+# their right). _pdf_bytes_to_text() appends position-cropped blocks after these
+# marker lines; the GM / Ford / Toyota parsers prefer them when present and fall
+# back to the plain text otherwise (e.g. a sticker fetched as HTML).
 _OPTIONS_COLUMN_MARK = "=== OPTIONS COLUMN (position-cropped) ==="
+_PRICE_COLUMN_MARK = "=== PRICE COLUMN (position-cropped) ==="
+_BLOCK_MARKS = (_OPTIONS_COLUMN_MARK, _PRICE_COLUMN_MARK)
 
 
-def _gm_options_column_text(pdf) -> str | None:
-    """Text of a GM sticker's OPTIONS & PRICING column (header down to TOTAL
-    OPTIONS), cropped by word position from an open pdfplumber document. None
-    when the page doesn't have that column. Never raises."""
-    try:
-        for page in pdf.pages:
-            words = page.extract_words()
-            hdr = next(
-                (
-                    w for i, w in enumerate(words[:-2])
-                    if w["text"] == "OPTIONS"
-                    and words[i + 1]["text"] == "&"
-                    and words[i + 2]["text"].startswith("PRICING")
-                ),
-                None,
-            )
-            if hdr is None:
-                continue
-            tot = next(
-                (
-                    w for i, w in enumerate(words[:-1])
-                    if w["text"] == "TOTAL"
-                    and words[i + 1]["text"].startswith("OPTION")
-                    and w["top"] > hdr["top"]
-                    and abs(w["x0"] - hdr["x0"]) < 5
-                ),
-                None,
-            )
-            if tot is None:
-                continue
-            right = max(
-                w["x1"] for w in words
-                if abs(w["top"] - tot["top"]) < 3 and w["x0"] >= hdr["x0"] - 2
-            )
-            box = (hdr["x0"] - 2, hdr["top"] - 1, min(right + 2, page.width), tot["top"] - 0.5)
-            return page.crop(box).extract_text() or None
-    except Exception:  # noqa: BLE001 - a crop failure just means no column text
+def _marked_block(text: str, mark: str) -> str:
+    """The text appended after `mark` (up to the next marker line), or ""."""
+    i = text.find(mark)
+    if i < 0:
+        return ""
+    rest = text[i + len(mark):]
+    ends = [j for j in (rest.find("\n" + m) for m in _BLOCK_MARKS) if j >= 0]
+    return rest[: min(ends)] if ends else rest
+
+
+def _body_text(text: str) -> str:
+    """`text` without any appended position-cropped blocks."""
+    cut = [i for i in (text.find(m) for m in _BLOCK_MARKS) if i >= 0]
+    return text[: min(cut)] if cut else text
+
+
+def _next_words(words: list[dict[str, Any]], i: int, *texts: str) -> bool:
+    return all(
+        i + k < len(words) and words[i + k]["text"].upper() == want.upper()
+        for k, want in enumerate(texts)
+    )
+
+
+# GM Monroney: the OPTIONS & PRICING area is a row of equal-width columns
+# (x ~620 / 813 / 1007 on the 1224pt page). The option list starts under
+# "OPTIONS INSTALLED BY THE MANUFACTURER" in whichever column that heading
+# lands, runs down it, and continues at the top of the next column(s) until
+# "TOTAL VEHICLE PRICE".
+_GM_COLUMN_PITCH = 193.7  # points, on a 1224pt-wide page
+
+
+def _gm_position_blocks(page, words: list[dict[str, Any]]) -> str | None:
+    hdr = next(
+        (w for i, w in enumerate(words) if _next_words(words, i, "OPTIONS", "INSTALLED")),
+        None,
+    )
+    if hdr is None:
         return None
-    return None
+    pitch = _GM_COLUMN_PITCH * page.width / 1224
+    body_top = min(
+        (
+            w["top"] for i, w in enumerate(words)
+            if _next_words(words, i, "STANDARD", "EQUIPMENT") and w["x0"] < page.width / 4
+        ),
+        default=hdr["top"],
+    ) - 3
+    # The EPA / safety-rating panel starts below the pricing columns.
+    bottom = min(
+        (
+            w["top"] for w in words
+            if w["text"] in ("GOVERNMENT", "fueleconomy.gov") and w["top"] > hdr["top"]
+        ),
+        default=page.height * 0.6,
+    ) - 2
+    lines: list[str] = []
+    x, first = hdr["x0"], True
+    while x + pitch / 2 < page.width:
+        top = (hdr["top"] - 1) if first else body_top
+        box = (max(0, x - 2), top, min(page.width, x + pitch - 6), bottom)
+        for line in (page.crop(box).extract_text() or "").splitlines():
+            lines.append(line)
+            if re.search(r"TOTAL VEHICLE PRICE", line, re.IGNORECASE):
+                return f"{_OPTIONS_COLUMN_MARK}\n" + "\n".join(lines)
+        x, first = x + pitch, False
+    return None  # never reached the grand total: don't trust the flow
 
 
-_COLUMN_PRICE_LINE_RE = re.compile(
-    r"^(.+?):?\s+(?:\$?\s*(-?[\d,]+\.\d{2})|(NO\s+CHARGE))\s*$", re.IGNORECASE
-)
+# Ford Monroney: an "INCLUDED ON THIS VEHICLE" option list on the left, a
+# "PRICE INFORMATION" block to its right, "TOTAL MSRP" at the bottom of it.
+def _ford_position_blocks(page, words: list[dict[str, Any]]) -> str | None:
+    inc = next((w for i, w in enumerate(words) if _next_words(words, i, "INCLUDED", "ON", "THIS")), None)
+    info = next((w for i, w in enumerate(words) if _next_words(words, i, "PRICE", "INFORMATION")), None)
+    if inc is None or info is None or info["x0"] <= inc["x0"]:
+        return None
+    msrp = next(
+        (w for i, w in enumerate(words) if _next_words(words, i, "TOTAL", "MSRP") and w["top"] > info["top"]),
+        None,
+    )
+    bottom = (msrp["top"] - 3) if msrp else page.height * 0.85
+    options = page.crop((max(0, inc["x0"] - 2), inc["top"] - 1, info["x0"] - 4, bottom)).extract_text() or ""
+    price_bottom = (msrp["bottom"] + 1) if msrp else bottom
+    right = max(
+        (
+            w["x1"] for w in words
+            if re.fullmatch(r"\$?[\d,]+\.\d{2}", w["text"])
+            and w["x0"] >= info["x0"] - 2
+            and info["top"] - 2 <= w["top"] <= price_bottom
+        ),
+        default=info["x0"] + 215,
+    )
+    prices = page.crop((info["x0"] - 2, info["top"] - 1, min(page.width, right + 2), price_bottom)).extract_text() or ""
+    return f"{_OPTIONS_COLUMN_MARK}\n{options}\n{_PRICE_COLUMN_MARK}\n{prices}"
+
+
+# Toyota / Lexus Monroney: installed options are a right-hand column of
+# "** Name price" lines. Some (e.g. the 2019 RX) store a space character
+# between every letter; those are dropped and word gaps re-derived.
+def _toyota_position_blocks(page, words: list[dict[str, Any]]) -> str | None:
+    if not any(w["text"].upper() == "HANDLING" for w in words):
+        return None
+    marks = [
+        w["x0"] for i, w in enumerate(words)
+        if w["x0"] > page.width * 0.4
+        and (w["text"].startswith("**") or (w["text"] == "*" and _next_words(words, i + 1, "*")))
+    ]
+    if not marks:
+        return None
+    left = min(marks) - 4
+    total = next(
+        (w for w in words if w["text"].upper() == "TOTAL" and w["x0"] > left),
+        None,
+    )
+    bottom = (total["bottom"] + 2) if total else page.height
+    crop = page.crop((left, 0, page.width, bottom))
+    text = crop.extract_text() or ""
+    starred = [ln for ln in text.splitlines() if ln.lstrip().startswith("*")]
+    tokens = [tok for ln in starred for tok in ln.split()]
+    if tokens and sum(1 for tok in tokens if len(tok) == 1 and tok.isalpha()) / len(tokens) > 0.3:
+        text = crop.filter(
+            lambda o: not (o.get("object_type") == "char" and o.get("text") == " ")
+        ).extract_text(x_tolerance=1.5) or ""
+    return f"{_OPTIONS_COLUMN_MARK}\n{text}"
+
+
+def _position_blocks_text(pdf) -> str:
+    """Position-cropped blocks for a GM, Ford or Toyota/Lexus sticker PDF (an
+    open pdfplumber document), each after its marker line; "" for any other
+    layout. Never raises — a crop failure just means the parsers fall back to
+    the plain text."""
+    out: list[str] = []
+    for page in pdf.pages:
+        try:
+            words = page.extract_words()
+        except Exception:  # noqa: BLE001
+            continue
+        for builder in (_gm_position_blocks, _ford_position_blocks, _toyota_position_blocks):
+            try:
+                block = builder(page, words)
+            except Exception:  # noqa: BLE001
+                block = None
+            if block:
+                out.append(block)
+                break
+    return "\n".join(out)
+
+
+_COLUMN_PRICE_RE = re.compile(r"^(.+?):?\s+(-?\$?[\d,]+\.\d{2}|NO\s+CHARGE)\s*$", re.IGNORECASE)
 _COLUMN_BULLET_RE = re.compile(r"^(?:\(cid:\d+\)|[•·\-*])\s*")
+# GM pricing-summary lines inside the options flow: (field, line-start pattern).
+_GM_SUMMARY_LINES = (
+    ("base_price", r"STANDARD VEHICLE PRICE"),
+    ("total_options", r"TOTAL OPTIONS"),
+    ("total_vehicle_and_options", r"TOTAL VEHICLE & OPTIONS"),
+    ("freight", r"DESTINATION (?:FREIGHT )?CHARGE"),
+    ("total_before_savings", r"TOTAL BEFORE SAVINGS"),
+    ("total_msrp", r"TOTAL VEHICLE PRICE"),
+)
 
 
-def _parse_options_column(column: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """(option_packages, added_options_all) from a position-cropped options
-    column: each priced line is a package/option; the bulleted lines under it
-    (wrapped continuation lines re-joined) are its contents, kept in order in
-    added_options_all as unpriced entries — the shape
-    aggregator._packages_with_sub_items() groups into sub_items."""
+def _column_price(raw: str) -> float:
+    if re.fullmatch(r"NO\s+CHARGE", raw.strip(), re.IGNORECASE):
+        return 0.0
+    return float(raw.replace("$", "").replace(",", "").replace(" ", ""))
+
+
+def _parse_gm_flow(column: str) -> dict[str, Any]:
+    """Options, contents, INC. notes and pricing summary from the GM options
+    flow (_gm_position_blocks()):
+      * 'NAME price' — an option; a negative price is a discount and is kept
+        (it's part of the printed total). A following non-bullet line with no
+        price continues the name ("FRONT BUCKET SEATS WITH CENTER" / "CONSOLE").
+      * '(DEALER INSTALLED)' — flags the option above it; its price counts.
+      * '... INC.' — included at no charge: a standard-trim note, no price.
+      * bulleted lines — the contents of the option above them.
+      * summary lines (STANDARD VEHICLE PRICE, TOTAL OPTIONS, DESTINATION
+        CHARGE, TOTAL BEFORE SAVINGS, TOTAL VEHICLE PRICE) — pricing fields."""
     packages: list[dict[str, Any]] = []
     added: list[dict[str, Any]] = []
+    notes: list[dict[str, Any]] = []
+    summary: dict[str, float] = {}
+    current: dict[str, Any] | None = None  # the option a wrapped name line extends
     for raw in column.splitlines():
-        line = raw.strip()
+        line = _clean(raw)
         if not line:
             continue
-        m = _COLUMN_PRICE_LINE_RE.match(line)
+        up = line.upper()
+        field = next((f for f, pat in _GM_SUMMARY_LINES if re.match(pat, up)), None)
+        if field:
+            m = re.search(r"(-?\$?[\d,]+\.\d{2})\s*$", line)
+            if m:
+                summary.setdefault(field, _column_price(m.group(1)))
+            current = None
+            continue
+        if up.endswith(" INC.") or up == "INC.":
+            notes.append({"code": None, "name": line[: -len("INC.")].strip()})
+            current = None
+            continue
+        if up == "(DEALER INSTALLED)":
+            if packages:
+                packages[-1]["dealer_installed"] = True
+            continue
+        m = _COLUMN_PRICE_RE.match(line)
         if m and re.search(r"[A-Za-z]{3,}", m.group(1)):
-            price = 0.0 if m.group(3) else float(m.group(2).replace(",", ""))
-            entry = {"code": None, "name": _clean(m.group(1)), "price": price}
-            packages.append(entry)
-            added.append(dict(entry))
-        elif not packages:
-            continue  # column header lines before the first priced option
-        elif _COLUMN_BULLET_RE.match(line):
-            added.append({"code": None, "name": _clean(_COLUMN_BULLET_RE.sub("", line)), "price": None})
+            current = {"code": None, "name": m.group(1).strip(), "price": _column_price(m.group(2))}
+            packages.append(current)
+            added.append(current)
+            continue
+        if not packages:
+            continue  # heading lines before the first option
+        if _COLUMN_BULLET_RE.match(line):
+            added.append({"code": None, "name": _COLUMN_BULLET_RE.sub("", line), "price": None})
+            current = None
+        elif current is not None:
+            current["name"] = f"{current['name']} {line}"  # wrapped option name
         elif added and added[-1]["price"] is None:
-            added[-1]["name"] = f"{added[-1]['name']} {_clean(line)}"  # wrapped line
-    return packages, added
+            added[-1]["name"] = f"{added[-1]['name']} {line}"  # wrapped bullet
+    return {
+        "option_packages": [dict(p) for p in packages],
+        "added_options_all": [
+            {k: v for k, v in a.items() if k != "dealer_installed"} for a in added
+        ],
+        "standard_options": notes,
+        **summary,
+    }
 
 
 def _parse_gm_sticker_text(text: str) -> dict[str, Any]:
-    if _OPTIONS_COLUMN_MARK in text:
-        body, column = text.split(_OPTIONS_COLUMN_MARK, 1)
-        packages, added = _parse_options_column(column)
+    body = _body_text(text)
+    column = _marked_block(text, _OPTIONS_COLUMN_MARK)
+    if column:
+        flow = _parse_gm_flow(column)
         data = {
-            "base_price": _find_oem_amount(
-                body, "STANDARD VEHICLE PRICE", "BASE PRICE", "BASE MSRP"
+            "base_price": flow.get("base_price")
+            or _find_oem_amount(
+                body, "STANDARD VEHICLE PRICE", "BASE PRICE", "BASE MSRP", min_value=10_000
             ),
-            "freight": _find_oem_amount(
-                body, "DESTINATION FREIGHT CHARGE", "DESTINATION CHARGE", "FREIGHT"
-            ),
-            "total_msrp": _find_oem_amount(
-                body, "TOTAL VEHICLE PRICE", "TOTAL MSRP", "TOTAL PRICE"
-            ),
-            "option_packages": packages,
-            "added_options_all": added,
-            "standard_options": [],
+            "freight": flow.get("freight")
+            or _find_oem_amount(body, "DESTINATION FREIGHT CHARGE", "DESTINATION CHARGE"),
+            "total_msrp": flow.get("total_msrp")
+            or _find_oem_amount(body, "TOTAL VEHICLE PRICE", "TOTAL MSRP", min_value=10_000),
+            "option_packages": flow["option_packages"],
+            "added_options_all": flow["added_options_all"],
+            "standard_options": flow["standard_options"],
         }
+        for k in ("total_options", "total_before_savings"):
+            if flow.get(k) is not None:
+                data[k] = flow[k]
         return _finalize_oem_totals(data, body)
     options_region = (
         _slice_between(
@@ -2392,13 +2628,13 @@ def _parse_gm_sticker_text(text: str) -> dict[str, Any]:
     )
     data = {
         "base_price": _find_oem_amount(
-            text, "STANDARD VEHICLE PRICE", "BASE PRICE", "BASE MSRP"
+            text, "STANDARD VEHICLE PRICE", "BASE PRICE", "BASE MSRP", min_value=10_000
         ),
         "freight": _find_oem_amount(
             text, "DESTINATION FREIGHT CHARGE", "DESTINATION CHARGE", "FREIGHT"
         ),
         "total_msrp": _find_oem_amount(
-            text, "TOTAL VEHICLE PRICE", "TOTAL MSRP", "TOTAL PRICE"
+            text, "TOTAL VEHICLE PRICE", "TOTAL MSRP", "TOTAL PRICE", min_value=10_000
         ),
         "option_packages": _scan_oem_priced_lines(options_region),
         "standard_options": [],
@@ -2477,11 +2713,117 @@ def _parse_fca_sticker_text(text: str) -> dict[str, Any]:
     return data
 
 
+_TOYOTA_MONEY_RE = re.compile(r"\$?\s?([\d,]+\.\d{2})")
+_TOYOTA_OPTION_RE = re.compile(r"^\*\s*\*\s*(.+?)\s+\$?([\d,]+\.\d{2})\s*$")
+
+
+def _parse_toyota_sticker_text(text: str) -> dict[str, Any]:
+    """Toyota / Lexus Monroney. Installed options are '** Name price' lines in
+    the right-hand column (_toyota_position_blocks()); the unpriced lines under
+    one are its description, kept as a single content entry. Two layouts:
+      * ES-style ("BASE MANUFACTURER'S SUGGESTED RETAIL PRICE $X"): base from
+        that label.
+      * RX-style (letter-spaced; base figure printed above an unlabelled
+        "MANUFACTURER'S SUGGESTED RETAIL PRICE"): base is the first dollar
+        amount >= $10,000 before the first ** line.
+    Destination is "DELIVERY, PROCESSING AND HANDLING FEE"; the grand total is
+    the "TOTAL" line, never "SUB-TOTAL" or a "...BEFORE..." subtotal."""
+    body = _body_text(text)
+    column = _marked_block(text, _OPTIONS_COLUMN_MARK) or body
+    lines = [_clean(ln) for ln in column.splitlines()]
+    lines = [ln for ln in lines if ln and "(UTC)" not in ln]  # "Created on ..." stamp
+
+    es_style = "BASE MANUFACTURER'S SUGGESTED RETAIL PRICE" in body.upper()
+    base = None
+    if es_style:
+        base = _find_oem_amount(body, "BASE MANUFACTURER'S SUGGESTED RETAIL PRICE", min_value=10_000)
+    else:
+        for ln in lines:
+            if ln.startswith("*"):
+                break
+            m = _TOYOTA_MONEY_RE.search(ln)
+            if m and float(m.group(1).replace(",", "")) >= 10_000:
+                base = float(m.group(1).replace(",", ""))
+                break
+
+    packages: list[dict[str, Any]] = []
+    added: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    freight = total = None
+    for ln in lines:
+        up = ln.upper()
+        m = _TOYOTA_OPTION_RE.match(ln)
+        if m:
+            current = {"code": None, "name": m.group(1).strip(), "price": float(m.group(2).replace(",", ""))}
+            packages.append(current)
+            added.append(current)
+            continue
+        money = _TOYOTA_MONEY_RE.findall(ln)
+        if "HANDLING" in up and "DELIVERY" in up:
+            freight = float(money[-1].replace(",", "")) if money else freight
+            current = None
+            continue
+        if re.search(r"\bTOTAL\b", up) and "SUB-TOTAL" not in up and "BEFORE" not in up and money:
+            total = float(money[-1].replace(",", ""))
+            current = None
+            continue
+        if "MANUFACTURER'S" in up or "SUB-TOTAL" in up or up.startswith("$"):
+            current = None
+            continue
+        if current is not None:
+            current["description"] = f"{current.get('description', '')} {ln}".strip()
+    for p in packages:
+        if p.get("description"):
+            added.insert(added.index(p) + 1, {"code": None, "name": p["description"], "price": None})
+    data = {
+        "base_price": base,
+        "freight": freight
+        if freight is not None
+        else _find_oem_amount(body, "DELIVERY, PROCESSING AND HANDLING FEE"),
+        "total_msrp": total,
+        "option_packages": [dict(p) for p in packages],
+        "added_options_all": [
+            {"code": a.get("code"), "name": a["name"], "price": a["price"]} for a in added
+        ],
+        "standard_options": [],
+    }
+    return data
+
+
 _OEM_STICKER_PARSERS = {
     "gm": _parse_gm_sticker_text,
     "fca": _parse_fca_sticker_text,
     "ford": _parse_ford_sticker_text,
+    "toyota": _parse_toyota_sticker_text,
 }
+
+
+RECONCILE_TOLERANCE = 500.0
+
+
+def _reconcile_sticker(data: dict[str, Any], vin: str | None) -> dict[str, Any]:
+    """Set data["reconciliation_ok"]: whether base + options (discounts and
+    credits included, as negative prices) + unlisted_options_total (FCA's
+    unattributable remainder) + destination lands within $500 of the printed
+    total. None when there's no total to check against. A failure is logged
+    and flagged, never discarded — callers decide whether to accept it."""
+    total = data.get("total_msrp")
+    if total is None:
+        data["reconciliation_ok"] = None
+        return data
+    base = data.get("base_price")
+    options = round(sum(p.get("price") or 0 for p in data.get("option_packages") or []), 2)
+    options += data.get("unlisted_options_total") or 0
+    dest = data.get("freight") or 0
+    subtotal = round((base or 0) + options + dest, 2)
+    gap = round(total - subtotal, 2)
+    data["reconciliation_ok"] = base is not None and abs(gap) <= RECONCILE_TOLERANCE
+    if not data["reconciliation_ok"]:
+        print(
+            f"[sticker] {vin} reconciliation failed: base {base} + options {options} "
+            f"+ dest {dest} = {subtotal}, total {total}, gap {gap}"
+        )
+    return data
 
 
 def _oem_sticker_result(data: dict[str, Any], text: str, vin: str) -> dict[str, Any]:
@@ -2592,6 +2934,8 @@ def _parse_oem_sticker(url: str, vin: str, make: str | None = None) -> dict[str,
         data = _parse_gm_sticker_text(text)
     elif any(m in make_low for m in ("jeep", "ram", "dodge", "chrysler")):
         data = _parse_fca_sticker_text(text)
+    elif "toyota" in make_low or "lexus" in make_low:
+        data = _parse_toyota_sticker_text(text)
     elif _oem_sticker_family(vin, text):
         data = _OEM_STICKER_PARSERS[_oem_sticker_family(vin, text)](text)
     else:
@@ -2611,7 +2955,7 @@ def _parse_oem_sticker(url: str, vin: str, make: str | None = None) -> dict[str,
         sticker_url=url,
         source="carfax_sticker_link",
     )
-    return data
+    return _reconcile_sticker(data, vin)
 
 
 # --------------------------------------------------------------------------- #
