@@ -18,7 +18,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from scraper import ACVMAX_DEALERSHIP, ACVMAX_INVENTORY_URL, ACVMaxScraper, ScraperError
+from scraper import (
+    ACVMAX_DEALERSHIP,
+    ACVMAX_INVENTORY_URL,
+    STICKER_CACHE_DIR,
+    ACVMaxScraper,
+    ScraperError,
+)
 
 SNAPSHOT_PATH = Path(__file__).with_name("last_inventory_snapshot.json")
 
@@ -277,6 +283,31 @@ def save_snapshot(vehicles: list[dict[str, Any]]) -> None:
     print(f"[crawler] wrote {SNAPSHOT_PATH.name} ({len(vehicles)} vehicles)")
 
 
+def prune_sticker_cache(vehicles: list[dict[str, Any]]) -> int:
+    """Delete sticker_cache/<VIN>.pdf and <VIN>_sticker.html for every VIN not
+    in `vehicles` (a fresh crawl's active inventory) — sold/transferred units.
+    <VIN>.png files are left alone: vision_processor.py manages those. Skipped
+    entirely on an empty crawl so a failed/blank scrape can't wipe the cache.
+    Returns the number of files removed."""
+    active = {(v.get("vin") or "").strip().upper() for v in vehicles if v.get("vin")}
+    if not active:
+        print("[sticker-cache] no VINs in this crawl, skipping cleanup")
+        return 0
+    removed = 0
+    for path in [*STICKER_CACHE_DIR.glob("*.pdf"), *STICKER_CACHE_DIR.glob("*_sticker.html")]:
+        vin = path.name.removesuffix("_sticker.html").removesuffix(".pdf").upper()
+        if vin in active:
+            continue
+        try:
+            path.unlink()
+        except OSError as exc:
+            print(f"[sticker-cache] could not remove {path.name}: {exc}")
+            continue
+        removed += 1
+        print(f"[sticker-cache] removed {path.name} — no longer in inventory")
+    return removed
+
+
 def load_previous_snapshot() -> dict[str, Any] | None:
     if not SNAPSHOT_PATH.exists():
         return None
@@ -417,6 +448,7 @@ def main(argv: list[str] | None = None) -> int:
 
     changes = detect_price_changes(inventory, previous)
     save_snapshot(inventory)
+    prune_sticker_cache(inventory)
 
     print()
     print("=" * 78)

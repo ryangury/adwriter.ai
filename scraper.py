@@ -974,6 +974,11 @@ class AutoiPacketScraper(_BrowserSession):
             cached["source"] = "rarity_db_cache"
             return cached
 
+        # -- Raw HTML already on disk: no browse, no endpoint hit ----- #
+        cached = self._sticker_from_cached_html(vin)
+        if cached:
+            return cached
+
         # -- Tier 2: iPacket inventory browse ----------------------- #
         try:
             data = self._sticker_via_browse(vin)
@@ -1027,6 +1032,12 @@ class AutoiPacketScraper(_BrowserSession):
         """
         assert self.page is not None
         vin = vin.strip().upper()
+
+        # A cached raw sticker never touches the endpoint, so it's checked
+        # before any gate and never burns a daily-count slot.
+        cached = self._sticker_from_cached_html(vin)
+        if cached:
+            return cached
 
         def _refused(reason: str) -> dict[str, Any] | None:
             print(f"[scraper] sticker pull for {vin} skipped — {reason}")
@@ -1102,6 +1113,7 @@ class AutoiPacketScraper(_BrowserSession):
 
         if kind == "html":
             text = self._read_sticker_frame(target)
+            self._save_sticker_html(target, vin)
             sticker_url = target.url
             image_path = self._capture_sticker_screenshot_html(target, vin)
         else:  # "pdf"
@@ -1121,6 +1133,57 @@ class AutoiPacketScraper(_BrowserSession):
         data["sticker_image_path"] = image_path
         if data["total_msrp"] is None and not data["option_packages"]:
             self._dump_debug(f"empty-parse-{vin}")
+        return data
+
+    @staticmethod
+    def _save_sticker_html(frame: Frame, vin: str) -> None:
+        """Raw HTML of the rendered sticker <iframe>, saved to
+        sticker_cache/<vin>_sticker.html: reused by _sticker_from_cached_html()
+        and kept as training data for a future deterministic parser. Captured
+        after _read_sticker_frame() so it's the 'Text Only' view that was
+        actually parsed. Best-effort, never raises."""
+        path = STICKER_CACHE_DIR / f"{vin}_sticker.html"
+        try:
+            path.write_text(frame.content(), encoding="utf-8")
+            print(f"[sticker-cache] saved {path.name}")
+        except Exception as exc:  # noqa: BLE001 - best-effort only
+            print(f"[sticker-cache] could not save {path.name}: {exc}")
+
+    def _sticker_from_cached_html(self, vin: str) -> dict[str, Any] | None:
+        """Parse sticker_cache/<vin>_sticker.html, if present, in place of a live
+        fetch. The HTML is loaded into a blank tab of the current browser
+        context (scripts stripped, nothing navigated) so the text goes through
+        the same inner_text() the live path uses. None when there's no cached
+        file or it doesn't parse to a price or any options, so the caller falls
+        through to the live pull."""
+        assert self.page is not None
+        path = STICKER_CACHE_DIR / f"{vin}_sticker.html"
+        if not path.is_file():
+            return None
+        page = None
+        try:
+            html = path.read_text(encoding="utf-8")
+            html = re.sub(r"<script\b.*?</script>", "", html, flags=re.IGNORECASE | re.DOTALL)
+            page = self.page.context.new_page()
+            page.set_content(html, wait_until="domcontentloaded")
+            text = page.locator("body").inner_text()
+        except Exception as exc:  # noqa: BLE001 - a bad cache file must never block a pull
+            print(f"[sticker-cache] could not read {path.name}: {exc}")
+            return None
+        finally:
+            if page is not None:
+                page.close()
+
+        data = self._parse_sticker_text(text, vin)
+        if data["total_msrp"] is None and not data["option_packages"]:
+            print(f"[sticker-cache] {path.name} parsed empty, pulling live instead")
+            return None
+        png = STICKER_CACHE_DIR / f"{vin}.png"
+        data["sticker_url"] = None
+        data["render"] = "html"
+        data["sticker_image_path"] = str(png) if png.is_file() else None
+        data["source"] = "sticker_html_cache"
+        print(f"[sticker-cache] using cached {path.name}")
         return data
 
     @staticmethod
@@ -2167,20 +2230,45 @@ def _parse_oem_sticker(url: str, vin: str, make: str | None = None) -> dict[str,
         except Exception:  # noqa: BLE001
             ctx = ssl.create_default_context()
 
-    req = urllib.request.Request(url, headers={"User-Agent": _STICKER_FETCH_UA})
-    try:
-        with urllib.request.urlopen(req, timeout=30, context=ctx) as resp:
-            content_type = resp.headers.get("Content-Type", "") or ""
-            body = resp.read()
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise StickerNotFoundError(
-            f"{vin}: could not fetch OEM sticker at {url}: {exc}"
-        ) from exc
+    # Raw PDFs are kept at sticker_cache/<VIN>.pdf (training data for a future
+    # deterministic parser); a cached copy skips the download entirely. Only
+    # PDFs are cached here; an HTML sticker (e.g. GM) is always re-fetched.
+    pdf_cache_path = STICKER_CACHE_DIR / f"{vin.strip().upper()}.pdf" if vin else None
+    from_cache = bool(pdf_cache_path and pdf_cache_path.is_file())
+    if from_cache:
+        body = pdf_cache_path.read_bytes()
+        is_pdf = True
+        print(f"[sticker-cache] using cached {pdf_cache_path.name}")
+    else:
+        req = urllib.request.Request(url, headers={"User-Agent": _STICKER_FETCH_UA})
+        try:
+            with urllib.request.urlopen(req, timeout=30, context=ctx) as resp:
+                content_type = resp.headers.get("Content-Type", "") or ""
+                body = resp.read()
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise StickerNotFoundError(
+                f"{vin}: could not fetch OEM sticker at {url}: {exc}"
+            ) from exc
 
-    is_pdf = "pdf" in content_type.lower() or url.lower().split("?")[0].endswith(".pdf")
+        is_pdf = "pdf" in content_type.lower() or url.lower().split("?")[0].endswith(".pdf")
+        if is_pdf and pdf_cache_path:
+            try:
+                pdf_cache_path.write_bytes(body)
+                print(f"[sticker-cache] saved {pdf_cache_path.name}")
+            except OSError as exc:  # best-effort, never blocks the parse
+                print(f"[sticker-cache] could not save {pdf_cache_path.name}: {exc}")
+
     if is_pdf:
-        text = AutoiPacketScraper._pdf_bytes_to_text(body)
+        try:
+            text = AutoiPacketScraper._pdf_bytes_to_text(body)
+        except Exception as exc:  # noqa: BLE001 - pdfminer raises its own types
+            text = ""
+            print(f"[scraper] {vin}: OEM sticker PDF text extraction failed: {exc}")
         render = "pdf"
+        if pdf_cache_path and not text.strip():
+            # A truncated/corrupt copy would otherwise fail from the cache
+            # forever — drop it so the next attempt re-downloads.
+            pdf_cache_path.unlink(missing_ok=True)
     else:
         text = _html_to_text(body.decode("utf-8", errors="replace"))
         render = "html"

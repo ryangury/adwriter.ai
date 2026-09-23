@@ -47,6 +47,7 @@ from verifier import HendrickCarsScraper, run_verification, send_verification_al
 from inventory_crawler import (
     crawl_inventory,
     detect_reprices_needed,
+    prune_sticker_cache,
     save_snapshot,
 )
 from scraper import ACVMaxScraper, ReconVisionScraper
@@ -298,6 +299,9 @@ def _run_inner(
     # --- 1. INVENTORY CRAWL ------------------------------------------------ #
     print("\n=== 1. INVENTORY CRAWL ===")
     retail = crawl_inventory(save=False)
+    # Before the status-1 filter below: an uncertified unit is still in
+    # inventory, and its cached sticker files are still worth keeping.
+    prune_sticker_cache(retail)
     excluded_not_certified = [v for v in retail if v.get("status_code") == 1]
     retail = [v for v in retail if v.get("status_code") != 1]
     if excluded_not_certified:

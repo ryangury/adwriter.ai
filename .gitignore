@@ -16,6 +16,8 @@ reconvision_session.json
 scraper_debug/
 carfax_cache/
 sticker_cache/
+sticker_cache/*.pdf
+sticker_cache/*.html
 recon_cache/
 
 # Python
