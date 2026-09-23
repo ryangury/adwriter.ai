@@ -24,6 +24,12 @@ from datetime import date, datetime, timezone
 from difflib import SequenceMatcher
 from typing import Any
 
+from run_lock import (
+    ORCHESTRATOR_LOCK_PATH,
+    ScraperBusyError,
+    acquire_scraper_lock,
+    release_lock_if_owned,
+)
 from scraper import _BrowserSession
 
 HENDRICKCARS_HOME = "https://www.hendrickcars.com"
@@ -538,6 +544,22 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     headless = not args.headed
 
+    # The orchestrator holds this for its whole run and keeps ad_history in
+    # memory across it; running alongside would clobber each other's writes.
+    try:
+        acquire_scraper_lock(ORCHESTRATOR_LOCK_PATH, wait_seconds=0)
+    except ScraperBusyError:
+        print("[verify] orchestrator is running — skipping to protect ad_history.json")
+        return 0
+    try:
+        return _main_locked(args, parser, headless)
+    finally:
+        release_lock_if_owned(ORCHESTRATOR_LOCK_PATH)
+
+
+def _main_locked(
+    args: argparse.Namespace, parser: argparse.ArgumentParser, headless: bool
+) -> int:
     if args.all:
         current, needs_posting, needs_update = run_verification(headless=headless)
         print(

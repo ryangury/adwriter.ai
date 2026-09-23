@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from datetime import date
@@ -49,7 +50,12 @@ from inventory_crawler import (
     save_snapshot,
 )
 from scraper import ACVMaxScraper, ReconVisionScraper
-from run_lock import ScraperBusyError
+from run_lock import (
+    ORCHESTRATOR_LOCK_PATH,
+    ScraperBusyError,
+    acquire_scraper_lock,
+    release_lock_if_owned,
+)
 
 BUILD_STATUS_CODES = {10, 11, 12, 13, 16}
 
@@ -251,9 +257,18 @@ def run(
     skip_benchmark: bool = False,
 ) -> int:
     try:
-        return _run_inner(
-            limit=limit, send_email=send_email, status=status, skip_benchmark=skip_benchmark
-        )
+        # Held for the whole run so the standalone verifier (verifier.py main)
+        # can't load/save ad_history.json underneath us — scraper.lock alone is
+        # released between browser sessions.
+        acquire_scraper_lock(ORCHESTRATOR_LOCK_PATH, wait_seconds=0)
+        print(f"[orchestrator] acquired {ORCHESTRATOR_LOCK_PATH.name} (PID {os.getpid()})")
+        try:
+            return _run_inner(
+                limit=limit, send_email=send_email, status=status, skip_benchmark=skip_benchmark
+            )
+        finally:
+            if release_lock_if_owned(ORCHESTRATOR_LOCK_PATH):
+                print(f"[orchestrator] released {ORCHESTRATOR_LOCK_PATH.name}")
     except ScraperBusyError as exc:
         print(f"[orchestrator] {exc} — exiting", file=sys.stderr)
         return 0
