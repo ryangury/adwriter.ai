@@ -36,7 +36,7 @@ import argparse
 import json
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -47,13 +47,23 @@ from run_lock import (
     acquire_scraper_lock,
     release_lock_if_owned,
 )
-from scraper import AutoiPacketScraper, _parse_oem_sticker
+from scraper import (
+    NON_MB_STICKER_MIN_DELAY_SECONDS,
+    AutoiPacketScraper,
+    _non_mb_sticker_last_pull_at,
+    _parse_oem_sticker,
+)
 from vehicle_cache import _connect, get_vehicle, save_window_sticker
 
 SNAPSHOT_PATH = Path(__file__).with_name("last_inventory_snapshot.json")
 
 # Cached sticker sources the warmup will try to replace. None = no sticker.
-TARGET_SOURCES = {None, "acvmax_options_tab", "unavailable_after_retries"}
+# autoipacket_predictive is AutoiPacket's estimated build, not an OEM sticker,
+# so like the ACV Max options tab it gets replaced when a real one turns up.
+TARGET_SOURCES = {
+    None, "acvmax_options_tab", "unavailable_after_retries", "autoipacket_predictive",
+}
+PREDICTIVE_SOURCE = "autoipacket_predictive"
 
 
 def _load_retail_vehicles() -> list[dict[str, Any]]:
@@ -87,6 +97,30 @@ def _reset_attempts(vin: str) -> None:
             (datetime.now().isoformat(), vin),
         )
         conn.commit()
+
+
+def _is_predictive(sticker: dict[str, Any]) -> bool:
+    """AutoiPacket's predictive build (watermarked PREDICTIVE DATA, totalled as
+    TOTAL PREDICTED PRICE) rather than an OEM sticker. The result carries no
+    flag for it, and its source only names the iPacket path that answered,
+    so this reads the sticker text."""
+    marker = f"{sticker.get('source') or ''} {sticker.get('raw_text') or ''}".upper()
+    return "PREDICTIVE" in marker or "PREDICTED PRICE" in marker
+
+
+def _spacing_wait_seconds(result: dict[str, Any] | None) -> int | None:
+    """Seconds left on the non-MB 5-minute spacing when that, and only that,
+    is why pull_sticker() was refused; None for any other outcome (daily caps,
+    the 11am-6pm window, success, a real failure)."""
+    if not (result and result.get("rate_limited")):
+        return None
+    if f"less than {NON_MB_STICKER_MIN_DELAY_SECONDS}s since the last non-MB pull" not in (result.get("error") or ""):
+        return None
+    last = _non_mb_sticker_last_pull_at()
+    if last is None:
+        return 0
+    ready = last + timedelta(seconds=NON_MB_STICKER_MIN_DELAY_SECONDS)
+    return max(0, int((ready - datetime.now()).total_seconds()) + 1)
 
 
 def _summary(sticker: dict[str, Any]) -> str:
@@ -138,7 +172,7 @@ def warmup(*, only_vins: list[str], dry_run: bool, headless: bool = True) -> int
     started = time.monotonic()
     targets, skips = _select(_load_retail_vehicles(), only_vins)
     total = len(targets)
-    counts = {"upgraded": 0, "new": 0, "failed": 0}
+    counts = {"upgraded": 0, "new": 0, "predictive": 0, "failed": 0}
 
     print(f"\n[sticker_warmup] {total} target vehicle(s)" + (" — DRY RUN" if dry_run else ""))
     if dry_run:
@@ -173,6 +207,7 @@ def warmup(*, only_vins: list[str], dry_run: bool, headless: bool = True) -> int
     print(f"  Targets:                               {total}")
     print(f"  Upgraded from ACV Max:                 {counts['upgraded']}")
     print(f"  Newly fetched:                         {counts['new']}")
+    print(f"    of which predictive (not OEM):       {counts['predictive']}")
     print(f"  Failed both paths (left untouched):    {counts['failed']}")
     print(f"  Total runtime:                         {elapsed:.0f}s")
     return 0
@@ -218,11 +253,19 @@ def _run(
                         ipacket = AutoiPacketScraper(headless=headless, use_saved_session=True).__enter__()
                         ipacket.login()
                     data = ipacket.pull_sticker(vin, bypass_rate_limits=False, non_mb=True)
+                    wait = _spacing_wait_seconds(data)
+                    if wait is not None:
+                        # Only the 5-minute spacing gets a retry; daily caps
+                        # and the time window fail straight through below.
+                        print(f"[warmup] {vin} — 5-minute gap, waiting {wait}s then retrying")
+                        time.sleep(wait + 5)
+                        data = ipacket.pull_sticker(vin, bypass_rate_limits=False, non_mb=True)
                 except Exception as exc:  # noqa: BLE001
                     print(f"{tag} — iPacket failed: {exc}")
                 else:
                     if _usable(data):
-                        sticker, source = data, _sticker_source(data)
+                        sticker = data
+                        source = PREDICTIVE_SOURCE if _is_predictive(data) else _sticker_source(data)
                     elif data and data.get("rate_limited"):
                         print(f"{tag} — iPacket held back by rate limit: {data.get('error')}")
                     else:
@@ -240,6 +283,8 @@ def _run(
             )
             _reset_attempts(vin)
             counts["upgraded" if prior == "acvmax_options_tab" else "new"] += 1
+            if source == PREDICTIVE_SOURCE:
+                counts["predictive"] += 1
             print(
                 f"{tag} — saved via {source} ({_summary(sticker)}); "
                 f"DB updated, was {prior or 'no sticker'}; retry counter reset"

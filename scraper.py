@@ -278,6 +278,9 @@ SEC_BASE = "BASE SUGGESTED PRICE"
 SEC_ADDED = "ADDED OPTIONS"
 SEC_PRICE_DETAILS = "PRICE DETAILS"
 SEC_TOTAL = "TOTAL SUGGESTED PRICE"
+# Grand-total labels a document-viewer sticker can carry: OEM stickers say
+# SUGGESTED, AutoiPacket's predictive builds (e.g. Land Rover) say PREDICTED.
+STICKER_TOTAL_LABELS = (SEC_TOTAL, "TOTAL PREDICTED PRICE", "TOTAL PRICE")
 
 _CHROME_LINES = {"Single Page", "Multi Page", "Text Only", ""}
 
@@ -1389,13 +1392,16 @@ class AutoiPacketScraper(_BrowserSession):
             )
 
         try:
-            frame.get_by_text(SEC_TOTAL, exact=False).first.wait_for(
+            frame.get_by_text(
+                re.compile("|".join(map(re.escape, STICKER_TOTAL_LABELS)), re.IGNORECASE)
+            ).first.wait_for(
                 timeout=self.timeout_ms
             )
         except PlaywrightTimeoutError as exc:
             self._dump_debug(f"sticker-frame-empty-{vin}")
             raise StickerNotFoundError(
-                f"Sticker iframe for {vin} loaded but never showed '{SEC_TOTAL}'."
+                f"Sticker iframe for {vin} loaded but never showed a total price "
+                f"({' / '.join(STICKER_TOTAL_LABELS)})."
             ) from exc
         return frame
 
@@ -1563,7 +1569,7 @@ class AutoiPacketScraper(_BrowserSession):
                 interior_color = nxt or None
             elif up == "EXTERIOR":
                 exterior_color = nxt or None
-            elif up == SEC_TOTAL:
+            elif up in STICKER_TOTAL_LABELS:
                 total_msrp = _money(ln) or _money(nxt)
 
         def parse_options(block: list[str]) -> list[dict[str, Any]]:
@@ -1614,7 +1620,7 @@ class AutoiPacketScraper(_BrowserSession):
                 nxt = details[j + 1] if j + 1 < len(details) else ""
                 if up.startswith("FREIGHT") or up.startswith("DESTINATION"):
                     freight = _money(ln) or _money(nxt)
-                elif up == SEC_TOTAL:
+                elif up in STICKER_TOTAL_LABELS:
                     total_msrp = _money(ln) or _money(nxt) or total_msrp
 
         return {
