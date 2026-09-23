@@ -40,6 +40,7 @@ from scraper import ReconVisionScraper, ScraperError
 from shared_prompt_constants import (
     API_FEEDBACK_BLOCK,
     PACKAGE_CONTENT_VERIFICATION_RULE,
+    RECON_FALLBACK_RULE,
     STORE_CLOSER_PARAGRAPH,
 )
 from system_prompt_as_is import AS_IS_PROMPT
@@ -132,6 +133,8 @@ This paragraph establishes trust and specifics. Use the pre-built sentences from
 - Sentence 2: PROVENANCE SENTENCE — use verbatim. Do not derive provenance from raw data. Do not decode the stock number.
 - Sentence 3: CARFAX SENTENCE — use verbatim, omit if null. Do not derive accident history or service history from raw Carfax fields.
 - Sentence 4: RECON SENTENCE — use verbatim, omit if null. Do not interpret raw recon line items yourself.
+
+{RECON_FALLBACK_RULE}
 
 ---
 
@@ -452,9 +455,12 @@ def _norm_feature(name: str) -> str:
 # for prompt variants that emit them.
 _AD_TAG_RE = re.compile(r"<ad>(.*?)</ad>", re.DOTALL | re.IGNORECASE)
 
-# The store-closer paragraph is fixed in every prompt variant.
+# The store-closer paragraph is fixed in every prompt variant: MB CPO /
+# courtesy use STORE_CLOSER_PARAGRAPH, Hendrick Certified / Affordable / As-Is
+# use HENDRICK_STORE_CLOSER_PARAGRAPH (see shared_prompt_constants.py).
 _STORE_CLOSER_RE = re.compile(
-    r"number one Certified Pre-Owned Mercedes-Benz dealer in the Triangle",
+    r"number one Certified Pre-Owned Mercedes-Benz dealer in the Triangle"
+    r"|Mercedes-Benz of Durham is part of the Hendrick Automotive Group, rated",
     re.IGNORECASE,
 )
 
@@ -532,6 +538,7 @@ PROTECTED_OPENINGS = [
     "Before this vehicle was offered for sale",
     "This vehicle is sold without",
     "Mercedes-Benz of Durham is the number one",
+    "Mercedes-Benz of Durham is part of the Hendrick Automotive Group",
 ]
 
 
@@ -1377,6 +1384,12 @@ def format_data_package(pkg: dict) -> tuple[str, list[dict]]:
     lines.append("RECON SENTENCE (use verbatim in paragraph one sentence four, omit if null):")
     lines.append(pkg.get("recon_sentence") or "(omit — no qualifying recon items)")
 
+    lines.append("")
+    lines.append(
+        "RECON_FALLBACK_SENTENCE (use verbatim as the closing sentence of paragraph one, omit if null):"
+    )
+    lines.append(pkg.get("recon_fallback_sentence") or "null")
+
     # --- MARKET VELOCITY: days-supply / competitive-set signals from ACV Max.
     # Only rendered when the package actually carries this data — ACV Max
     # doesn't show the widget for every vehicle, and it must never be
@@ -1457,8 +1470,9 @@ def format_data_package(pkg: dict) -> tuple[str, list[dict]]:
         )
         lines.append(
             "Do not reference any reconditioning, service, tire, or brake work "
-            "in paragraph one. Write paragraph one from provenance and Carfax "
-            "only. The recon sentence will be added later."
+            "in paragraph one, other than the RECON_FALLBACK_SENTENCE above "
+            "when it is provided. Write paragraph one from provenance and "
+            "Carfax only. The recon sentence will be added later."
         )
         return "\n".join(lines), needs_lookup
     lines.append(f"all_tires_replaced: {_yn(recon.get('all_tires_replaced'))}")

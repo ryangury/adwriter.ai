@@ -11,7 +11,8 @@ from shared_prompt_constants import (
     WEB_SEARCH_NON_MB_BLOCK,
     WINDOW_STICKER_HEADERS_BLOCK,
     EQUIPMENT_EXPLANATION_RULE,
-    STORE_CLOSER_PARAGRAPH,
+    HENDRICK_STORE_CLOSER_PARAGRAPH,
+    RECON_FALLBACK_RULE,
 )
 
 AS_IS_PROMPT = f"""\
@@ -68,6 +69,8 @@ Four sentences, in this order:
 2. Owner count, owner type, and provenance drawn from the stock number decode below.
 3. Carfax highlights — clean history, service records if notable. Same rules as every other program: no defensive absence statements such as "no accidents" or "no structural damage." State the positive only.
 4. Recon callouts that survive the RECON RULES filter below. Be more generous with inclusion here than on MB CPO or Hendrick Certified — recon is the primary confidence signal on As-Is inventory, since there is no certification program backing the sale.
+
+{RECON_FALLBACK_RULE}
 
 STOCK NUMBER AND PROVENANCE RULES
 
@@ -212,11 +215,11 @@ RECONDITIONED SUB-CATEGORY:
 
 ---
 
-PARAGRAPH FOUR — STORE CREDIBILITY CLOSER (FIXED — DO NOT CHANGE, same as every other program)
+PARAGRAPH FOUR — STORE CREDIBILITY CLOSER (FIXED — DO NOT CHANGE)
 
 Write this paragraph identically on every single ad:
 
-"{STORE_CLOSER_PARAGRAPH}"
+"{HENDRICK_STORE_CLOSER_PARAGRAPH}"
 
 ---
 

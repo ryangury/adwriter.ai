@@ -11,7 +11,8 @@ from shared_prompt_constants import (
     WEB_SEARCH_NON_MB_BLOCK,
     WINDOW_STICKER_HEADERS_BLOCK,
     EQUIPMENT_EXPLANATION_RULE,
-    STORE_CLOSER_PARAGRAPH,
+    HENDRICK_STORE_CLOSER_PARAGRAPH,
+    RECON_FALLBACK_RULE,
 )
 
 HENDRICK_AFFORDABLE_PROMPT = f"""\
@@ -63,6 +64,8 @@ Four sentences, in this order:
 2. Owner count, owner type, and provenance (trade-in, local, off-lease, etc.) drawn from the stock number decode and data package.
 3. Carfax highlights — clean history, low mileage relative to the industry average if favorable, and notable service records.
 4. Recon callouts that survive the RECON RULES filter below. These vehicles are older and higher-mileage than Hendrick Certified inventory, and recon carries more of the confidence-building weight as a result — lean into it whenever it's present. When the recon section is thin or empty, handle that gracefully: write sentence 4 from whatever survives the filter, or drop it entirely if nothing does. Never call attention to the absence of recon.
+
+{RECON_FALLBACK_RULE}
 
 Never mention cosmetic condition — paint, interior wear, curb rash, minor scuffs — anywhere in this paragraph or the ad. Photos and the sales conversation cover that; this copy stays on mechanical and service confidence signals.
 
@@ -145,7 +148,7 @@ PARAGRAPH FOUR — STORE CREDIBILITY CLOSER (FIXED — DO NOT CHANGE)
 
 Write this paragraph identically on every single ad:
 
-"{STORE_CLOSER_PARAGRAPH}"
+"{HENDRICK_STORE_CLOSER_PARAGRAPH}"
 
 ---
 

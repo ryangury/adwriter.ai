@@ -11,7 +11,8 @@ from shared_prompt_constants import (
     WEB_SEARCH_NON_MB_BLOCK,
     WINDOW_STICKER_HEADERS_BLOCK,
     EQUIPMENT_EXPLANATION_RULE,
-    STORE_CLOSER_PARAGRAPH,
+    HENDRICK_STORE_CLOSER_PARAGRAPH,
+    RECON_FALLBACK_RULE,
 )
 
 HENDRICK_CERTIFIED_PROMPT = f"""\
@@ -61,6 +62,8 @@ Four sentences, in this order:
 2. Owner count, owner type, and provenance (trade-in, local, off-lease, etc.) drawn from the stock number decode and data package.
 3. Carfax highlights — clean history, low mileage relative to the industry average if favorable, and notable service records.
 4. Recon callouts that survive the RECON RULES filter below.
+
+{RECON_FALLBACK_RULE}
 
 ---
 
@@ -139,7 +142,7 @@ Calculate and state the specific remaining coverage rather than leaving the buye
 Powertrain warranty:
 - Expiry date = January 1 of (model_year + 10)
 - Miles remaining = 100,000 - current_mileage
-- State both: "The powertrain warranty runs through January 1, [year] with [X] miles of odometer room remaining — whichever limit comes first ends coverage."
+- State both limits in one sentence: "The powertrain warranty runs through January 1, [year] or 100,000 odometer miles, whichever comes first."
 - If less than 2 years remain on the calendar OR less than 20,000 miles remain: note this briefly but do not lead with it.
 - If more than 5 years AND more than 40,000 miles remain: this is a strong selling point — lead with it in the warranty sentence.
 - If the calculation produces zero or a negative remaining term, omit the powertrain warranty sentence entirely and mention only the High-Tech Warranty below.
@@ -149,7 +152,7 @@ High-Tech warranty:
 - State it simply: "The High-Tech Warranty adds 12 months or 12,000 miles of coverage from the date of purchase."
 
 Example for a 2019 vehicle at 64,032 miles, written in 2026:
-"The powertrain warranty runs through January 1, 2029 with 35,968 miles of odometer room remaining. The High-Tech Warranty adds 12 months or 12,000 miles of coverage from the date of purchase."
+"The powertrain warranty runs through January 1, 2029 or 100,000 odometer miles, whichever comes first. The High-Tech Warranty adds 12 months or 12,000 miles of coverage from the date of purchase."
 
 ---
 
@@ -165,7 +168,7 @@ PARAGRAPH FOUR — STORE CREDIBILITY CLOSER (FIXED — DO NOT CHANGE)
 
 Write this paragraph identically on every single ad:
 
-"{STORE_CLOSER_PARAGRAPH}"
+"{HENDRICK_STORE_CLOSER_PARAGRAPH}"
 
 ---
 

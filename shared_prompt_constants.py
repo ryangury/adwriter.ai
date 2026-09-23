@@ -103,3 +103,23 @@ STORE_CLOSER_PARAGRAPH = (
     "Raleigh, Cary, Chapel Hill, Wake Forest, and the entire Research Triangle "
     "region. Six stores, nine brands, just minutes from Southpoint Mall and I-40."
 )
+
+# Paragraph four for the Hendrick Certified / Hendrick Affordable / As-Is
+# prompts (status 11/12/13). STORE_CLOSER_PARAGRAPH above stays MB CPO /
+# courtesy (status 10/16) only: its "number one Certified Pre-Owned
+# Mercedes-Benz dealer" claim doesn't belong on non-MB-CPO inventory.
+HENDRICK_STORE_CLOSER_PARAGRAPH = (
+    "Mercedes-Benz of Durham is part of the Hendrick Automotive Group, rated 4.9 "
+    "stars across 4,000-plus Google reviews. Located at the Hendrick Automotive Mall "
+    "on Kentington Drive in Durham, just minutes from Southpoint Mall. Six stores, "
+    "nine brands on one campus. Pricing is researched daily against live market data "
+    "so you can shop with confidence and buy without the back-and-forth."
+)
+
+# Paragraph-one instruction for aggregator.build_recon_fallback_sentence()'s
+# RECON_FALLBACK_SENTENCE, shared by all four tier prompts.
+RECON_FALLBACK_RULE = (
+    "RECON FALLBACK SENTENCE: If RECON_FALLBACK_SENTENCE is provided in the data "
+    "package and is not null, include it verbatim as the closing sentence of "
+    "paragraph one. If it is null, omit it entirely."
+)

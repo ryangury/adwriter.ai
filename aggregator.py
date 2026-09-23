@@ -1899,6 +1899,65 @@ def _upper_first(s: str) -> str:
     return s[:1].upper() + s[1:] if s else s
 
 
+_RECON_PENDING_FALLBACK = {
+    10: (
+        "This vehicle is currently undergoing Mercedes-Benz Certified Pre-Owned "
+        "reconditioning and inspection prior to delivery."
+    ),
+    11: (
+        "This vehicle is currently undergoing Hendrick Certified reconditioning "
+        "and inspection prior to delivery."
+    ),
+    12: (
+        "This vehicle is currently undergoing pre-sale inspection and "
+        "reconditioning prior to delivery."
+    ),
+    13: (
+        "This vehicle is currently undergoing pre-sale inspection and "
+        "reconditioning to Hendrick standards prior to delivery."
+    ),
+}
+_RECON_DONE_FALLBACK = {
+    10: (
+        "Inspection and reconditioning completed to Mercedes-Benz Certified "
+        "Pre-Owned standards prior to delivery."
+    ),
+    11: (
+        "Inspection and reconditioning completed to Hendrick Certified "
+        "standards prior to delivery."
+    ),
+    12: (
+        "Pre-sale inspection and reconditioning completed to Hendrick "
+        "Affordable standards prior to delivery."
+    ),
+    13: (
+        "Pre-sale inspection and reconditioning completed to Hendrick "
+        "standards prior to delivery."
+    ),
+}
+
+
+def build_recon_fallback_sentence(
+    recon_data: dict[str, Any] | None,
+    status_code: int | None,
+    recon_pending: bool,
+) -> str | None:
+    """Closing sentence for paragraph one when there's no recon copy to write.
+
+    None whenever `recon_data` (aggregate()'s filtered `recon_block`) has any
+    line_items — build_recon_sentence() covers that case. Otherwise the
+    sentence depends on why recon is empty: `recon_pending` True means the
+    vehicle is still in the shop ("currently undergoing ..."); False means
+    recon should be done and the data just came back empty ("... completed").
+    Status 16 uses the status-10 wording; an unmapped status code gets
+    None."""
+    if (recon_data or {}).get("line_items"):
+        return None
+    code = 10 if status_code == 16 else status_code
+    table = _RECON_PENDING_FALLBACK if recon_pending else _RECON_DONE_FALLBACK
+    return table.get(code)
+
+
 def build_recon_sentence(
     recon_data: dict[str, Any] | None,
     status_code: int | None,
@@ -2700,8 +2759,7 @@ def build_warranty_sentence(
         expiry_year = model_year + 10
         return (
             f"The powertrain warranty runs through January 1, {expiry_year} "
-            f"with {miles_remaining:,} miles of odometer room remaining. "
-            "Whichever limit comes first ends coverage. The High-Tech "
+            "or 100,000 odometer miles, whichever comes first. The High-Tech "
             "Warranty adds 12 months or 12,000 miles of coverage from the "
             "date of purchase."
         )
@@ -3910,6 +3968,9 @@ def aggregate(
         ),
         "recon_sentence": build_recon_sentence(
             recon_block, pricing_raw.get("status_code"), pricing_raw.get("mileage")
+        ),
+        "recon_fallback_sentence": build_recon_fallback_sentence(
+            recon_block, pricing_raw.get("status_code"), skip_recon
         ),
         "proof_point_sentence": proof_point_sentence,
         "proof_point_type": proof_point_type,
