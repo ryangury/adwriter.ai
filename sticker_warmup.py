@@ -28,6 +28,7 @@ or verifier run.
     python3 sticker_warmup.py                 # all eligible non-MB vehicles
     python3 sticker_warmup.py --dry-run       # list targets; no fetches, no writes
     python3 sticker_warmup.py VIN [VIN ...]   # only these VINs
+    python3 sticker_warmup.py --skip-predictive  # leave autoipacket_predictive rows alone
 """
 
 from __future__ import annotations
@@ -130,10 +131,10 @@ def _summary(sticker: dict[str, Any]) -> str:
 
 
 def _select(
-    vehicles: list[dict[str, Any]], only_vins: list[str]
+    vehicles: list[dict[str, Any]], only_vins: list[str], skip_predictive: bool = False
 ) -> tuple[list[tuple[dict[str, Any], dict[str, Any] | None, str]], dict[str, int]]:
     """(targets as (snapshot vehicle, cached row, make), skip counts)."""
-    skips = {"real_sticker": 0, "mercedes": 0, "not_in_snapshot": 0, "unknown_make": 0}
+    skips = {"real_sticker": 0, "mercedes": 0, "not_in_snapshot": 0, "unknown_make": 0, "predictive": 0}
     by_vin = {(v.get("vin") or "").strip().upper(): v for v in vehicles if v.get("vin")}
     if only_vins:
         wanted = [x.strip().upper() for x in only_vins]
@@ -164,13 +165,22 @@ def _select(
             skips["real_sticker"] += 1
             print(f"[sticker_warmup] {stock} {ymm} — skipped (already has real sticker: {source})")
             continue
+        if skip_predictive and source == PREDICTIVE_SOURCE:
+            skips["predictive"] += 1
+            print(
+                f"[sticker_warmup] {stock} {ymm} ({vin}) — current: {PREDICTIVE_SOURCE} "
+                f"(skipped — use without --skip-predictive to retry)"
+            )
+            continue
         targets.append((v, row, make))
     return targets, skips
 
 
-def warmup(*, only_vins: list[str], dry_run: bool, headless: bool = True) -> int:
+def warmup(
+    *, only_vins: list[str], dry_run: bool, headless: bool = True, skip_predictive: bool = False
+) -> int:
     started = time.monotonic()
-    targets, skips = _select(_load_retail_vehicles(), only_vins)
+    targets, skips = _select(_load_retail_vehicles(), only_vins, skip_predictive)
     total = len(targets)
     counts = {"upgraded": 0, "new": 0, "predictive": 0, "failed": 0}
 
@@ -202,6 +212,8 @@ def warmup(*, only_vins: list[str], dry_run: bool, headless: bool = True) -> int
     print(f"  Already have real sticker (skipped):  {skips['real_sticker']}")
     print(f"  Mercedes-Benz (not in scope):          {skips['mercedes']}")
     print(f"  Not in snapshot (skipped):             {skips['not_in_snapshot']}")
+    if skips["predictive"]:
+        print(f"  Predictive (skipped, --skip-predictive): {skips['predictive']}")
     if skips["unknown_make"]:
         print(f"  Make unknown (skipped):                {skips['unknown_make']}")
     print(f"  Targets:                               {total}")
@@ -303,8 +315,15 @@ def main(argv: list[str] | None = None) -> int:
         "--dry-run", action="store_true", help="show targets only; no fetches, no DB writes"
     )
     parser.add_argument("--headed", action="store_true", help="show the browser window")
+    parser.add_argument(
+        "--skip-predictive", action="store_true",
+        help="exclude vehicles whose sticker is already autoipacket_predictive",
+    )
     args = parser.parse_args(argv)
-    return warmup(only_vins=args.vins, dry_run=args.dry_run, headless=not args.headed)
+    return warmup(
+        only_vins=args.vins, dry_run=args.dry_run, headless=not args.headed,
+        skip_predictive=args.skip_predictive,
+    )
 
 
 if __name__ == "__main__":
