@@ -1122,7 +1122,7 @@ class AutoiPacketScraper(_BrowserSession):
             self._save_sticker_html(target, vin)
             sticker_url = target.url
             image_path = self._capture_sticker_screenshot_html(target, vin)
-        else:  # "pdf"
+        else:  # "pdf" (react-pdf render) or "pdf_embed" (<object>/<embed> PDF)
             if not target:
                 self._dump_debug(f"no-pdf-url-{vin}")
                 raise StickerNotFoundError(
@@ -1130,12 +1130,14 @@ class AutoiPacketScraper(_BrowserSession):
                     f"'{STICKER_PDF_DOWNLOAD_HINT}...token=' URL was seen in the "
                     f"network log."
                 )
-            text, image_path = self._read_sticker_pdf(target, vin)
+            text, image_path = self._read_sticker_pdf(
+                target, vin, cache=kind == "pdf_embed"
+            )
             sticker_url = target
 
         data = self._parse_sticker_text(text, vin)
         data["sticker_url"] = sticker_url
-        data["render"] = kind
+        data["render"] = "html" if kind == "html" else "pdf"
         data["sticker_image_path"] = image_path
         if data["total_msrp"] is None and not data["option_packages"]:
             self._dump_debug(f"empty-parse-{vin}")
@@ -1340,7 +1342,7 @@ class AutoiPacketScraper(_BrowserSession):
         embed_url = self._embedded_sticker_pdf_url()
         if embed_url and not self.page.locator(STICKER_PDF_RENDER_SELECTOR).count():
             print(f"[scraper] sticker for {vin} is an embedded PDF — downloading it directly")
-            return ("pdf", embed_url)
+            return ("pdf_embed", embed_url)
 
         # PDF render path. Give the download request a moment to fire if needed.
         for _ in range(10):
@@ -1397,12 +1399,33 @@ class AutoiPacketScraper(_BrowserSession):
             ) from exc
         return frame
 
-    def _read_sticker_pdf(self, pdf_url: str, vin: str) -> tuple[str, str | None]:
+    def _read_sticker_pdf(
+        self, pdf_url: str, vin: str, *, cache: bool = False
+    ) -> tuple[str, str | None]:
         """Download the sticker PDF with the authenticated session and return
         (extracted text, path to a page-1 PNG render for vision_parser — None
         if that render failed, which never blocks the text extraction it
-        rides along with)."""
+        rides along with).
+
+        cache=True (the embedded-PDF path): reuse sticker_cache/<VIN>.pdf when
+        it exists instead of downloading; a cached copy that won't extract is
+        deleted and downloaded again, once. A fresh download is saved there
+        after its text extracts, so a bad file is never cached."""
         assert self.page is not None
+        cache_path = STICKER_CACHE_DIR / f"{vin}.pdf"
+        if cache and cache_path.is_file():
+            try:
+                pdf_bytes = cache_path.read_bytes()
+                text = self._pdf_bytes_to_text(pdf_bytes)
+                if not text.strip():
+                    raise ValueError("no extractable text")
+            except Exception as exc:  # noqa: BLE001 - pdfminer raises its own types
+                print(f"[sticker-cache] cached {cache_path.name} unreadable ({exc}), re-downloading")
+                cache_path.unlink(missing_ok=True)
+            else:
+                print(f"[sticker-cache] using cached {cache_path.name}")
+                return text, self._render_pdf_page_image(pdf_bytes, vin)
+
         resp = self.page.context.request.get(pdf_url)
         if not resp.ok:
             self._dump_debug(f"pdf-download-{vin}")
@@ -1410,7 +1433,21 @@ class AutoiPacketScraper(_BrowserSession):
                 f"{vin}: sticker PDF download returned HTTP {resp.status}."
             )
         pdf_bytes = resp.body()
-        text = self._pdf_bytes_to_text(pdf_bytes)
+        try:
+            text = self._pdf_bytes_to_text(pdf_bytes)
+        except StickerNotFoundError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - surface as the error callers handle
+            self._dump_debug(f"pdf-empty-{vin}")
+            raise StickerNotFoundError(
+                f"{vin}: sticker PDF downloaded but text extraction failed: {exc}"
+            ) from exc
+        if cache and text.strip():
+            try:
+                cache_path.write_bytes(pdf_bytes)
+                print(f"[sticker-cache] saved {cache_path.name}")
+            except OSError as exc:  # best-effort, never blocks the parse
+                print(f"[sticker-cache] could not save {cache_path.name}: {exc}")
         if not text.strip():
             self._dump_debug(f"pdf-empty-{vin}")
             raise StickerNotFoundError(
