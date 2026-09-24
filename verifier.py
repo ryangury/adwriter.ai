@@ -24,6 +24,7 @@ from datetime import date, datetime, timezone
 from difflib import SequenceMatcher
 from typing import Any
 
+from inventory_crawler import crawl_inventory
 from run_lock import (
     ORCHESTRATOR_LOCK_PATH,
     ScraperBusyError,
@@ -561,6 +562,14 @@ def _main_locked(
     args: argparse.Namespace, parser: argparse.ArgumentParser, headless: bool
 ) -> int:
     if args.all:
+        # Refresh last_inventory_snapshot.json first (the Inventory page's
+        # prices and the warmups read it). Never fatal: a failed crawl leaves
+        # the existing snapshot in place and verification runs regardless.
+        try:
+            vehicles = crawl_inventory(save=True)
+            print(f"[verifier] inventory crawl complete — {len(vehicles)} vehicles in snapshot")
+        except Exception as exc:  # noqa: BLE001 - the crawl must never block verification
+            print(f"[verifier] inventory crawl failed — using existing snapshot: {exc}", file=sys.stderr)
         current, needs_posting, needs_update = run_verification(headless=headless)
         print(
             f"\nchecked {len(current) + len(needs_posting) + len(needs_update)} | "
