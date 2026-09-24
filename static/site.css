@@ -262,3 +262,23 @@
   .sidebar .nav-link.active { border-bottom-color: #fff; }
   .sidebar .nav-signout { margin: 0 0 0 auto; padding: 8px 12px; }
 }
+
+/* Compact vehicle tile in the Ad Writer dashboard grid. */
+.vehicle-card .vehicle-name { font-size: 0.95rem; font-weight: 650; margin-bottom: 4px; }
+.vehicle-card .vehicle-vin {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+/* Database detail page: links to the stored Carfax / sticker / recon files. */
+.cache-image-link {
+  display: inline-block;
+  margin-top: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--accent);
+  text-decoration: none;
+}
+.cache-image-link:hover { text-decoration: underline; }

@@ -404,23 +404,29 @@
       cardCarfax(data.carfax_detail) +
       Cards.cardSticker(data.sticker) +
       cardProofPoints(data.proof_points_all) +
-      cardMarketData(data.market_data);
+      cardMarketData(data.market_data) +
+      cardVehicle(data.vehicle);
     return '<div class="dashboard">' + cards + "</div>";
   }
 
-  function sectionVehicle(v) {
+  // Compact vehicle tile — last cell of the dashboard grid, beside Market data.
+  function cardVehicle(v) {
     if (!v) return "";
-    var name = v.year_make_model ||
-      [v.year, v.make, v.model].filter(Boolean).join(" ") || "—";
-    return '<div class="section"><h2>Vehicle</h2><dl class="kv">' +
-      "<dt>Year</dt><dd>" + esc(v.year || "—") + "</dd>" +
-      "<dt>Make</dt><dd>" + esc(v.make || "—") + "</dd>" +
-      "<dt>Model</dt><dd>" + esc(v.model || "—") + "</dd>" +
-      "<dt>Description</dt><dd>" + esc(name) + "</dd>" +
-      "<dt>Mileage</dt><dd>" + esc(fmtMiles(v.mileage)) + "</dd>" +
-      "<dt>Price</dt><dd>" + esc(fmtPrice(v.price)) + "</dd>" +
-      (v.vin ? "<dt>VIN</dt><dd>" + esc(v.vin) + "</dd>" : "") +
-      "</dl></div>";
+    var name = [v.year, v.make, v.model].filter(Boolean).join(" ") ||
+      v.year_make_model || "—";
+    return '<div class="dcard vehicle-card"><h3>Vehicle</h3>' +
+      '<div class="vehicle-name">' + esc(name) + "</div>" +
+      '<div class="dline"><span class="dtext">' + esc(fmtMiles(v.mileage)) +
+        " &middot; " + esc(fmtPrice(v.price)) + "</span></div>" +
+      (v.vin ? '<div class="vehicle-vin">' + esc(v.vin) + "</div>" : "") +
+      "</div>";
+  }
+
+  // Without dashboard data (e.g. an error before aggregation) the vehicle
+  // still shows, as a standalone tile.
+  function sectionVehicle(data) {
+    if (!data.vehicle || data.recon_included) return "";
+    return '<div class="dashboard">' + cardVehicle(data.vehicle) + "</div>";
   }
 
   // Real scraper status straight from the API response's scraper_status object:
@@ -631,7 +637,7 @@
       html += '<div class="error-box">' + esc(data.error) + "</div>";
     }
     html += sectionDashboard(data);
-    html += sectionVehicle(data.vehicle);
+    html += sectionVehicle(data);
     html += sectionScrapers(data.scraper_status, data.cache_status);
     html += sectionMeta(data);
     html += sectionAd(data.ad_copy);
@@ -675,7 +681,7 @@
 
     var regenBtn = document.getElementById("regen-btn");
     if (regenBtn) {
-      regenBtn.addEventListener("click", function () { runGenerate(data.stock_number); });
+      regenBtn.addEventListener("click", function () { openGenerateTab(data.stock_number); });
     }
   }
 
@@ -686,7 +692,7 @@
       '<button type="button" id="gen-instead-btn">Generate New Ad</button></div>';
     var genBtn = document.getElementById("gen-instead-btn");
     if (genBtn) {
-      genBtn.addEventListener("click", function () { runGenerate(stock); });
+      genBtn.addEventListener("click", function () { openGenerateTab(stock); });
     }
   }
 
@@ -824,19 +830,35 @@
       });
   }
 
+  // Generate New Ad runs in a new tab (/?stock=X&generate=1) so the current
+  // page (and any ad pulled on it) stays put. Pull Existing Ad stays in-tab.
+  function openGenerateTab(stock) {
+    stock = (stock || "").trim().toUpperCase();
+    if (!stock) return;
+    window.open("/?stock=" + encodeURIComponent(stock) + "&generate=1", "_blank");
+  }
+
   form.addEventListener("submit", function (ev) {
     ev.preventDefault();
-    runGenerate(input.value);
+    openGenerateTab(input.value);
   });
   // /?stock=<STOCK> (linked from an Inventory row with no ad yet) pre-fills the box and
-  // lets the existing lookup badge run; it never starts a generation on its own.
+  // lets the existing lookup badge run. With &generate=1 (opened by
+  // openGenerateTab) it starts the generation; the flag is then dropped from the
+  // URL so a refresh doesn't generate again.
   (function () {
-    var q = new URLSearchParams(window.location.search).get("stock");
-    if (q) {
-      input.value = q.trim().toUpperCase();
-      input.dispatchEvent(new Event("input"));
-      input.focus();
+    var params = new URLSearchParams(window.location.search);
+    var q = params.get("stock");
+    if (!q) return;
+    input.value = q.trim().toUpperCase();
+    if (params.get("generate") === "1") {
+      params.delete("generate");
+      history.replaceState(null, "", window.location.pathname + "?" + params.toString());
+      runGenerate(input.value);
+      return;
     }
+    input.dispatchEvent(new Event("input"));
+    input.focus();
   })();
 })();
 </script>
