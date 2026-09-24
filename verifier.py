@@ -566,10 +566,11 @@ def _main_locked(
         # prices and the warmups read it). Never fatal: a failed crawl leaves
         # the existing snapshot in place and verification runs regardless.
         try:
-            vehicles = crawl_inventory(save=True)
-            print(f"[verifier] inventory crawl complete — {len(vehicles)} vehicles in snapshot")
+            result = crawl_inventory(save=True)
+            n = len(result) if result else 0
+            print(f"[verifier] inventory crawl complete — {n} vehicles in snapshot")
         except Exception as exc:  # noqa: BLE001 - the crawl must never block verification
-            print(f"[verifier] inventory crawl failed — using existing snapshot: {exc}", file=sys.stderr)
+            print(f"[verifier] inventory crawl failed — using existing snapshot: {exc}")
         current, needs_posting, needs_update = run_verification(headless=headless)
         print(
             f"\nchecked {len(current) + len(needs_posting) + len(needs_update)} | "

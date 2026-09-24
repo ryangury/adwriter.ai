@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Registers the AdWriter Windows Scheduled Tasks.
 
@@ -7,10 +7,11 @@
     and re-created, so this always leaves the task matching what's defined
     here rather than silently skipping an out-of-date existing registration.
 
-    All tasks run C:\adwriter\adwriter-env\Scripts\python.exe against a
-    script in C:\adwriter, as the currently logged-on user, at "Highest" run
-    level (matches how AdWriter-Orchestrator / AdWriter-Browse / etc. were
-    already configured on this machine when this file was written).
+    Tasks run C:\adwriter\adwriter-env\Scripts\python.exe against a script in
+    C:\adwriter (or, with -Execute, a wrapper such as run_orchestrator.bat), as
+    the currently logged-on user, at "Highest" run level (matches how
+    AdWriter-Orchestrator / AdWriter-Browse / etc. were already configured on
+    this machine when this file was written).
 
     The first five tasks below (CTR, ReconWarmup, CarfaxWarmup, Browse,
     Orchestrator) already existed on this machine before this file did; they
@@ -39,7 +40,13 @@ function Register-AdWriterTask {
         [Parameter(Mandatory)] [string] $Name,
         [Parameter(Mandatory)] [string] $ScriptPath,
         [Parameter(Mandatory)] [datetime] $At,
-        [string] $Description = ""
+        [string] $Description = "",
+        # Program to run; $ScriptPath is its argument string. Defaults to the
+        # venv python, so $ScriptPath is "script.py [args]" for most tasks.
+        [string] $Execute = $PythonExe,
+        # Stop the task after this many hours, and never start a second copy
+        # while one is still running. 0 = Task Scheduler defaults.
+        [int] $TimeLimitHours = 0
     )
 
     $existing = Get-ScheduledTask -TaskName $Name -ErrorAction SilentlyContinue
@@ -48,12 +55,17 @@ function Register-AdWriterTask {
         Unregister-ScheduledTask -TaskName $Name -Confirm:$false
     }
 
-    $action = New-ScheduledTaskAction -Execute $PythonExe -Argument $ScriptPath -WorkingDirectory $WorkingDir
+    $action = New-ScheduledTaskAction -Execute $Execute -Argument $ScriptPath -WorkingDirectory $WorkingDir
     $trigger = New-ScheduledTaskTrigger -Daily -At $At
     $principal = New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive -RunLevel Highest
+    $extra = @{}
+    if ($TimeLimitHours -gt 0) {
+        $extra.Settings = New-ScheduledTaskSettingsSet `
+            -ExecutionTimeLimit (New-TimeSpan -Hours $TimeLimitHours) -MultipleInstances IgnoreNew
+    }
 
     Register-ScheduledTask -TaskName $Name -Action $action -Trigger $trigger `
-        -Principal $principal -Description $Description | Out-Null
+        -Principal $principal -Description $Description @extra | Out-Null
     Write-Host "Registered: $Name (daily at $($At.ToString('HH:mm')))"
 }
 
@@ -88,6 +100,14 @@ Register-AdWriterTask -Name "AdWriter-VisionProcess" `
     -ScriptPath "C:\adwriter\vision_processor.py" `
     -At (Get-Date "00:00") `
     -Description "Nightly vision-parse retry for cached Carfax/sticker images the live pipeline couldn't vision-parse inline. Logs to C:\adwriter\vision_process.log."
+
+# --- daily reprice-only orchestrator run ------------------------------------ #
+Register-AdWriterTask -Name "AdWriter-Reprice-Daily" `
+    -Execute "C:\adwriter\run_orchestrator.bat" `
+    -ScriptPath "--reprice-only" `
+    -At (Get-Date "07:00") `
+    -TimeLimitHours 4 `
+    -Description "Daily reprice-only orchestrator run (run_orchestrator.bat --reprice-only): fresh crawl, rewrite price paragraphs for ads whose price changed. 7:00 AM, before the 9:00 AM verifier."
 
 Write-Host "`nAll AdWriter scheduled tasks registered."
 Get-ScheduledTask | Where-Object { $_.TaskName -like "AdWriter-*" } |
