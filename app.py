@@ -45,10 +45,10 @@ from adwriter import (
     save_ad_history,
     source_status,
 )
-from aggregator import ScraperError, _filter_recon, _make_from_ymm, aggregate
-from scraper import WorkOrderNotFoundError
+from aggregator import ScraperError, _filter_recon, _make_from_ymm, _packages_with_sub_items, aggregate
+from scraper import STICKER_CACHE_DIR, WorkOrderNotFoundError
 from vehicle_cache import _connect as _cache_connect
-from vehicle_cache import get_carfax, get_carfax_image_path, get_recon, get_vehicle, get_vehicle_by_stock, get_window_sticker, needs_recon
+from vehicle_cache import get_carfax, get_carfax_image_path, get_recon, get_recon_image_path, get_sticker_image_path, get_vehicle, get_vehicle_by_stock, get_window_sticker, needs_recon
 from credentials import DEMO_PASSWORD
 from run_lock import ScraperBusyError
 
@@ -510,14 +510,26 @@ def _sticker_card(sticker: dict[str, Any] | None, source: str | None = None) -> 
     raw_text / full option lists sent to the browser)."""
     if not sticker:
         return None
+    # Each package's contents: the unpriced sticker lines listed under it
+    # (grouped by aggregator._packages_with_sub_items()), else a package
+    # description (Toyota/Lexus stickers print contents as one sentence).
+    grouped, _standalone = _packages_with_sub_items(sticker)
+    packages = grouped if grouped is not None else sticker.get("option_packages") or []
     return {
         "source": source or sticker.get("source"),
         "total_msrp": sticker.get("total_msrp"),
         "base_price": sticker.get("base_price"),
         "freight": sticker.get("freight"),
         "packages": [
-            {"code": p.get("code"), "name": p.get("name"), "price": p.get("price")}
-            for p in sticker.get("option_packages") or []
+            {
+                "code": p.get("code"),
+                "name": p.get("name"),
+                "price": p.get("price"),
+                "contents": p.get("contents")
+                or [s.get("name") for s in p.get("sub_items") or [] if s.get("name")]
+                or ([p["description"]] if p.get("description") else []),
+            }
+            for p in packages
         ],
         "standard_count": len(sticker.get("standard_options") or []),
     }
@@ -734,13 +746,14 @@ def cache_detail(stock_number: str):
     sticker = _json_or_none(c.get("window_sticker_json"))
     recon = _json_or_none(c.get("recon_json"))
     status_code = (vehicle or {}).get("status_code")
+    vin = (vehicle or {}).get("vin") or c.get("vin")
     return render_template(
         "cache_detail.html",
         stock=stock,
         vehicle=vehicle,
         in_snapshot=vehicle is not None,
         ymm=(vehicle or {}).get("year_make_model") or c.get("year_make_model"),
-        vin=(vehicle or {}).get("vin") or c.get("vin"),
+        vin=vin,
         status_code=status_code,
         status_label=_status_label(status_code) if status_code is not None else "—",
         cached=c,
@@ -748,13 +761,21 @@ def cache_detail(stock_number: str):
         sticker=sticker,
         sticker_label=_sticker_source_label(c.get("window_sticker_source")),
         recon=recon,
-        raw={
-            "carfax": json.dumps(carfax, indent=2) if carfax is not None else None,
-            "sticker": json.dumps(sticker, indent=2) if sticker is not None else None,
-            "recon": json.dumps(recon, indent=2) if recon is not None else None,
-        },
+        # Which cached source images exist, so the page embeds them (served by
+        # /carfax-image, /sticker-image, /recon-image) instead of raw JSON.
+        carfax_img=bool(vin and get_carfax_image_path(vin) and os.path.isfile(get_carfax_image_path(vin))),
+        sticker_img=_file_kind(_sticker_file(vin)) if vin else None,
+        recon_img=_file_kind(get_recon_image_path(vin)) if vin else None,
         attempts=c.get("autoipacket_attempts") or 0,
     )
+
+
+def _file_kind(path: str | None) -> str | None:
+    """'pdf' / 'image' for a cached file that exists on disk, else None."""
+    if not path or not os.path.isfile(path):
+        return None
+    ext = os.path.splitext(path)[1].lower()
+    return "pdf" if ext == ".pdf" else ("image" if ext in (".png", ".jpg", ".jpeg") else None)
 
 
 @app.get("/ctr")
@@ -929,6 +950,11 @@ def generate():
     result["carfax_detail"] = _carfax_dashboard(pkg)
     result["proof_points_all"] = _proof_points_all(pkg)
     result["market_data"] = _market_data(pkg)
+    vin = (result.get("vehicle") or {}).get("vin")
+    sticker_raw = get_window_sticker(vin) if vin else None
+    result["sticker"] = _sticker_card(
+        sticker_raw, (get_vehicle(vin) or {}).get("window_sticker_source") if sticker_raw else None
+    )
 
     # MB CPO data-completeness gate tripped inside aggregate() — no Claude call.
     if pkg.get("reason") == "incomplete_data":
@@ -1049,6 +1075,49 @@ def carfax_image(vin: str):
     if not path or not os.path.isfile(path):
         abort(404)
     return send_file(path, mimetype="image/png")
+
+
+_IMAGE_MIMETYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".pdf": "application/pdf"}
+
+
+def _sticker_file(vin: str) -> str | None:
+    """The cached window-sticker file for a VIN: the recorded
+    sticker_image_path, else the raw sticker saved in sticker_cache/ (the
+    Carfax-link and iPacket PDF paths keep <VIN>.pdf there without recording a
+    path), else its <VIN>.png render. None when nothing is on disk."""
+    candidates = [get_sticker_image_path(vin)] + [
+        str(STICKER_CACHE_DIR / f"{vin.upper()}{ext}") for ext in (".pdf", ".png")
+    ]
+    return next((p for p in candidates if p and os.path.isfile(p)), None)
+
+
+def _send_cached_file(path: str | None):
+    if not path or not os.path.isfile(path):
+        abort(404)
+    mimetype = _IMAGE_MIMETYPES.get(os.path.splitext(path)[1].lower())
+    if mimetype is None:
+        abort(404)
+    return send_file(path, mimetype=mimetype)
+
+
+@app.get("/sticker-image/<vin>")
+def sticker_image(vin: str):
+    """Serve the cached window sticker (PNG render or original PDF)."""
+    if not session.get("authed"):
+        return redirect(url_for("home"))
+    if not re.fullmatch(r"[A-Za-z0-9]{11,17}", vin):
+        abort(404)
+    return _send_cached_file(_sticker_file(vin))
+
+
+@app.get("/recon-image/<vin>")
+def recon_image(vin: str):
+    """Serve the cached ReconVision work-order screenshot."""
+    if not session.get("authed"):
+        return redirect(url_for("home"))
+    if not re.fullmatch(r"[A-Za-z0-9]{11,17}", vin):
+        abort(404)
+    return _send_cached_file(get_recon_image_path(vin))
 
 
 @app.get("/check")

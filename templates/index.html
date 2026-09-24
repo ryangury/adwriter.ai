@@ -402,6 +402,7 @@
     if (!data || !data.recon_included) return "";
     var cards = cardRecon(data.recon_included, data.recon_excluded) +
       cardCarfax(data.carfax_detail) +
+      Cards.cardSticker(data.sticker) +
       cardProofPoints(data.proof_points_all) +
       cardMarketData(data.market_data);
     return '<div class="dashboard">' + cards + "</div>";

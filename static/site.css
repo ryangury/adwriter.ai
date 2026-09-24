@@ -161,6 +161,17 @@
 
 .dcard .dline a { color: var(--accent); }
 .dline .dtext.dprice { margin-left: auto; padding-left: 10px; white-space: nowrap; color: var(--muted); }
+/* Package contents under a sticker-card package line: small, indented, and
+   marked with a thin rule instead of bullets so they read as part of it. */
+.sticker-contents {
+  list-style: none;
+  margin: 0 0 6px 22px;
+  padding: 0 0 0 10px;
+  border-left: 2px solid var(--line);
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.sticker-contents li { padding: 1px 0; }
 
 /* ---- inventory table ---- */
 .inv-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }

@@ -169,9 +169,18 @@
       rows += '<p class="dempty">None priced on the sticker</p>';
     } else {
       rows += pk.map(function (p) {
-        return '<div class="dline d-ok"><span class="glyph">&#10003;</span><span class="dtext">' +
+        var row = '<div class="dline d-ok"><span class="glyph">&#10003;</span><span class="dtext">' +
           esc((p.code ? p.code + " — " : "") + (p.name || "—")) + "</span>" +
           '<span class="dtext dprice">' + esc(p.price != null ? fmtPrice(p.price) : "") + "</span></div>";
+        // What the package includes, as printed under it on the sticker.
+        if (p.contents && p.contents.length) {
+          row += '<ul class="sticker-contents">' +
+            p.contents.map(function (c) {
+              return "<li>" + esc(typeof c === "string" ? c :
+                (c.name || JSON.stringify(c))) + "</li>";
+            }).join("") + "</ul>";
+        }
+        return row;
       }).join("");
     }
     if (s.standard_count) {
