@@ -31,7 +31,7 @@
           <th class="sortable" data-sort="status">Status</th>
           <th class="has-ad">Has Ad</th>
           <th class="check-col">Posted</th>
-          <th class="check-col">Price Accurate</th>
+          <th class="check-col" title="Current price minus the price the ad was written at">&Delta; Price</th>
         </tr>
       </thead>
       <tbody>
@@ -54,8 +54,11 @@
           <td class="check-col" title="{{ ('Verdict: ' ~ r.verdict) if r.verdict else 'Never verified against the live site' }}">
             {% if r.posted %}<span class="has-ad-yes">&#10003;</span>{% else %}<span class="has-ad-no">&ndash;</span>{% endif %}
           </td>
-          <td class="check-col" title="{{ ('Match score: ' ~ r.match_score) if r.match_score is not none else 'Never verified against the live site' }}">
-            {% if r.price_accurate is sameas true %}<span class="has-ad-yes">&#10003;</span>{% elif r.price_accurate is sameas false %}<span class="has-ad-fail">&#10007;</span>{% else %}<span class="has-ad-no">&ndash;</span>{% endif %}
+          <td class="check-col" title="{{ ('Ad written at ${:,.0f}'.format(r.last_price_at_write)) if r.price_diff is not none else 'No ad on file, or no price recorded' }}">
+            {% if r.price_diff is none %}<span class="has-ad-no">&ndash;</span>
+            {% elif r.price_diff == 0 %}<span class="has-ad-yes">&#10003;</span>
+            {% elif r.price_diff > 0 %}<span class="has-ad-fail">+${{ '{:,.0f}'.format(r.price_diff) }}</span>
+            {% else %}<span class="has-ad-yes">-${{ '{:,.0f}'.format(-r.price_diff) }}</span>{% endif %}
           </td>
         </tr>
         {% endfor %}

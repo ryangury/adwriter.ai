@@ -256,6 +256,7 @@ def run(
     send_email: bool = True,
     status: list[int] | None = None,
     skip_benchmark: bool = False,
+    reprice_only: bool = False,
 ) -> int:
     try:
         # Held for the whole run so the standalone verifier (verifier.py main)
@@ -265,7 +266,8 @@ def run(
         print(f"[orchestrator] acquired {ORCHESTRATOR_LOCK_PATH.name} (PID {os.getpid()})")
         try:
             return _run_inner(
-                limit=limit, send_email=send_email, status=status, skip_benchmark=skip_benchmark
+                limit=limit, send_email=send_email, status=status,
+                skip_benchmark=skip_benchmark, reprice_only=reprice_only,
             )
         finally:
             if release_lock_if_owned(ORCHESTRATOR_LOCK_PATH):
@@ -281,8 +283,17 @@ def _run_inner(
     send_email: bool = True,
     status: list[int] | None = None,
     skip_benchmark: bool = False,
+    reprice_only: bool = False,
 ) -> int:
+    """One orchestrator run. reprice_only=True (--reprice-only) keeps steps 1-2
+    (fresh crawl + reprice detection), queues only reprices in step 3 (no
+    ReconVision, no build/pre-recon/recon-update queues), runs only reprices
+    in step 4, skips steps 5-7 (CTR capture, benchmark, verification), and in
+    step 8 sends only the Ads Ready summary (the per-reprice emails go out
+    from step 4). --status / --limit still apply."""
     started = time.monotonic()
+    if reprice_only:
+        print("[orchestrator] --reprice-only: crawl + reprices only")
     today = date.today().isoformat()
     errors: list[dict[str, Any]] = []
 
@@ -396,8 +407,22 @@ def _run_inner(
     reprice_queue: list[dict[str, Any]] = []
 
     rv: ReconVisionScraper | None = None
-    try:
+    if reprice_only:
+        # Reprices only: no ReconVision session, no build / pre-recon /
+        # recon-update queues — just the vehicles whose live ad needs its
+        # price paragraph rewritten.
         for v in retail:
+            stock = v.get("stock_number")
+            if (
+                v.get("status_code") in BUILD_STATUS_CODES
+                and stock in repricing_queue
+                and (ad_history.get(stock) or {}).get("current_ad_text")
+            ):
+                reprice_queue.append(v)
+                print(f"[gate] {stock}: price changed -> reprice queue")
+        print(f"[gate] --reprice-only: {len(reprice_queue)} vehicle(s) queued for reprice")
+    try:
+        for v in ([] if reprice_only else retail):
             stock = v.get("stock_number")
             sc = v.get("status_code")
 
@@ -670,50 +695,53 @@ def _run_inner(
     # --- 5. DURHAM CTR CAPTURE (every retail vehicle) ------------- #
     print(f"\n=== 5. DURHAM CTR CAPTURE ({len(retail)} vehicle(s)) ===")
     ctr_records = 0
-    try:
-        with ACVMaxScraper(headless=True) as ax:
-            ax.login()
-            for v in retail:
-                stock = v.get("stock_number")
-                ctr_data = aggregated_ctr.get(stock)
-                if not isinstance(ctr_data, dict) or ctr_data.get("error"):
+    if reprice_only:
+        print("[ctr] skipped (--reprice-only)")
+    else:
+        try:
+            with ACVMaxScraper(headless=True) as ax:
+                ax.login()
+                for v in retail:
+                    stock = v.get("stock_number")
+                    ctr_data = aggregated_ctr.get(stock)
+                    if not isinstance(ctr_data, dict) or ctr_data.get("error"):
+                        try:
+                            pr = ax.scrape_pricing(stock)
+                            ctr_data = ax.scrape_ctr(pr.get("vehicle_id"))
+                        except Exception as exc:  # noqa: BLE001
+                            errors.append({"stock": stock, "phase": "ctr", "error": str(exc)})
+                            print(f"[ctr] {stock}: scrape failed — {exc}")
+                            continue
+                    hist = ad_history.get(stock, {})
                     try:
-                        pr = ax.scrape_pricing(stock)
-                        ctr_data = ax.scrape_ctr(pr.get("vehicle_id"))
+                        record_ctr(
+                            v,
+                            ctr_data,
+                            ad_written=bool(hist),
+                            ad_written_date=hist.get("last_ad_date"),
+                        )
+                        ctr_records += 1
+                        print(
+                            f"[ctr] {stock}: recorded "
+                            f"(AT {ctr_data.get('latest_autotrader_ctr')}, "
+                            f"CG {ctr_data.get('latest_cargurus_ctr')}, "
+                            f"avg {ctr_data.get('latest_average_ctr')})"
+                        )
                     except Exception as exc:  # noqa: BLE001
-                        errors.append({"stock": stock, "phase": "ctr", "error": str(exc)})
-                        print(f"[ctr] {stock}: scrape failed — {exc}")
-                        continue
-                hist = ad_history.get(stock, {})
-                try:
-                    record_ctr(
-                        v,
-                        ctr_data,
-                        ad_written=bool(hist),
-                        ad_written_date=hist.get("last_ad_date"),
-                    )
-                    ctr_records += 1
-                    print(
-                        f"[ctr] {stock}: recorded "
-                        f"(AT {ctr_data.get('latest_autotrader_ctr')}, "
-                        f"CG {ctr_data.get('latest_cargurus_ctr')}, "
-                        f"avg {ctr_data.get('latest_average_ctr')})"
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    errors.append({"stock": stock, "phase": "ctr_db", "error": str(exc)})
-    except ScraperError as exc:
-        errors.append({"stock": "-", "phase": "ctr_login", "error": str(exc)})
-        print(f"[ctr] ACV MAX login failed — {exc}", file=sys.stderr)
+                        errors.append({"stock": stock, "phase": "ctr_db", "error": str(exc)})
+        except ScraperError as exc:
+            errors.append({"stock": "-", "phase": "ctr_login", "error": str(exc)})
+            print(f"[ctr] ACV MAX login failed — {exc}", file=sys.stderr)
 
     # --- 6. BENCHMARK CTR CAPTURE ------------------------------- #
     print("\n=== 6. BENCHMARK CTR CAPTURE ===")
     benchmark_counts: dict[str, int] = {d: 0 for d in BENCHMARK_DEALERSHIPS}
-    if skip_benchmark:
+    if skip_benchmark or reprice_only:
         # Competitive benchmark: crawls every vehicle at Northlake and Charlotte and
         # reads its CTR (~250 pricing-page loads) — the slowest part of a run, and it
         # ignores --limit/--status. Skipping it leaves ctr_history.db's benchmark
         # rows for this date unwritten.
-        print("[benchmark] skipped (--skip-benchmark)")
+        print("[benchmark] skipped (--reprice-only)" if reprice_only else "[benchmark] skipped (--skip-benchmark)")
     else:
         try:
             with ACVMaxScraper(headless=True) as bx:
@@ -768,12 +796,15 @@ def _run_inner(
     verif_current: list[dict[str, Any]] = []
     needs_posting: list[dict[str, Any]] = []
     needs_update: list[dict[str, Any]] = []
-    try:
-        verif_current, needs_posting, needs_update = run_verification(ad_history)
-        ad_history = load_ad_history()  # run_verification persisted verdicts
-    except Exception as exc:  # noqa: BLE001 - verification must not sink the run
-        errors.append({"stock": "-", "phase": "verification", "error": str(exc)})
-        print(f"[verify] verification pass failed — {exc}", file=sys.stderr)
+    if reprice_only:
+        print("[verify] skipped (--reprice-only)")
+    else:
+        try:
+            verif_current, needs_posting, needs_update = run_verification(ad_history)
+            ad_history = load_ad_history()  # run_verification persisted verdicts
+        except Exception as exc:  # noqa: BLE001 - verification must not sink the run
+            errors.append({"stock": "-", "phase": "verification", "error": str(exc)})
+            print(f"[verify] verification pass failed — {exc}", file=sys.stderr)
     verification_checks_run = (
         len(verif_current) + len(needs_posting) + len(needs_update)
     )
@@ -852,7 +883,9 @@ def _run_inner(
     )
 
     rewritten = {a["stock"] for a in ads_generated}
-    if waiting_recon or needs_cert or price_changes or errors or pre_recon_watching:
+    if reprice_only:
+        print("[email] --reprice-only — Action Required email not sent")
+    elif waiting_recon or needs_cert or price_changes or errors or pre_recon_watching:
         _safe_send(
             f"Mercedes-Benz of Durham — Action Required {today}",
             _format_action_email(
@@ -868,7 +901,9 @@ def _run_inner(
         print("[email] nothing to action — Action Required email not sent")
 
     # third email: the ad-posting alert (only if something needs posting/updating)
-    if needs_posting or needs_update:
+    if reprice_only:
+        print("[email] --reprice-only — Ad Posting Alert not sent")
+    elif needs_posting or needs_update:
         if send_email:
             send_verification_alert(needs_posting, needs_update, send=True)
             print(
@@ -885,7 +920,7 @@ def _run_inner(
     runtime = time.monotonic() - started
     print()
     print("=" * 60)
-    print("DAILY ORCHESTRATOR SUMMARY")
+    print("REPRICE-ONLY ORCHESTRATOR SUMMARY" if reprice_only else "DAILY ORCHESTRATOR SUMMARY")
     print("=" * 60)
     by_stage: dict[str, int] = {}
     for a in ads_generated:
@@ -939,12 +974,20 @@ def main(argv: list[str] | None = None) -> int:
         help="skip step 6 (Northlake/Charlotte benchmark CTR capture) — it walks both "
              "stores' full inventory regardless of --limit/--status",
     )
+    parser.add_argument(
+        "--reprice-only", action="store_true",
+        help="crawl + reprice detection, then rewrite only repriced ads: no new "
+             "builds, pre-recon, recon updates, CTR/benchmark capture or "
+             "verification; emails are the per-reprice mails and the Ads Ready "
+             "summary. --status still applies",
+    )
     args = parser.parse_args(argv)
     return run(
         limit=args.limit,
         send_email=not args.no_email,
         status=args.status,
         skip_benchmark=args.skip_benchmark,
+        reprice_only=args.reprice_only,
     )
 
 

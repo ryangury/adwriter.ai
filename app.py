@@ -451,19 +451,17 @@ def _status_label(code: Any) -> str:
     return _STATUS_LABELS.get(code, f"Status {code}")
 
 
-# verifier.compare_ad()'s match_score is a composite of several signals (VIN,
-# mileage, proof-point dollar figure, a package name, paragraph-one opener) —
-# not a price-specific check. This is a first-pass proxy, not a real price
-# check: see /inventory route notes on isolating price as its own signal.
-_PRICE_ACCURATE_MATCH_SCORE_THRESHOLD = 80
-
-
-def _price_accurate(match_score: Any) -> bool | None:
-    """True/False from verifier's composite match_score, or None if this
-    stock has never been checked (score unknown, not "inaccurate")."""
-    if match_score is None:
+def _price_diff(current_price: Any, last_price_at_write: Any) -> float | None:
+    """Current list price minus the price the ad was written at (both the raw
+    ACV Max price, no admin fee): positive = price went up since the ad,
+    negative = it came down (the ad needs a reprice). None when there's no
+    ad or either price is missing."""
+    try:
+        if current_price is None or last_price_at_write is None:
+            return None
+        return round(float(current_price) - float(last_price_at_write), 2)
+    except (TypeError, ValueError):
         return None
-    return match_score >= _PRICE_ACCURATE_MATCH_SCORE_THRESHOLD
 
 
 @app.context_processor
@@ -582,7 +580,10 @@ def inventory():
                 "posted": entry.get("verification_verdict") is not None if entry else False,  # has verification ever run against this stock
                 "verdict": entry.get("verification_verdict") if entry else None,  # "current", "outdated", "not_posted", "not_found"
                 "match_score": entry.get("match_score") if entry else None,
-                "price_accurate": _price_accurate(entry.get("match_score") if entry else None),
+                "last_price_at_write": entry.get("last_price_at_write") if entry else None,
+                "price_diff": _price_diff(
+                    v.get("current_price"), entry.get("last_price_at_write") if entry else None
+                ),
             }
         )
     return render_template("inventory.html", rows=rows, snapshot_time=_fmt_snapshot_time(stamp))
