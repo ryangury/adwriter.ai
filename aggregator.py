@@ -43,6 +43,7 @@ from vehicle_cache import (
     get_carfax,
     get_recon,
     get_autoipacket_attempts,
+    get_seller_comments,
     increment_autoipacket_attempts,
     save_window_sticker,
     save_carfax,
@@ -4118,6 +4119,9 @@ def aggregate(
         "recon_sentence": build_recon_sentence(
             recon_block, pricing_raw.get("status_code"), pricing_raw.get("mileage")
         ),
+        # Free text entered on the Database page; used verbatim at the end of
+        # paragraph one (see SELLER_COMMENTS_RULE).
+        "seller_comments": get_seller_comments(vin) if vin else None,
         "recon_fallback_sentence": build_recon_fallback_sentence(
             recon_block, pricing_raw.get("status_code"), skip_recon
         ),

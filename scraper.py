@@ -2323,9 +2323,34 @@ def _parse_ford_sticker_text(text: str) -> dict[str, Any]:
         "option_packages": packages,
         "standard_options": included,
     }
+    data["exterior_color"], data["interior_color"] = _ford_colors(
+        _marked_block(text, _HEADER_COLORS_MARK), body
+    )
     if added:
         data["added_options_all"] = added
     return _finalize_oem_totals(data, body)
+
+
+def _ford_colors(header_block: str, body: str) -> tuple[str | None, str | None]:
+    """(exterior, interior) for a Ford sticker. First from the position-cropped
+    header block ("EXTERIOR" / value / "INTERIOR" / value, or a value on the
+    label's own line); else the "EXTERIOR COLOR: x" / "INTERIOR COLOR: x"
+    regex on the plain text."""
+    found: dict[str, str | None] = {"EXTERIOR": None, "INTERIOR": None}
+    lines = [_clean(ln) for ln in header_block.splitlines() if _clean(ln)]
+    for i, ln in enumerate(lines):
+        for label in found:
+            if found[label] is None and ln.upper().startswith(label):
+                rest = ln[len(label):].strip(" :")
+                nxt = lines[i + 1] if i + 1 < len(lines) else ""
+                found[label] = rest or (nxt if nxt.upper() not in found else None) or None
+    if found["EXTERIOR"] is None:
+        m = re.search(r"EXTERIOR\s*COLOR\s*:\s*(.+)", body, re.IGNORECASE)
+        found["EXTERIOR"] = _clean(m.group(1)) if m else None
+    if found["INTERIOR"] is None:
+        m = re.search(r"INTERIOR(?:\s*/\s*SEAT)?\s*COLOR\s*:\s*(.+)", body, re.IGNORECASE)
+        found["INTERIOR"] = _clean(m.group(1)) if m else None
+    return found["EXTERIOR"], found["INTERIOR"]
 
 
 # --- OEM family routing ------------------------------------------------- #
@@ -2368,7 +2393,8 @@ def _oem_sticker_family(vin: str | None, text: str) -> str | None:
 # back to the plain text otherwise (e.g. a sticker fetched as HTML).
 _OPTIONS_COLUMN_MARK = "=== OPTIONS COLUMN (position-cropped) ==="
 _PRICE_COLUMN_MARK = "=== PRICE COLUMN (position-cropped) ==="
-_BLOCK_MARKS = (_OPTIONS_COLUMN_MARK, _PRICE_COLUMN_MARK)
+_HEADER_COLORS_MARK = "=== HEADER COLORS (position-cropped) ==="
+_BLOCK_MARKS = (_OPTIONS_COLUMN_MARK, _PRICE_COLUMN_MARK, _HEADER_COLORS_MARK)
 
 
 def _marked_block(text: str, mark: str) -> str:
@@ -2462,7 +2488,21 @@ def _ford_position_blocks(page, words: list[dict[str, Any]]) -> str | None:
         default=info["x0"] + 215,
     )
     prices = page.crop((info["x0"] - 2, info["top"] - 1, min(page.width, right + 2), price_bottom)).extract_text() or ""
-    return f"{_OPTIONS_COLUMN_MARK}\n{options}\n{_PRICE_COLUMN_MARK}\n{prices}"
+    # Colors: the header block's EXTERIOR / INTERIOR labels (x ~433, top ~79 /
+    # ~97 on the 1224x792 Monroney) each with its value on the line below.
+    # Anchored on the first EXTERIOR label in the header — the equipment grid
+    # further down reuses the same two words as column headings.
+    colors = ""
+    ext = min(
+        (w for w in words if w["text"] == "EXTERIOR" and w["top"] < inc["top"]),
+        key=lambda w: w["top"],
+        default=None,
+    )
+    if ext is not None:
+        box = (max(0, ext["x0"] - 2), ext["top"] - 2, min(page.width, ext["x0"] + 170), ext["top"] + 60)
+        colors = page.crop(box).extract_text() or ""
+    block = f"{_OPTIONS_COLUMN_MARK}\n{options}\n{_PRICE_COLUMN_MARK}\n{prices}"
+    return f"{block}\n{_HEADER_COLORS_MARK}\n{colors}" if colors else block
 
 
 # Toyota / Lexus Monroney: installed options are a right-hand column of

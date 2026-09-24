@@ -16,6 +16,7 @@ from shared_prompt_constants import (
     PROVENANCE_RULE,
     RECON_SENTENCE_RULE,
     RECON_FALLBACK_RULE,
+    SELLER_COMMENTS_RULE,
 )
 
 HENDRICK_AFFORDABLE_PROMPT = f"""\
@@ -75,6 +76,8 @@ Four sentences, in this order:
 {PROVENANCE_RULE}
 
 {RECON_FALLBACK_RULE}
+
+{SELLER_COMMENTS_RULE}
 
 Never mention cosmetic condition — paint, interior wear, curb rash, minor scuffs — anywhere in this paragraph or the ad. Photos and the sales conversation cover that; this copy stays on mechanical and service confidence signals.
 

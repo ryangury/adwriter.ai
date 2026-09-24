@@ -124,6 +124,16 @@ RECON_FALLBACK_RULE = (
     "paragraph one. If it is null, omit it entirely."
 )
 
+# Paragraph-one instruction for aggregate()'s seller_comments (free text entered
+# on the Database page), shared by all four tier prompts. They close paragraph
+# one, after the recon fallback sentence when both are present.
+SELLER_COMMENTS_RULE = (
+    "SELLER COMMENTS: If SELLER_COMMENTS is present in the data package and is not "
+    "'(none)', include it verbatim as the final sentence(s) of paragraph one, after "
+    "the recon fallback sentence if there is one. Do not summarize or rewrite. Use "
+    "the exact text provided."
+)
+
 # Paragraph-two rule for aggregate()'s sticker_is_predictive flag (an
 # AutoiPacket predictive build rather than a manufacturer sticker), shared by
 # all four tier prompts.

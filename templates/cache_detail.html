@@ -12,6 +12,13 @@
   .kv .v { font-weight: 600; word-break: break-word; }
   .src-img { display: block; max-width: 100%; height: auto; margin-top: 12px; border: 1px solid var(--line); border-radius: 8px; }
   .src-pdf { display: block; width: 100%; height: 800px; margin-top: 12px; border: 1px solid var(--line); border-radius: 8px; }
+  .upload-form { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .upload-form .k { width: 100%; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+  #seller-comments textarea { width: 100%; box-sizing: border-box; font: inherit; padding: 8px; border: 1px solid var(--line); border-radius: 8px; }
+  #seller-comments button, .upload-form button { margin-top: 6px; padding: 6px 14px; border: 1px solid var(--accent); background: var(--accent); color: #fff; border-radius: 6px; cursor: pointer; }
+  .form-status { font-size: 0.88rem; margin-top: 6px; width: 100%; }
+  .form-status.ok { color: var(--ok); }
+  .form-status.err { color: var(--fail); }
   .mini { width: 100%; border-collapse: collapse; font-size: 0.88rem; margin-top: 6px; }
   .mini th { text-align: left; color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--line); padding: 6px 8px; }
   .mini td { border-bottom: 1px solid var(--line); padding: 6px 8px; vertical-align: top; }
@@ -99,6 +106,15 @@
     {% else %}
       <p class="none">No sticker data cached</p>
     {% endif %}
+    {% if make and 'mercedes' in make|lower %}
+      <form class="upload-form" id="sticker-upload" enctype="multipart/form-data"
+            action="{{ url_for('cache_upload_sticker', stock_number=stock) }}">
+        <div class="k">Upload window sticker (PDF, Mercedes-Benz)</div>
+        <input type="file" name="sticker_pdf" accept=".pdf,application/pdf" required>
+        <button type="submit">Upload</button>
+        <div class="form-status" id="sticker-upload-status" aria-live="polite"></div>
+      </form>
+    {% endif %}
     </div>
   </details>
 
@@ -142,5 +158,57 @@
         {% if attempts >= 3 %}<span class="warn">Retry limit reached — iPacket sticker pulls blocked until manually reset.</span>{% endif %}</p>
     </div>
   </details>
+
+  {# ---------------- SELLER COMMENTS ---------------- #}
+  <details class="cache-sec" open>
+    <summary>Seller comments<span class="meta">added verbatim at the end of paragraph one</span></summary>
+    <div class="body">
+      <form id="seller-comments" action="{{ url_for('cache_save_comments', stock_number=stock) }}">
+        <textarea name="comments" rows="3" placeholder="e.g. Garage kept, non-smoker, both keys and books included.">{{ seller_comments or '' }}</textarea>
+        <button type="submit">Save</button>
+        <div class="form-status" id="seller-comments-status" aria-live="polite"></div>
+      </form>
+    </div>
+  </details>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  "use strict";
+  function money(n) { return n == null ? "—" : "$" + Number(n).toLocaleString("en-US", { maximumFractionDigits: 0 }); }
+  function post(form, statusEl, body, onDone) {
+    statusEl.className = "form-status"; statusEl.textContent = "Saving…";
+    fetch(form.getAttribute("action"), { method: "POST", body: body, credentials: "same-origin" })
+      .then(function (r) { return r.json().catch(function () { return { error: "HTTP " + r.status }; }); })
+      .then(function (j) { onDone(j); })
+      .catch(function (e) { statusEl.className = "form-status err"; statusEl.textContent = "Request failed: " + e; });
+  }
+
+  var comments = document.getElementById("seller-comments");
+  if (comments) comments.addEventListener("submit", function (e) {
+    e.preventDefault();
+    var st = document.getElementById("seller-comments-status");
+    post(comments, st, new FormData(comments), function (j) {
+      st.className = "form-status " + (j.saved ? "ok" : "err");
+      st.textContent = j.saved ? (j.comments ? "Saved." : "Saved — comments cleared.") : (j.error || "Save failed.");
+    });
+  });
+
+  var upload = document.getElementById("sticker-upload");
+  if (upload) upload.addEventListener("submit", function (e) {
+    e.preventDefault();
+    var st = document.getElementById("sticker-upload-status");
+    post(upload, st, new FormData(upload), function (j) {
+      var rec = j.reconciliation_ok === true ? "totals add up" : j.reconciliation_ok === false ? "totals don't add up" : "no total to check";
+      var facts = (j.packages_found != null)
+        ? " Packages found: " + j.packages_found + " · total MSRP " + money(j.total_msrp) + " · " + rec + "." : "";
+      st.className = "form-status " + (j.saved ? "ok" : "err");
+      st.textContent = j.saved ? "Sticker saved." + facts + " Reload to see it."
+                               : (j.error || "Upload failed.") + (j.details ? " (" + j.details + ")" : "") + facts;
+    });
+  });
+})();
+</script>
 {% endblock %}

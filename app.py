@@ -48,7 +48,7 @@ from adwriter import (
 from aggregator import ScraperError, _filter_recon, _make_from_ymm, _packages_with_sub_items, aggregate
 from scraper import STICKER_CACHE_DIR, WorkOrderNotFoundError
 from vehicle_cache import _connect as _cache_connect
-from vehicle_cache import get_carfax, get_carfax_image_path, get_recon, get_recon_image_path, get_sticker_image_path, get_vehicle, get_vehicle_by_stock, get_window_sticker, needs_recon
+from vehicle_cache import get_carfax, get_carfax_image_path, get_recon, get_recon_image_path, get_seller_comments, get_sticker_image_path, get_vehicle, get_vehicle_by_stock, get_window_sticker, needs_recon, save_seller_comments, save_window_sticker
 from credentials import DEMO_PASSWORD
 from run_lock import ScraperBusyError
 
@@ -640,6 +640,7 @@ _STICKER_SOURCE_LABELS = {
     "acvmax_options_tab": "ACV Max",
     "autoipacket_predictive": "iPacket (predicted)",
     "rarity_db_cache": "Rarity DB",
+    "manual_upload": "Manual upload",
 }
 _CACHE_SOLD_LIMIT = 20
 
@@ -767,7 +768,104 @@ def cache_detail(stock_number: str):
         sticker_img=_file_kind(_sticker_file(vin)) if vin else None,
         recon_img=_file_kind(get_recon_image_path(vin)) if vin else None,
         attempts=c.get("autoipacket_attempts") or 0,
+        make=_make_from_ymm((vehicle or {}).get("year_make_model") or c.get("year_make_model")),
+        seller_comments=get_seller_comments(vin) if vin else None,
     )
+
+
+def _cache_vehicle_ref(stock: str) -> tuple[str | None, dict[str, Any] | None, dict[str, Any] | None]:
+    """(vin, snapshot vehicle or None, cached row or None) for a stock number:
+    the snapshot first, else the cache's own stock-number lookup."""
+    vehicles, _stamp = _load_snapshot()
+    vehicle = next((v for v in vehicles if normalize_stock(v.get("stock_number")) == stock), None)
+    cached = get_vehicle(vehicle["vin"]) if vehicle and vehicle.get("vin") else get_vehicle_by_stock(stock)
+    vin = (vehicle or {}).get("vin") or (cached or {}).get("vin")
+    return (vin.strip().upper() if vin else None), vehicle, cached
+
+
+@app.post("/cache/<stock_number>/comments")
+def cache_save_comments(stock_number: str):
+    """Save the free-text seller comments shown at the end of paragraph one."""
+    if not session.get("authed"):
+        return jsonify({"saved": False, "error": "Not signed in."}), 401
+    stock = normalize_stock(stock_number)
+    vin, _vehicle, _cached = _cache_vehicle_ref(stock)
+    if not vin:
+        return jsonify({"saved": False, "error": f"No VIN on record for {stock}."}), 404
+    comments = (request.form.get("comments") or "").strip()
+    save_seller_comments(vin, comments, stock_number=stock)
+    return jsonify({"saved": True, "comments": comments or None})
+
+
+_MAX_STICKER_UPLOAD_BYTES = 10 * 1024 * 1024
+
+
+@app.post("/cache/<stock_number>/upload-sticker")
+def cache_upload_sticker(stock_number: str):
+    """Manual window-sticker upload (Mercedes-Benz): parse the PDF with the
+    Mercedes-Benz sticker parser and cache it only if it's for this VIN, it
+    parses, and its totals reconcile. The PDF replaces sticker_cache/<VIN>.pdf
+    only on success, so a bad upload never overwrites a good cached sticker."""
+    if not session.get("authed"):
+        return jsonify({"saved": False, "error": "Not signed in."}), 401
+    stock = normalize_stock(stock_number)
+    vin, vehicle, cached = _cache_vehicle_ref(stock)
+    if not vin:
+        return jsonify({"saved": False, "error": f"No VIN on record for {stock}."}), 404
+    f = request.files.get("sticker_pdf")
+    if f is None or not f.filename:
+        return jsonify({"saved": False, "error": "Choose a PDF file to upload."}), 400
+    data = f.read(_MAX_STICKER_UPLOAD_BYTES + 1)
+    if len(data) > _MAX_STICKER_UPLOAD_BYTES:
+        return jsonify({"saved": False, "error": "File is larger than 10 MB."}), 400
+    if not f.filename.lower().endswith(".pdf") or not data.startswith(b"%PDF-"):
+        return jsonify({"saved": False, "error": "File must be a PDF."}), 400
+
+    from scraper import AutoiPacketScraper, _reconcile_sticker
+
+    try:
+        text = AutoiPacketScraper._pdf_bytes_to_text(data)
+    except Exception as exc:  # noqa: BLE001 - any parse error is a failed upload
+        return jsonify({"saved": False, "error": "Parse failed — check PDF and try again",
+                        "details": str(exc)}), 422
+    # The sticker must be for this vehicle: any VIN printed on it has to match.
+    printed_vins = set(re.findall(r"\b[A-HJ-NPR-Z0-9]{17}\b", text.upper()))
+    if printed_vins and vin not in printed_vins:
+        return jsonify({"saved": False, "error": "This sticker is for a different vehicle",
+                        "details": f"PDF shows VIN {', '.join(sorted(printed_vins))}; {stock} is {vin}"}), 422
+    try:
+        # Mercedes-Benz layout only — never the GM/FCA/Ford/Toyota routing.
+        result = (
+            _reconcile_sticker(AutoiPacketScraper._parse_sticker_text_mb(text, vin), vin)
+            if text.strip() else None
+        )
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"saved": False, "error": "Parse failed — check PDF and try again",
+                        "details": str(exc)}), 422
+    packages = (result or {}).get("option_packages") or []
+    summary = {
+        "packages_found": len(packages),
+        "total_msrp": (result or {}).get("total_msrp"),
+        "base_price": (result or {}).get("base_price"),
+        "reconciliation_ok": (result or {}).get("reconciliation_ok"),
+    }
+    usable = bool(result) and (result.get("total_msrp") is not None or packages)
+    if not usable or result.get("reconciliation_ok") is False:
+        reason = "no text in PDF" if result is None else (
+            "totals don't add up (base + options + destination vs total)"
+            if usable else "no total MSRP or option packages found")
+        return jsonify({"saved": False, "error": "Parse failed — check PDF and try again",
+                        "details": reason, **summary}), 422
+
+    path = STICKER_CACHE_DIR / f"{vin}.pdf"
+    path.write_bytes(data)
+    result.update(vin=vin, render="pdf", source="manual_upload", sticker_url=None)
+    save_window_sticker(
+        vin, stock,
+        (vehicle or {}).get("year_make_model") or (cached or {}).get("year_make_model"),
+        result, "manual_upload",
+    )
+    return jsonify({"saved": True, **summary})
 
 
 def _file_kind(path: str | None) -> str | None:

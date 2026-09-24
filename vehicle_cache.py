@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS vehicle_data (
     recon_image_path        TEXT,
     recon_complete          INTEGER NOT NULL DEFAULT 0,
     autoipacket_attempts    INTEGER NOT NULL DEFAULT 0,
+    seller_comments         TEXT,
     cache_version           INTEGER NOT NULL DEFAULT 1,
     created_date            TEXT,
     last_updated            TEXT
@@ -71,6 +72,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE vehicle_data ADD COLUMN sticker_image_path TEXT")
     if "recon_image_path" not in cols:
         conn.execute("ALTER TABLE vehicle_data ADD COLUMN recon_image_path TEXT")
+    if "seller_comments" not in cols:
+        conn.execute("ALTER TABLE vehicle_data ADD COLUMN seller_comments TEXT")
 
 
 def _connect() -> sqlite3.Connection:
@@ -310,6 +313,28 @@ def save_carfax(
             WHERE vin = ?
             """,
             (stock_number, json.dumps(carfax_data), today, image_path, now, vin),
+        )
+        conn.commit()
+
+
+def get_seller_comments(vin: str) -> str | None:
+    """Free-text seller comments for this VIN (entered on the Database page),
+    or None when none are saved. Used verbatim at the end of paragraph one."""
+    row = _get_row(vin)
+    text = (row["seller_comments"] if row else None) or ""
+    return text.strip() or None
+
+
+def save_seller_comments(vin: str, text: str | None, stock_number: str | None = None) -> None:
+    """Upsert the seller comments for a VIN (creating the row if needed).
+    Blank text clears them."""
+    now = datetime.now().isoformat()
+    value = (text or "").strip() or None
+    with _connect() as conn:
+        _ensure_row(conn, vin, stock_number)
+        conn.execute(
+            "UPDATE vehicle_data SET seller_comments = ?, last_updated = ? WHERE vin = ?",
+            (value, now, vin),
         )
         conn.commit()
 

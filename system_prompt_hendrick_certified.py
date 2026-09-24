@@ -16,6 +16,7 @@ from shared_prompt_constants import (
     PROVENANCE_RULE,
     RECON_SENTENCE_RULE,
     RECON_FALLBACK_RULE,
+    SELLER_COMMENTS_RULE,
 )
 
 HENDRICK_CERTIFIED_PROMPT = f"""\
@@ -73,6 +74,8 @@ Four sentences, in this order:
 {PROVENANCE_RULE}
 
 {RECON_FALLBACK_RULE}
+
+{SELLER_COMMENTS_RULE}
 
 ---
 

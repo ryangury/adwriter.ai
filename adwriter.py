@@ -43,6 +43,7 @@ from shared_prompt_constants import (
     PREDICTIVE_STICKER_RULE,
     PROVENANCE_RULE,
     RECON_FALLBACK_RULE,
+    SELLER_COMMENTS_RULE,
     STORE_CLOSER_PARAGRAPH,
 )
 from system_prompt_as_is import AS_IS_PROMPT
@@ -139,6 +140,8 @@ This paragraph establishes trust and specifics. Use the pre-built sentences from
 - Sentence 4: RECON SENTENCE — use verbatim, omit if null. Do not interpret raw recon line items yourself.
 
 {RECON_FALLBACK_RULE}
+
+{SELLER_COMMENTS_RULE}
 
 ---
 
@@ -1400,6 +1403,9 @@ def format_data_package(pkg: dict) -> tuple[str, list[dict]]:
         "RECON_FALLBACK_SENTENCE (use verbatim as the closing sentence of paragraph one, omit if null):"
     )
     lines.append(pkg.get("recon_fallback_sentence") or "null")
+
+    lines.append("")
+    lines.append(f"SELLER_COMMENTS: {pkg.get('seller_comments') or '(none)'}")
 
     # --- MARKET VELOCITY: days-supply / competitive-set signals from ACV Max.
     # Only rendered when the package actually carries this data — ACV Max
