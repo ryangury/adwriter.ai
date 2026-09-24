@@ -290,11 +290,43 @@ def _phrase_present(phrase: dict[str, str], live_norm: str) -> bool:
     return SequenceMatcher(None, target, live_norm).ratio() >= 0.35
 
 
-def compare_ad(stored_ad_text: str, live_description_text: str | None) -> dict[str, Any]:
+# The asking-price sentence every ad carries ("Current asking price is $X
+# (includes $899 dealer administrative fee)..."), read off the live listing.
+_LIVE_PRICE_RE = re.compile(r"current asking price is \$([0-9,]+)", re.IGNORECASE)
+PRICE_MISMATCH_TOLERANCE = 50
+
+
+def expected_advertised_price(entry: dict[str, Any]) -> float | None:
+    """The fee-inclusive asking price the stored ad states: last_advertised_price,
+    or last_price_at_write + DEALER_DOC_FEE for entries written before that
+    field existed. None when neither is recorded."""
+    from aggregator import DEALER_DOC_FEE  # local: keep verifier's import surface small
+
+    for key, fee in (("last_advertised_price", 0), ("last_price_at_write", DEALER_DOC_FEE)):
+        try:
+            if entry.get(key) is not None:
+                return float(entry[key]) + fee
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def compare_ad(
+    stored_ad_text: str,
+    live_description_text: str | None,
+    expected_price: float | None = None,
+) -> dict[str, Any]:
     """Fuzzy-compare the stored ad against the live VDP description.
 
-    Returns {match_score (0-100), matched_phrases, missing_phrases, verdict}.
+    Returns {match_score (0-100), matched_phrases, missing_phrases, verdict},
+    plus live_price / expected_price / price_mismatch when a price check ran.
     verdict: "current" | "outdated" | "not_posted" | "not_found".
+
+    Price check: when `expected_price` (the fee-inclusive asking price the
+    stored ad states) is given and the live text has a "Current asking price
+    is $X", a difference over PRICE_MISMATCH_TOLERANCE forces "outdated"
+    whatever the phrase score — the phrase score alone misses a reprice whose
+    proof-point figure didn't change. No price on the live page: no check.
     """
     phrases = _extract_key_phrases(stored_ad_text)
     labels = [p["label"] for p in phrases]
@@ -323,12 +355,25 @@ def compare_ad(stored_ad_text: str, live_description_text: str | None) -> dict[s
 
     score = round(100 * len(matched) / len(phrases)) if phrases else 0
     verdict = "current" if score > 80 else "outdated"
-    return {
+    result: dict[str, Any] = {
         "match_score": score,
         "matched_phrases": matched,
         "missing_phrases": missing,
         "verdict": verdict,
     }
+
+    m = _LIVE_PRICE_RE.search(live)
+    if m and expected_price is not None:
+        live_price = int(m.group(1).replace(",", ""))
+        expected = int(round(expected_price))
+        result["live_price"] = live_price
+        result["expected_price"] = expected
+        if abs(live_price - expected) > PRICE_MISMATCH_TOLERANCE:
+            result["verdict"] = "outdated"
+            result["price_mismatch"] = (
+                f"price_mismatch: live ${live_price:,} vs expected ${expected:,}"
+            )
+    return result
 
 
 # --------------------------------------------------------------------------- #
@@ -411,7 +456,14 @@ def run_verification(
             continue
 
         live_text = live["description_text"] if live.get("page_found") else None
-        cmp = compare_ad(entry.get("current_ad_text", ""), live_text)
+        cmp = compare_ad(
+            entry.get("current_ad_text", ""), live_text, expected_advertised_price(entry)
+        )
+        if cmp.get("price_mismatch"):
+            print(
+                f"[verify] {stock} price mismatch — live ${cmp['live_price']:,}, "
+                f"ad says ${cmp['expected_price']:,}"
+            )
 
         entry["last_verified"] = today.isoformat()
         entry["verification_verdict"] = cmp["verdict"]
@@ -596,8 +648,11 @@ def _main_locked(
         cmp = compare_ad(
             entry["current_ad_text"],
             live["description_text"] if live["page_found"] else None,
+            expected_advertised_price(entry),
         )
         print(f"\nverdict: {cmp['verdict']}  score: {cmp['match_score']}")
+        if cmp.get("price_mismatch"):
+            print(cmp["price_mismatch"])
         print(f"matched:  {cmp['matched_phrases']}")
         print(f"missing:  {cmp['missing_phrases']}")
     else:

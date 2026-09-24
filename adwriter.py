@@ -1619,9 +1619,17 @@ def run_adwriter_pre_recon(stock_number: str) -> str:
 # --------------------------------------------------------------------------- #
 #
 # {stock: {first_ad_date, last_ad_date, ad_count, last_price_at_write,
-#          current_ad_text, paragraph_one, paragraph_two, paragraph_three,
-#          paragraph_four, recon_included, recon_pending, lifecycle_stage,
-#          last_verified, verification_verdict, match_score, last_feedback}}
+#          last_advertised_price, current_ad_text, paragraph_one,
+#          paragraph_two, paragraph_three, paragraph_four, recon_included,
+#          recon_pending, lifecycle_stage, last_verified,
+#          verification_verdict, match_score, last_feedback}}
+#
+# last_price_at_write   — raw ACV Max list price when the ad (or its reprice)
+#   was written; drives reprice detection.
+# last_advertised_price — last_price_at_write + DEALER_DOC_FEE ($899): the
+#   "Current asking price is $X" figure in the ad copy. The verifier compares
+#   it to the price on the live listing. Absent on entries written before it
+#   existed (the verifier falls back to last_price_at_write + DEALER_DOC_FEE).
 #
 # last_feedback — the internal ===FEEDBACK=== block from the last ad generation
 #   (CONFIDENCE / EQUIPMENT_TIER / PEACOCK_MODE / proof-point notes / FLAGS ...),
@@ -1637,8 +1645,20 @@ def run_adwriter_pre_recon(stock_number: str) -> str:
 #   last_verified        — ISO date of the last hendrickcars.com check, or null
 #   verification_verdict — "current" | "outdated" | "not_posted" | "not_found"
 #   match_score          — 0-100 fuzzy match of stored copy vs the live VDP
+#   All three are reset to null whenever the ad text is rewritten
+#   (record_ad(), reprice_ad()), since an old verdict no longer applies.
 
 AD_HISTORY_PATH = Path(__file__).with_name("ad_history.json")
+
+
+def _advertised_at_write(price: object) -> float | None:
+    """last_advertised_price: the raw ACV Max list price plus DEALER_DOC_FEE —
+    the "Current asking price is $X" figure the ad itself states. None when
+    the list price is missing or unparseable."""
+    try:
+        return round(float(price) + DEALER_DOC_FEE, 2) if price is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def load_ad_history() -> dict:
@@ -1717,6 +1737,7 @@ def record_ad(
     entry["last_ad_date"] = today
     entry["ad_count"] = int(entry.get("ad_count", 0)) + 1
     entry["last_price_at_write"] = price
+    entry["last_advertised_price"] = _advertised_at_write(price)
     entry["current_ad_text"] = ad_text
     entry.update(paras)
     entry["recon_included"] = bool(recon_included)
@@ -1833,8 +1854,15 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
     entry["paragraph_two"] = new_p2
     entry["current_ad_text"] = full
     entry["last_price_at_write"] = current_price
+    entry["last_advertised_price"] = _advertised_at_write(current_price)
     entry["last_ad_date"] = date.today().isoformat()
     entry["lifecycle_stage"] = "repriced"
+    # The live listing still shows the pre-reprice copy until it's re-posted, so
+    # a verdict from before this rewrite no longer describes anything: clear it
+    # (the site shows "unverified") and let the next verifier run re-check.
+    entry["verification_verdict"] = None
+    entry["match_score"] = None
+    entry["last_verified"] = None
     history[stock] = entry
     save_ad_history(history)
     return full
