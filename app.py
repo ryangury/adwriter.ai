@@ -45,8 +45,9 @@ from adwriter import (
     save_ad_history,
     source_status,
 )
-from aggregator import ScraperError, _filter_recon, aggregate
+from aggregator import ScraperError, _filter_recon, _make_from_ymm, aggregate
 from scraper import WorkOrderNotFoundError
+from vehicle_cache import _connect as _cache_connect
 from vehicle_cache import get_carfax, get_carfax_image_path, get_recon, get_vehicle, get_vehicle_by_stock, get_window_sticker, needs_recon
 from credentials import DEMO_PASSWORD
 from run_lock import ScraperBusyError
@@ -611,6 +612,148 @@ def inventory_detail(stock_number: str):
         notes=notes,
         ad_entry=ad_entry,
         ad_paras=ad_paras,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Database dashboard — what vehicle_cache.db holds per vehicle
+# --------------------------------------------------------------------------- #
+
+_STICKER_SOURCE_LABELS = {
+    "carfax_sticker_link": "Carfax PDF",
+    "autoipacket_html": "iPacket HTML",
+    "autoipacket": "iPacket",
+    "ipacket_browse": "iPacket Browse",
+    "ipacket_inventory_browse": "iPacket Browse",
+    "acvmax_options_tab": "ACV Max",
+    "autoipacket_predictive": "iPacket (predicted)",
+    "rarity_db_cache": "Rarity DB",
+}
+_CACHE_SOLD_LIMIT = 20
+
+
+def _sticker_source_label(source: str | None) -> str:
+    if not source:
+        return "—"
+    return _STICKER_SOURCE_LABELS.get(source, source)
+
+
+def _json_or_none(raw: str | None) -> Any:
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _cache_row(
+    stock: str | None, ymm: str | None, vin: str | None, status_code: Any,
+    cached: dict[str, Any] | None, *, sold: bool = False,
+) -> dict[str, Any]:
+    """One /cache table row: which of Carfax / window sticker / recon
+    vehicle_cache.db holds for this VIN (ACV Max pricing is never cached)."""
+    c = cached or {}
+    sticker = _json_or_none(c.get("window_sticker_json")) or {}
+    ymm = ymm or c.get("year_make_model")
+    return {
+        "stock_number": stock or c.get("stock_number"),
+        "year_make_model": ymm,
+        "vin": vin or c.get("vin"),
+        "make": _make_from_ymm(ymm),
+        "status_code": status_code,
+        "status_label": _status_label(status_code) if status_code is not None else "—",
+        "carfax_ok": bool(c.get("carfax_json")),
+        "carfax_date": c.get("carfax_date"),
+        "sticker_ok": bool(c.get("window_sticker_json")),
+        "sticker_source": c.get("window_sticker_source"),
+        "sticker_label": _sticker_source_label(c.get("window_sticker_source")),
+        "sticker_date": c.get("window_sticker_date"),
+        "sticker_msrp": sticker.get("total_msrp") if isinstance(sticker, dict) else None,
+        "recon_ok": bool(c.get("recon_json")),
+        "recon_complete": c.get("recon_complete"),
+        "recon_date": c.get("recon_date"),
+        "autoipacket_attempts": c.get("autoipacket_attempts") or 0,
+        "in_cache": bool(cached),
+        "sold": sold,
+    }
+
+
+def _cached_vins_by_recency() -> list[str]:
+    """Every VIN with a vehicle_cache.db row, most recently updated first."""
+    with _cache_connect() as conn:
+        return [r["vin"] for r in conn.execute(
+            "SELECT vin FROM vehicle_data ORDER BY last_updated DESC"
+        )]
+
+
+@app.get("/cache")
+def cache_dashboard():
+    if not session.get("authed"):
+        return render_template("login.html", error=request.args.get("error"))
+    vehicles, stamp = _load_snapshot()
+    rows = []
+    in_snapshot: set[str] = set()
+    for v in vehicles:
+        vin = (v.get("vin") or "").strip().upper()
+        if vin:
+            in_snapshot.add(vin)
+        rows.append(_cache_row(
+            normalize_stock(v.get("stock_number")), v.get("year_make_model"), vin or None,
+            v.get("status_code"), get_vehicle(vin) if vin else None,
+        ))
+    # Cached vehicles no longer in the snapshot (sold / moved out of retail),
+    # most recently updated first, capped so they don't bury the live list.
+    sold = []
+    for vin in _cached_vins_by_recency():
+        if vin in in_snapshot:
+            continue
+        sold.append(_cache_row(None, None, vin, None, get_vehicle(vin), sold=True))
+        if len(sold) >= _CACHE_SOLD_LIMIT:
+            break
+    return render_template(
+        "cache.html", rows=rows, sold_rows=sold, snapshot_time=_fmt_snapshot_time(stamp)
+    )
+
+
+@app.get("/cache/<stock_number>")
+def cache_detail(stock_number: str):
+    if not session.get("authed"):
+        return render_template("login.html", error=request.args.get("error"))
+    stock = normalize_stock(stock_number)
+    vehicles, _stamp = _load_snapshot()
+    vehicle = next((v for v in vehicles if normalize_stock(v.get("stock_number")) == stock), None)
+    if vehicle and vehicle.get("vin"):
+        cached = get_vehicle(vehicle["vin"])
+    else:
+        cached = get_vehicle_by_stock(stock)  # sold: only the cache knows it
+    if vehicle is None and cached is None:
+        abort(404)
+    c = cached or {}
+    carfax = _json_or_none(c.get("carfax_json"))
+    sticker = _json_or_none(c.get("window_sticker_json"))
+    recon = _json_or_none(c.get("recon_json"))
+    status_code = (vehicle or {}).get("status_code")
+    return render_template(
+        "cache_detail.html",
+        stock=stock,
+        vehicle=vehicle,
+        in_snapshot=vehicle is not None,
+        ymm=(vehicle or {}).get("year_make_model") or c.get("year_make_model"),
+        vin=(vehicle or {}).get("vin") or c.get("vin"),
+        status_code=status_code,
+        status_label=_status_label(status_code) if status_code is not None else "—",
+        cached=c,
+        carfax=carfax,
+        sticker=sticker,
+        sticker_label=_sticker_source_label(c.get("window_sticker_source")),
+        recon=recon,
+        raw={
+            "carfax": json.dumps(carfax, indent=2) if carfax is not None else None,
+            "sticker": json.dumps(sticker, indent=2) if sticker is not None else None,
+            "recon": json.dumps(recon, indent=2) if recon is not None else None,
+        },
+        attempts=c.get("autoipacket_attempts") or 0,
     )
 
 

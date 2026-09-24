@@ -1,0 +1,145 @@
+{% extends "layout.html" %}
+{% block title %}{{ stock }} — Database — Mercedes-Benz of Durham{% endblock %}
+{% block head %}
+<style>
+  .cache-sec { border: 1px solid var(--line); border-radius: 10px; margin: 0 0 16px; background: var(--bg); }
+  .cache-sec > summary { cursor: pointer; padding: 12px 16px; font-weight: 650; color: var(--accent); }
+  .cache-sec > summary .meta { color: var(--muted); font-weight: 400; font-size: 0.85rem; margin-left: 8px; }
+  .cache-sec .body { padding: 0 16px 16px; }
+  .cache-sec .none { color: var(--muted); }
+  .kv { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px 18px; margin: 4px 0 14px; }
+  .kv .k { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+  .kv .v { font-weight: 600; word-break: break-word; }
+  .raw > summary { cursor: pointer; color: var(--muted); font-size: 0.85rem; margin-top: 10px; }
+  .raw pre { max-height: 420px; overflow: auto; background: var(--card); border: 1px solid var(--line);
+             border-radius: 8px; padding: 10px; font-size: 0.78rem; white-space: pre-wrap; word-break: break-word; }
+  .mini { width: 100%; border-collapse: collapse; font-size: 0.88rem; margin-top: 6px; }
+  .mini th { text-align: left; color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--line); padding: 6px 8px; }
+  .mini td { border-bottom: 1px solid var(--line); padding: 6px 8px; vertical-align: top; }
+  .mini td.num, .mini th.num { text-align: right; white-space: nowrap; }
+  .warn { color: var(--fail); font-weight: 650; }
+  .live { color: var(--muted); font-style: italic; }
+</style>
+{% endblock %}
+{% macro money(x) %}{{ '${:,.0f}'.format(x) if x is not none else '—' }}{% endmacro %}
+{% block content %}
+<div class="wrap-wide">
+  <div class="detail-head">
+    <div>
+      <h1 class="page-title">{{ ymm or stock }}</h1>
+      <p class="page-sub">
+        <a href="/cache">&larr; Database</a> &middot; Stock {{ stock }}{% if vin %} &middot; VIN {{ vin }}{% endif %}
+        {% if in_snapshot %} &middot; <a href="{{ url_for('inventory_detail', stock_number=stock) }}">Inventory page</a>
+        {% else %} &middot; not in the current inventory snapshot{% endif %}
+      </p>
+    </div>
+    {% if status_code is not none %}<span class="status-pill st-{{ status_code }}">{{ status_label }}</span>{% endif %}
+  </div>
+
+  {# ---------------- CARFAX ---------------- #}
+  <details class="cache-sec" open>
+    <summary>Carfax{% if cached.carfax_date %}<span class="meta">cached {{ cached.carfax_date }}</span>{% endif %}</summary>
+    <div class="body">
+    {% if carfax %}
+      <div class="kv">
+        <div><div class="k">Owners</div><div class="v">{{ carfax.number_of_owners if carfax.number_of_owners is not none else '—' }}</div></div>
+        <div><div class="k">Owner type</div><div class="v">{{ carfax.owner_type or '—' }}</div></div>
+        <div><div class="k">Accidents</div><div class="v">
+          {% if carfax.no_accidents is sameas true %}None reported
+          {% elif carfax.accident_count %}{{ carfax.accident_count }}{% if carfax.accident_severity %} ({{ carfax.accident_severity }}){% endif %}
+          {% elif carfax.no_accidents is sameas false %}Reported
+          {% else %}—{% endif %}</div></div>
+        <div><div class="k">Title brands</div><div class="v">{{ (carfax.title_brands or []) | join(', ') or 'None' }}</div></div>
+        <div><div class="k">Service records</div><div class="v">{{ carfax.service_record_count if carfax.service_record_count is not none else '—' }}</div></div>
+        <div><div class="k">Carfax date</div><div class="v">{{ cached.carfax_date or '—' }}</div></div>
+        {% if carfax.carfax_parse_source %}<div><div class="k">Parse source</div><div class="v">{{ carfax.carfax_parse_source }}</div></div>{% endif %}
+      </div>
+      {% if carfax.accident_details %}<p><strong>Accident details:</strong> {{ carfax.accident_details }}</p>{% endif %}
+      <div class="k" style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted)">Service shops</div>
+      {% if carfax.service_facilities %}
+        <ul>{% for s in carfax.service_facilities %}<li>{{ s }}</li>{% endfor %}</ul>
+      {% else %}<p class="none">None listed</p>{% endif %}
+      <details class="raw"><summary>Raw Carfax JSON</summary><pre>{{ raw.carfax }}</pre></details>
+    {% else %}
+      <p class="none">No Carfax data cached</p>
+    {% endif %}
+    </div>
+  </details>
+
+  {# ---------------- WINDOW STICKER ---------------- #}
+  <details class="cache-sec" open>
+    <summary>Window sticker{% if cached.window_sticker_source %}<span class="meta">{{ sticker_label }}{% if cached.window_sticker_date %} &middot; cached {{ cached.window_sticker_date }}{% endif %}</span>{% endif %}</summary>
+    <div class="body">
+    {% if sticker %}
+      <div class="kv">
+        <div><div class="k">Source</div><div class="v">{{ sticker_label }}</div></div>
+        <div><div class="k">Sticker date</div><div class="v">{{ cached.window_sticker_date or '—' }}</div></div>
+        <div><div class="k">Base price</div><div class="v">{{ money(sticker.base_price) }}</div></div>
+        <div><div class="k">Destination</div><div class="v">{{ money(sticker.freight) }}</div></div>
+        <div><div class="k">Total MSRP</div><div class="v">{{ money(sticker.total_msrp) }}</div></div>
+        {% if sticker.reconciliation_ok is defined %}
+        <div><div class="k">Reconciliation</div><div class="v">
+          {% if sticker.reconciliation_ok is sameas true %}<span class="has-ad-yes">&#10003; totals add up</span>
+          {% elif sticker.reconciliation_ok is sameas false %}<span class="has-ad-fail">&#10007; totals don't add up</span>
+          {% else %}<span class="has-ad-no">no total to check</span>{% endif %}</div></div>
+        {% endif %}
+      </div>
+      {% if sticker.option_packages %}
+      <table class="mini">
+        <thead><tr><th>Option / package</th><th class="num">Price</th></tr></thead>
+        <tbody>
+        {% for p in sticker.option_packages %}
+          <tr><td>{% if p.code %}{{ p.code }} &middot; {% endif %}{{ p.name }}{% if p.dealer_installed %} <span class="has-ad-no">(dealer installed)</span>{% endif %}</td>
+              <td class="num">{{ ('-$' ~ '{:,.0f}'.format(-p.price)) if p.price is not none and p.price < 0 else money(p.price) }}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}<p class="none">No option packages listed</p>{% endif %}
+      <details class="raw"><summary>Raw sticker JSON</summary><pre>{{ raw.sticker }}</pre></details>
+    {% else %}
+      <p class="none">No sticker data cached</p>
+    {% endif %}
+    </div>
+  </details>
+
+  {# ---------------- RECON ---------------- #}
+  <details class="cache-sec" open>
+    <summary>Recon{% if cached.recon_date %}<span class="meta">cached {{ cached.recon_date }}</span>{% endif %}</summary>
+    <div class="body">
+    {% if recon %}
+      <div class="kv">
+        <div><div class="k">Status</div><div class="v">{% if cached.recon_complete %}<span class="has-ad-yes">&#10003; complete</span>{% else %}&#9719; pending{% endif %}</div></div>
+        <div><div class="k">Recon date</div><div class="v">{{ cached.recon_date or '—' }}</div></div>
+        {% if recon.work_order_id %}<div><div class="k">Work order</div><div class="v">{{ recon.work_order_id }}</div></div>{% endif %}
+      </div>
+      {% if recon.line_items %}
+      <table class="mini">
+        <thead><tr><th>Description</th><th>Status</th><th class="num">Cost</th></tr></thead>
+        <tbody>
+        {% for li in recon.line_items %}
+          <tr><td>{{ li.description or '—' }}</td>
+              <td>{{ li.completion_status or ('completed' if li.completed else 'open') }}</td>
+              <td class="num">{{ ('${:,.2f}'.format(li.total_cost)) if li.total_cost is number else (li.total_cost or '—') }}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}<p class="none">No line items</p>{% endif %}
+      <details class="raw"><summary>Raw recon JSON</summary><pre>{{ raw.recon }}</pre></details>
+    {% else %}
+      <p class="none">No recon data cached</p>
+    {% endif %}
+    </div>
+  </details>
+
+  {# ---------------- ACV MAX ---------------- #}
+  <details class="cache-sec" open>
+    <summary>ACV Max<span class="meta live">live</span></summary>
+    <div class="body">
+      <p>ACV Max pricing is always scraped live and is not cached.
+        {% if vehicle and vehicle.current_price is not none %}Current list price: <strong>{{ money(vehicle.current_price) }}</strong>.{% else %}No current list price (not in the inventory snapshot).{% endif %}</p>
+      <p>AutoiPacket sticker attempts: <strong>{{ attempts }}</strong> attempt{{ '' if attempts == 1 else 's' }}.
+        {% if attempts >= 3 %}<span class="warn">Retry limit reached — iPacket sticker pulls blocked until manually reset.</span>{% endif %}</p>
+    </div>
+  </details>
+</div>
+{% endblock %}

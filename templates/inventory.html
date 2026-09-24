@@ -15,7 +15,7 @@
   </div></div>
   {% else %}
   <div class="inv-search">
-    <input type="text" id="inv-search-input" placeholder="Search by stock number or VIN…" autocomplete="off">
+    <input type="text" id="inv-search-input" placeholder="Search by stock, VIN, make or model…" autocomplete="off">
     <span class="inv-search-count" id="inv-search-count"></span>
   </div>
   <div class="inv-wrap">
@@ -40,7 +40,8 @@
         <tr data-href="{{ href }}"
             data-age="{{ r.days_on_lot if r.days_on_lot is not none else '' }}"
             data-status="{{ r.status_code if r.status_code is not none else '' }}"
-            data-vin="{{ r.vin or '' }}">
+            data-vin="{{ r.vin or '' }}"
+            data-ymm="{{ (r.year_make_model or '') | upper }}">
           <td><a href="{{ href }}">{{ r.stock_number }}</a></td>
           <td>{{ r.year_make_model or '—' }}</td>
           <td>{{ r.trim or '—' }}</td>
@@ -89,7 +90,10 @@
     Array.prototype.forEach.call(tbody.rows, function (tr) {
       var stock = (tr.cells[0].textContent || "").toUpperCase();
       var vin = (tr.getAttribute("data-vin") || "").toUpperCase();
-      var match = !q || stock.indexOf(q) !== -1 || vin.indexOf(q) !== -1;
+      var ymm = (tr.getAttribute("data-ymm") || "").toUpperCase();
+      var match = !q || stock.indexOf(q) !== -1
+                      || vin.indexOf(q) !== -1
+                      || ymm.indexOf(q) !== -1;
       tr.style.display = match ? "" : "none";
       if (match) visible++;
     });

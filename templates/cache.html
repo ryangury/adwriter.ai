@@ -1,0 +1,169 @@
+{% extends "layout.html" %}
+{% block title %}Database — Mercedes-Benz of Durham{% endblock %}
+{% block head %}
+<style>
+  .cache-sold { margin-top: 28px; }
+  .cache-sold > summary { cursor: pointer; font-weight: 650; color: var(--accent); margin-bottom: 10px; }
+  .cache-sold > summary span { color: var(--muted); font-weight: 400; font-size: 0.9rem; }
+  .live { color: var(--muted); font-style: italic; }
+  .src { font-size: 0.85rem; }
+  .pending { color: #b45309; font-weight: 600; }
+  .inv-table th.sortable-txt { cursor: pointer; user-select: none; }
+</style>
+{% endblock %}
+{% macro cache_rows(rows) %}
+  {% for r in rows %}
+  {% set href = url_for('cache_detail', stock_number=r.stock_number) if r.stock_number else '' %}
+  <tr {% if href %}data-href="{{ href }}"{% endif %}
+      data-stock="{{ (r.stock_number or '') | upper }}"
+      data-vin="{{ (r.vin or '') | upper }}"
+      data-ymm="{{ (r.year_make_model or '') | upper }}"
+      data-vehicle="{{ (r.year_make_model or '') | upper }}"
+      data-status="{{ r.status_code if r.status_code is not none else '' }}">
+    <td>{% if href %}<a href="{{ href }}">{{ r.stock_number }}</a>{% else %}{{ r.vin or '—' }}{% endif %}</td>
+    <td>{{ r.year_make_model or '—' }}</td>
+    <td>{% if r.status_code is not none %}<span class="status-pill st-{{ r.status_code }}">{{ r.status_label }}</span>{% else %}<span class="has-ad-no">&ndash;</span>{% endif %}</td>
+    <td class="check-col" title="{{ ('Carfax cached ' ~ r.carfax_date) if r.carfax_ok else 'No Carfax cached' }}">
+      {% if r.carfax_ok %}<span class="has-ad-yes">&#10003;</span>{% else %}<span class="has-ad-no">&ndash;</span>{% endif %}
+    </td>
+    <td title="{% if r.sticker_ok %}{{ ('Total MSRP ${:,.0f}'.format(r.sticker_msrp)) if r.sticker_msrp is not none else 'No total MSRP' }}{% if r.sticker_date %} · cached {{ r.sticker_date }}{% endif %}{% else %}No sticker cached{% endif %}">
+      {% if r.sticker_ok %}<span class="src">{{ r.sticker_label }}</span>{% else %}<span class="has-ad-no">&mdash;</span>{% endif %}
+    </td>
+    <td title="{{ ('Recon cached ' ~ r.recon_date) if r.recon_ok else 'No recon cached' }}">
+      {% if not r.recon_ok %}<span class="has-ad-no">&ndash;</span>
+      {% elif r.recon_complete %}<span class="has-ad-yes">&#10003;</span> complete
+      {% else %}<span class="pending">&#9719; pending</span>{% endif %}
+    </td>
+    <td class="num">{% if r.autoipacket_attempts >= 3 %}<span class="has-ad-fail">{{ r.autoipacket_attempts }}</span>{% else %}{{ r.autoipacket_attempts }}{% endif %}</td>
+    <td><span class="live">Live</span></td>
+  </tr>
+  {% endfor %}
+{% endmacro %}
+{% macro table_head() %}
+  <thead>
+    <tr>
+      <th class="sortable" data-sort="stock" data-type="text">Stock</th>
+      <th class="sortable" data-sort="vehicle" data-type="text">Vehicle</th>
+      <th class="sortable" data-sort="status" data-type="num">Status</th>
+      <th class="check-col">Carfax</th>
+      <th>MSRP</th>
+      <th>Recon</th>
+      <th class="num">iPacket tries</th>
+      <th>ACV Max</th>
+    </tr>
+  </thead>
+{% endmacro %}
+{% block content %}
+<div class="wrap-wide">
+  <h1 class="page-title">Database</h1>
+  <p class="page-sub">
+    What vehicle_cache.db holds for each vehicle in inventory &middot;
+    {{ rows|length }} vehicle{{ '' if rows|length == 1 else 's' }}
+    {% if snapshot_time %} &middot; snapshot from {{ snapshot_time }}{% endif %}
+    &middot; ACV Max pricing is scraped live and never cached
+  </p>
+
+  <div class="inv-search">
+    <input type="text" id="cache-search-input" placeholder="Search by stock, VIN, make or model…" autocomplete="off">
+    <span class="inv-search-count" id="cache-search-count"></span>
+  </div>
+
+  {% if not rows %}
+  <div class="inv-wrap"><div class="empty-note">
+    No inventory snapshot found. It is written by each orchestrator run.
+  </div></div>
+  {% else %}
+  <div class="inv-wrap">
+    <table class="inv-table cache-table" id="cache-table">
+      {{ table_head() }}
+      <tbody>{{ cache_rows(rows) }}</tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  {% if sold_rows %}
+  <details class="cache-sold">
+    <summary>Cached, not in current inventory <span>&middot; sold, wholesale or browse-only &middot; {{ sold_rows|length }} most recently updated</span></summary>
+    <div class="inv-wrap">
+      <table class="inv-table cache-table" id="cache-sold-table">
+        {{ table_head() }}
+        <tbody>{{ cache_rows(sold_rows) }}</tbody>
+      </table>
+    </div>
+  </details>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  "use strict";
+  var tables = Array.prototype.slice.call(document.querySelectorAll("table.cache-table"));
+  if (!tables.length) return;
+
+  // Live search across both tables by stock, VIN, make or model.
+  var input = document.getElementById("cache-search-input");
+  var count = document.getElementById("cache-search-count");
+  function allRows() {
+    return tables.reduce(function (acc, t) { return acc.concat(Array.prototype.slice.call(t.tBodies[0].rows)); }, []);
+  }
+  var total = allRows().length;
+  function applySearch() {
+    var q = (input.value || "").trim().toUpperCase();
+    var visible = 0;
+    allRows().forEach(function (tr) {
+      var stock = tr.getAttribute("data-stock") || "";
+      var vin = tr.getAttribute("data-vin") || "";
+      var ymm = tr.getAttribute("data-ymm") || "";
+      var match = !q || stock.indexOf(q) !== -1
+                      || vin.indexOf(q) !== -1
+                      || ymm.indexOf(q) !== -1;
+      tr.style.display = match ? "" : "none";
+      if (match) visible++;
+    });
+    count.textContent = q ? visible + " of " + total + " match" + (visible === 1 ? "" : "es") : "";
+    // Open the "not in inventory" section when a search finds something only there.
+    var sold = document.querySelector(".cache-sold");
+    if (sold && q) {
+      var soldHit = Array.prototype.some.call(sold.querySelectorAll("tbody tr"), function (tr) { return tr.style.display !== "none"; });
+      if (soldHit) sold.open = true;
+    }
+  }
+  if (input) input.addEventListener("input", applySearch);
+
+  // Whole row is a link (the stock number is also a real <a>).
+  tables.forEach(function (table) {
+    var tbody = table.tBodies[0];
+    tbody.addEventListener("click", function (e) {
+      if (e.target.closest("a")) return;
+      var tr = e.target.closest("tr");
+      if (tr && tr.getAttribute("data-href")) window.location.href = tr.getAttribute("data-href");
+    });
+
+    // Click-to-sort on Stock / Vehicle (text) and Status (number); toggles.
+    var state = { key: null, dir: 1 };
+    var headers = table.querySelectorAll("th.sortable");
+    Array.prototype.forEach.call(headers, function (th) {
+      th.addEventListener("click", function () {
+        var key = th.getAttribute("data-sort"), numeric = th.getAttribute("data-type") === "num";
+        state.dir = state.key === key ? -state.dir : 1;
+        state.key = key;
+        var rows = Array.prototype.slice.call(tbody.rows);
+        rows.sort(function (a, b) {
+          var av = a.getAttribute("data-" + key), bv = b.getAttribute("data-" + key);
+          if (av === "" && bv === "") return 0;
+          if (av === "") return 1;               // missing values always sort last
+          if (bv === "") return -1;
+          if (numeric) return (Number(av) - Number(bv)) * state.dir;
+          return av.localeCompare(bv) * state.dir;
+        });
+        rows.forEach(function (r) { tbody.appendChild(r); });
+        Array.prototype.forEach.call(headers, function (h) { h.classList.remove("sort-asc", "sort-desc"); });
+        th.classList.add(state.dir === 1 ? "sort-asc" : "sort-desc");
+      });
+    });
+  });
+})();
+</script>
+{% endblock %}
