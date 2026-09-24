@@ -1392,7 +1392,7 @@ def format_data_package(pkg: dict) -> tuple[str, list[dict]]:
     lines.append(pkg.get("carfax_sentence") or "(omit — no Carfax sentence)")
 
     lines.append("")
-    lines.append("RECON SENTENCE (use verbatim in paragraph one sentence four, omit if null):")
+    lines.append("RECON_SENTENCE (use verbatim in paragraph one sentence four, omit if null):")
     lines.append(pkg.get("recon_sentence") or "(omit — no qualifying recon items)")
 
     lines.append("")

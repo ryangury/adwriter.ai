@@ -138,6 +138,16 @@ PREDICTIVE_STICKER_RULE = (
     "depreciation framing entirely for predictive stickers."
 )
 
+# Paragraph-one recon rule for aggregator.build_recon_sentence()'s
+# RECON_SENTENCE, used by the Hendrick Certified / Affordable / As-Is prompts
+# (the MB CPO prompt carries its own "Sentence 4: RECON SENTENCE" line).
+RECON_SENTENCE_RULE = (
+    "RECON SENTENCE: If RECON_SENTENCE is provided in the data package, use it "
+    "verbatim as the recon portion of paragraph one. Do not rewrite, summarize, or "
+    "recount tire quantities. Do not add 'manufacturer-recommended' to non-MB tire "
+    "language. Use the sentence exactly as given."
+)
+
 # Paragraph-one sentence-two rule for aggregator.build_provenance_sentence()'s
 # PROVENANCE_SENTENCE, shared by all four tier prompts.
 PROVENANCE_RULE = (

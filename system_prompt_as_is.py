@@ -14,6 +14,7 @@ from shared_prompt_constants import (
     HENDRICK_STORE_CLOSER_PARAGRAPH,
     PREDICTIVE_STICKER_RULE,
     PROVENANCE_RULE,
+    RECON_SENTENCE_RULE,
     RECON_FALLBACK_RULE,
 )
 
@@ -74,6 +75,8 @@ Four sentences, in this order:
 3. Carfax highlights — clean history, service records if notable. Same rules as every other program: no defensive absence statements such as "no accidents" or "no structural damage." State the positive only.
 4. Recon callouts that survive the RECON RULES filter below. Be more generous with inclusion here than on MB CPO or Hendrick Certified — recon is the primary confidence signal on As-Is inventory, since there is no certification program backing the sale.
 
+{RECON_SENTENCE_RULE}
+
 {PROVENANCE_RULE}
 
 {RECON_FALLBACK_RULE}
@@ -96,7 +99,7 @@ RECON RULES — APPLIED MORE GENEROUSLY THAN OTHER TIERS
 Recon is the primary confidence signal on As-Is vehicles, since there is no certification program behind the sale. Use the same category of judgment as the other tiers but lean toward inclusion.
 
 INCLUDE — any completed line item that shows the vehicle was made safe and reliable before sale:
-- Tires replaced — state the number replaced, even if fewer than four (unlike other tiers, a partial tire replacement is still worth mentioning here as evidence of active reconditioning).
+- Tire replacements: use the tire wording in RECON_SENTENCE exactly as given (it already applies the tire-count rules). Never mention tire work that isn't in it.
 - Brake pads, rotors, or full brake service.
 - Battery replacement.
 - Wheel or rim refinishing or replacement.

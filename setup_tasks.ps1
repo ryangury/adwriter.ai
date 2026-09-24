@@ -13,8 +13,8 @@
     AdWriter-Orchestrator / AdWriter-Browse / etc. were already configured on
     this machine when this file was written).
 
-    The first five tasks below (CTR, ReconWarmup, CarfaxWarmup, Browse,
-    Orchestrator) already existed on this machine before this file did; they
+    The CTR, ReconWarmup, CarfaxWarmup, Browse,
+    Orchestrator tasks below already existed on this machine before this file did; they
     are included here so this script is a complete, accurate record of what
     AdWriter has scheduled, not just the newest addition. AdWriter-Orchestrator
     runs on a specific subset of weekdays rather than daily — if this script
@@ -38,11 +38,11 @@ $User = "$env:COMPUTERNAME\$env:USERNAME"
 function Register-AdWriterTask {
     param(
         [Parameter(Mandatory)] [string] $Name,
-        [Parameter(Mandatory)] [string] $ScriptPath,
+        [string] $ScriptPath = "",
         [Parameter(Mandatory)] [datetime] $At,
         [string] $Description = "",
-        # Program to run; $ScriptPath is its argument string. Defaults to the
-        # venv python, so $ScriptPath is "script.py [args]" for most tasks.
+        # Program to run; $ScriptPath is its argument string (optional). Defaults
+        # to the venv python, so $ScriptPath is "script.py [args]" for most tasks.
         [string] $Execute = $PythonExe,
         # Stop the task after this many hours, and never start a second copy
         # while one is still running. 0 = Task Scheduler defaults.
@@ -55,7 +55,9 @@ function Register-AdWriterTask {
         Unregister-ScheduledTask -TaskName $Name -Confirm:$false
     }
 
-    $action = New-ScheduledTaskAction -Execute $Execute -Argument $ScriptPath -WorkingDirectory $WorkingDir
+    $actionArgs = @{ Execute = $Execute; WorkingDirectory = $WorkingDir }
+    if ($ScriptPath) { $actionArgs.Argument = $ScriptPath }
+    $action = New-ScheduledTaskAction @actionArgs
     $trigger = New-ScheduledTaskTrigger -Daily -At $At
     $principal = New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive -RunLevel Highest
     $extra = @{}
@@ -69,7 +71,37 @@ function Register-AdWriterTask {
     Write-Host "Registered: $Name (daily at $($At.ToString('HH:mm')))"
 }
 
-# --- pre-existing tasks (documented here for completeness) -------------- #
+# --- all AdWriter tasks, in daily time order ------------------------------ #
+
+Register-AdWriterTask -Name "AdWriter-VisionProcess" `
+    -ScriptPath "C:\adwriter\vision_processor.py" `
+    -At (Get-Date "00:00") `
+    -Description "Nightly vision-parse retry for cached Carfax/sticker images the live pipeline couldn't vision-parse inline. Logs to C:\adwriter\vision_process.log."
+
+Register-AdWriterTask -Name "AdWriter-Orchestrator" `
+    -ScriptPath "C:\adwriter\orchestrator.py" `
+    -At (Get-Date "05:00") `
+    -Description "Ad build/reprice orchestrator. NOTE: the live task runs on a specific weekday subset, not every day — see this file's header before relying on this registration to recreate it."
+
+Register-AdWriterTask -Name "AdWriter-Reprice-Daily" `
+    -Execute "C:\adwriter\run_orchestrator.bat" `
+    -ScriptPath "--reprice-only" `
+    -At (Get-Date "07:00") `
+    -TimeLimitHours 4 `
+    -Description "Daily reprice-only orchestrator run (run_orchestrator.bat --reprice-only): fresh crawl, rewrite price paragraphs for ads whose price changed. 7:00 AM, before the 9:00 AM verifier."
+
+Register-AdWriterTask -Name "AdWriter-Verifier-AM" `
+    -Execute "C:\adwriter\run_verifier.bat" `
+    -At (Get-Date "09:00") `
+    -TimeLimitHours 4 `
+    -Description "Morning standalone verifier: inventory crawl, then hendrickcars.com ad verification. run_verifier.bat itself passes --all --no-email to verifier.py."
+
+Register-AdWriterTask -Name "AdWriter-Verifier-PM" `
+    -Execute "C:\adwriter\run_verifier.bat" `
+    -At (Get-Date "20:00") `
+    -TimeLimitHours 4 `
+    -Description "Evening standalone verifier: inventory crawl, then hendrickcars.com ad verification. run_verifier.bat itself passes --all --no-email to verifier.py."
+
 Register-AdWriterTask -Name "AdWriter-CTR" `
     -ScriptPath "C:\adwriter\ctr_database.py --daily-scrape" `
     -At (Get-Date "21:00") `
@@ -89,25 +121,6 @@ Register-AdWriterTask -Name "AdWriter-Browse" `
     -ScriptPath "C:\adwriter\scraper.py --source ipacket_browse" `
     -At (Get-Date "23:00") `
     -Description "Daily iPacket inventory browse."
-
-Register-AdWriterTask -Name "AdWriter-Orchestrator" `
-    -ScriptPath "C:\adwriter\orchestrator.py" `
-    -At (Get-Date "05:00") `
-    -Description "Ad build/reprice orchestrator. NOTE: the live task runs on a specific weekday subset, not every day — see this file's header before relying on this registration to recreate it."
-
-# --- new: nightly vision batch reprocessing ------------------------------ #
-Register-AdWriterTask -Name "AdWriter-VisionProcess" `
-    -ScriptPath "C:\adwriter\vision_processor.py" `
-    -At (Get-Date "00:00") `
-    -Description "Nightly vision-parse retry for cached Carfax/sticker images the live pipeline couldn't vision-parse inline. Logs to C:\adwriter\vision_process.log."
-
-# --- daily reprice-only orchestrator run ------------------------------------ #
-Register-AdWriterTask -Name "AdWriter-Reprice-Daily" `
-    -Execute "C:\adwriter\run_orchestrator.bat" `
-    -ScriptPath "--reprice-only" `
-    -At (Get-Date "07:00") `
-    -TimeLimitHours 4 `
-    -Description "Daily reprice-only orchestrator run (run_orchestrator.bat --reprice-only): fresh crawl, rewrite price paragraphs for ads whose price changed. 7:00 AM, before the 9:00 AM verifier."
 
 Write-Host "`nAll AdWriter scheduled tasks registered."
 Get-ScheduledTask | Where-Object { $_.TaskName -like "AdWriter-*" } |

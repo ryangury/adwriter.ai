@@ -14,6 +14,7 @@ from shared_prompt_constants import (
     HENDRICK_STORE_CLOSER_PARAGRAPH,
     PREDICTIVE_STICKER_RULE,
     PROVENANCE_RULE,
+    RECON_SENTENCE_RULE,
     RECON_FALLBACK_RULE,
 )
 
@@ -66,6 +67,8 @@ Four sentences, in this order:
 2. PROVENANCE_SENTENCE from the data package, verbatim (see PROVENANCE SENTENCE below).
 3. Carfax highlights — clean history, low mileage relative to the industry average if favorable, and notable service records.
 4. Recon callouts that survive the RECON RULES filter below.
+
+{RECON_SENTENCE_RULE}
 
 {PROVENANCE_RULE}
 
@@ -208,7 +211,7 @@ RECON RULES — WHAT TO INCLUDE AND EXCLUDE
 Recon on Hendrick Certified units is often more extensive than on MB CPO units. Include all positive recon items that survive this filter.
 
 INCLUDE in copy — unambiguously positive signals:
-- All four tires replaced: use the phrase "new tires installed to meet Hendrick Certified standards." Never specify the number of tires replaced unless all four were done.
+- Tire replacements: use the tire wording in RECON_SENTENCE exactly as given (it already applies the tire-count rules). Never mention tire work that isn't in it.
 - Scheduled maintenance completed prior to delivery: mention that the vehicle received its overdue manufacturer-recommended service prior to delivery.
 - Brake service if pads and rotors were replaced: mention briefly as a confidence signal.
 - Any other line item that resolves a maintenance item a buyer would otherwise have to do themselves.

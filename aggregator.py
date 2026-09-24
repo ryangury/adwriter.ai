@@ -275,22 +275,20 @@ def _tire_line_detail(desc_low: str) -> tuple[int, str | None, str | None]:
 
 def _aggregate_tires(
     tire_lines: list[dict[str, Any]], status_code: int
-) -> tuple[dict[str, Any] | None, bool, bool, list[dict[str, Any]]]:
+) -> tuple[dict[str, Any] | None, bool, list[dict[str, Any]]]:
     """One tire decision for the whole work order, from every completed
     tire-replacement line together (three "M&B 1" lines are three tires, not
     three rejected single-tire jobs). Returns (kept tire item or None,
-    all_tires_replaced, single_tire_replaced, excluded entries):
+    all_tires_replaced, excluded entries):
       * 4+ tires  -> "Four new ... tires installed <standard>"
       * 2 tires   -> "Two new <axle> ... tires installed <standard>" when both
                      are on the same axle; skipped when mixed or unknown.
       * 3 tires   -> "Two new ... tires installed <standard>" — never names an
                      axle; no pair detection.
-      * 1 tire    -> skipped, except As-Is (13), which keeps its existing
-                     single-tire credit (the As-Is prompt states tire counts
-                     below four).
+      * 1 tire    -> skipped, on every tier (As-Is included).
     Wording per tier from _TIRE_TIER_WORDING."""
     if not tire_lines:
-        return None, False, False, []
+        return None, False, []
     details = [(li, *_tire_line_detail((li.get("description") or "").lower())) for li in tire_lines]
     total = sum(qty for _, qty, _, _ in details)
     noun, standard = _TIRE_TIER_WORDING.get(status_code, ("tires", "prior to delivery"))
@@ -307,13 +305,11 @@ def _aggregate_tires(
         ]
 
     if total >= 4:
-        return _item(f"Four new {noun} installed {standard}"), True, False, []
+        return _item(f"Four new {noun} installed {standard}"), True, []
     if total == 1:
-        if status_code == 13:
-            return None, False, True, []
-        return None, False, False, _skip(tire_lines, "single tire replacement — not mentioned")
+        return None, False, _skip(tire_lines, "single tire replacement — not mentioned")
     if total == 3:
-        return _item(f"Two new {noun} installed {standard}"), False, False, []
+        return _item(f"Two new {noun} installed {standard}"), False, []
     # total == 2: name the axle only when both tires are confirmed on it.
     per_axle = {"front": 0, "rear": 0}
     for _, qty, axle, _ in details:
@@ -321,10 +317,10 @@ def _aggregate_tires(
             per_axle[axle] += qty
     pair_axle = next((a for a in ("front", "rear") if per_axle[a] == 2), None)
     if pair_axle is None:
-        return None, False, False, _skip(
+        return None, False, _skip(
             tire_lines, "2 tires replaced, not confirmed on the same axle — not mentioned"
         )
-    return _item(f"Two new {pair_axle} {noun} installed {standard}"), False, False, []
+    return _item(f"Two new {pair_axle} {noun} installed {standard}"), False, []
 
 
 def _filter_recon(line_items: list[dict[str, Any]], status_code: int = 10) -> dict[str, Any]:
@@ -366,10 +362,8 @@ def _filter_recon(line_items: list[dict[str, Any]], status_code: int = 10) -> di
         and not _WORKFLOW_STEP_RE.search((li.get("description") or "").lower())
         and _is_tire_replacement((li.get("description") or "").lower())
     ]
-    tire_item, all_tires_replaced, single_tire_replaced, tire_excluded = _aggregate_tires(
-        tire_lines, status_code
-    )
-    tire_output = bool(tire_item or all_tires_replaced or single_tire_replaced)
+    tire_item, all_tires_replaced, tire_excluded = _aggregate_tires(tire_lines, status_code)
+    tire_output = bool(tire_item or all_tires_replaced)
     if tire_item:
         kept.append(tire_item)
     excluded.extend(tire_excluded)
@@ -529,19 +523,6 @@ def _filter_recon(line_items: list[dict[str, Any]], status_code: int = 10) -> di
         )
         kept.append(spark_li)
 
-    # Single tire replacement (As-Is only) — same standalone treatment as
-    # spark plugs, since recon IS the confidence signal on this tier.
-    if single_tire_replaced:
-        tire_li = {k: None for k in _SLIM_KEYS}
-        tire_li.update(
-            {
-                "description": f"Tire replaced {suffix}",
-                "completion_status": "completed",
-                "recon_reason": "single_tire",
-            }
-        )
-        kept.append(tire_li)
-
     # Brakes: combine into one sentence rather than one per line item, and
     # always name front/rear/both when the data supports it. Pads vs. rotors
     # are never distinguished in copy — they're replaced together ~95% of the
@@ -668,7 +649,6 @@ def _filter_recon(line_items: list[dict[str, Any]], status_code: int = 10) -> di
         "line_items": kept,
         "excluded_line_items": excluded,
         "all_tires_replaced": all_tires_replaced,
-        "single_tire_replaced": single_tire_replaced,
         "scheduled_service_done": scheduled_service_done,
         "brake_service_done": brake_service_done,
         "wiper_blades_replaced": wiper_blades_replaced,
@@ -2122,11 +2102,10 @@ def build_recon_sentence(
     wording into each one's description, so re-deriving that logic here
     would risk drifting out of sync with it.
 
-    Note: there is no "exactly two tires" signal anywhere in _filter_recon()'s
-    output. A partial tire replacement is either dropped entirely (every tier
-    except As-Is) or collapses into the single_tire_replaced flag (As-Is
-    only, no axle recorded) — so only the full-set and As-Is single-tire
-    cases are handled below.
+    Tires come from _filter_recon()'s aggregated "tires" item (see
+    _aggregate_tires(): four, a same-axle pair, or "two new tires" for three;
+    a single tire is never mentioned on any tier), with the bare
+    all_tires_replaced flag as the fallback for recon blocks without one.
     """
     if not recon_data:
         return None
@@ -2198,8 +2177,6 @@ def build_recon_sentence(
         components.append(_lower_first(tire_items[0]["description"]))
     elif recon_data.get("all_tires_replaced"):
         components.append(f"four new manufacturer-recommended tires installed {suffix}")
-    elif recon_data.get("single_tire_replaced"):
-        components.append(f"one new manufacturer-recommended tire installed {suffix}")
 
     # 3. BRAKES — front/rear wording and tier suffix already baked in.
     if recon_data.get("brake_service_done"):

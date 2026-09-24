@@ -14,6 +14,7 @@ from shared_prompt_constants import (
     HENDRICK_STORE_CLOSER_PARAGRAPH,
     PREDICTIVE_STICKER_RULE,
     PROVENANCE_RULE,
+    RECON_SENTENCE_RULE,
     RECON_FALLBACK_RULE,
 )
 
@@ -68,6 +69,8 @@ Four sentences, in this order:
 2. PROVENANCE_SENTENCE from the data package, verbatim (see PROVENANCE SENTENCE below).
 3. Carfax highlights — clean history, low mileage relative to the industry average if favorable, and notable service records.
 4. Recon callouts that survive the RECON RULES filter below. These vehicles are older and higher-mileage than Hendrick Certified inventory, and recon carries more of the confidence-building weight as a result — lean into it whenever it's present. When the recon section is thin or empty, handle that gracefully: write sentence 4 from whatever survives the filter, or drop it entirely if nothing does. Never call attention to the absence of recon.
+
+{RECON_SENTENCE_RULE}
 
 {PROVENANCE_RULE}
 
@@ -188,7 +191,7 @@ RECON RULES — WHAT TO INCLUDE AND EXCLUDE
 Recon on Hendrick Affordable units is looser than Hendrick Certified, and often more important to the ad given the vehicle's age and mileage. Include all positive recon items that survive this filter, and use the phrase "before being offered for sale" when describing them.
 
 INCLUDE in copy — unambiguously positive signals:
-- All four tires replaced.
+- Tire replacements: use the tire wording in RECON_SENTENCE exactly as given (it already applies the tire-count rules). Never mention tire work that isn't in it.
 - Scheduled maintenance completed before being offered for sale.
 - Brake service — named as front, rear, or both when the data supports it; never distinguish pads from rotors, just say brakes were replaced.
 - Battery replacement.
