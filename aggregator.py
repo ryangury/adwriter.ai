@@ -283,8 +283,8 @@ def _aggregate_tires(
       * 4+ tires  -> "Four new ... tires installed <standard>"
       * 2 tires   -> "Two new <axle> ... tires installed <standard>" when both
                      are on the same axle; skipped when mixed or unknown.
-      * 3 tires   -> the matched same-axle pair is called out by axle, the odd
-                     tire skipped; all skipped when there is no matched pair.
+      * 3 tires   -> "Two new ... tires installed <standard>" — never names an
+                     axle; no pair detection.
       * 1 tire    -> skipped, except As-Is (13), which keeps its existing
                      single-tire credit (the As-Is prompt states tire counts
                      below four).
@@ -312,22 +312,19 @@ def _aggregate_tires(
         if status_code == 13:
             return None, False, True, []
         return None, False, False, _skip(tire_lines, "single tire replacement — not mentioned")
+    if total == 3:
+        return _item(f"Two new {noun} installed {standard}"), False, False, []
+    # total == 2: name the axle only when both tires are confirmed on it.
     per_axle = {"front": 0, "rear": 0}
     for _, qty, axle, _ in details:
         if axle:
             per_axle[axle] += qty
-    pair_axle = next((a for a in ("front", "rear") if per_axle[a] >= 2), None)
+    pair_axle = next((a for a in ("front", "rear") if per_axle[a] == 2), None)
     if pair_axle is None:
         return None, False, False, _skip(
-            tire_lines, f"{total} tires replaced with no matched same-axle pair — not mentioned"
+            tire_lines, "2 tires replaced, not confirmed on the same axle — not mentioned"
         )
-    odd = [li for li, _, axle, _ in details if axle != pair_axle]
-    return (
-        _item(f"Two new {pair_axle} {noun} installed {standard}"),
-        False,
-        False,
-        _skip(odd, f"odd tire outside the {pair_axle} pair — not mentioned"),
-    )
+    return _item(f"Two new {pair_axle} {noun} installed {standard}"), False, False, []
 
 
 def _filter_recon(line_items: list[dict[str, Any]], status_code: int = 10) -> dict[str, Any]:
