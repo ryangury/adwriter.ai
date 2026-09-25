@@ -143,9 +143,9 @@ Register-AdWriterTask -Name "AdWriter-VisionProcess" `
 
 Register-AdWriterTask -Name "AdWriter-CTR-Capture" `
     -Execute "C:\adwriter\run_ctr_warmup.bat" `
-    -At (Get-Date "05:00") `
+    -At (Get-Date "05:20") `
     -TimeLimitHours 3 `
-    -Description "Daily CTR capture (ctr_warmup.py): Durham retail + Northlake/Charlotte benchmark CTR into ctr_history.db. Was previously only captured 2x/week as a side effect of the full AdWriter-Orchestrator run. 5:00am, before the day's reprice/verifier cycle. NOTE: on Fri/Sat this overlaps AdWriter-Orchestrator's own 5am run, which also does CTR capture -- both use the same global scraper.lock (30s wait, not long enough for either run to reliably finish first); a lock loss inside orchestrator.py's crawl_inventory() step is caught by the same handler as its own outer lock and silently exits the WHOLE run with code 0. Accepted as-is per explicit instruction; consider staggering by a few minutes if this is ever observed to actually collide."
+    -Description "Daily CTR capture (ctr_warmup.py): Durham retail + Northlake/Charlotte benchmark CTR into ctr_history.db. Was previously only captured 2x/week as a side effect of the full AdWriter-Orchestrator run. 5:20am -- staggered 20 minutes after AdWriter-Orchestrator's 5:00am start (only matters Fri/Sat, when Orchestrator actually runs) so its crawl_inventory() step, the first thing it does and also on scraper.lock, has cleared before this task's own ACVMaxScraper session tries to acquire the lock. Both use the same global scraper.lock (30s wait); a lock loss inside orchestrator.py's crawl_inventory() step is caught by the same handler as its own outer lock and silently exits the WHOLE run with code 0, which is why this is staggered rather than left to contend."
 
 Register-AdWriterTask -Name "AdWriter-Orchestrator" `
     -ScriptPath "C:\adwriter\orchestrator.py" `
