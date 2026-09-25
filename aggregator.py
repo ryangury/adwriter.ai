@@ -8,8 +8,8 @@ shaped for the ad writer's Claude prompt.
     from aggregator import aggregate
     pkg = aggregate("DT23358A")
 
-If ReconVision has no completed service items *and* its "Close RO" step is still
-incomplete, aggregate() returns early with just {"recon_complete": False, ...} so
+If ReconVision's "Close RO" step is still incomplete (or, on a work order with no
+Close RO step, any service item is incomplete), aggregate() returns early with just {"recon_complete": False, ...} so
 the caller knows to wait and retry.
 
 CLI:
@@ -570,8 +570,14 @@ def _filter_recon(line_items: list[dict[str, Any]], status_code: int = 10) -> di
         )
         if other_includeable:
             wiper_blades_replaced = True
+            # Name the axle(s) actually done — never imply both when only one
+            # completed line exists. A line naming neither stays generic.
             if wiper_front and wiper_rear:
                 note = "Front and rear wiper blades replaced"
+            elif wiper_front:
+                note = "Front wiper blades replaced"
+            elif wiper_rear:
+                note = "Rear wiper blade replaced"
             else:
                 note = "Wiper blades replaced"
             wiper_li = {k: None for k in _SLIM_KEYS}
@@ -3279,8 +3285,8 @@ def dedupe_equipment_descriptors(
 # --------------------------------------------------------------------------- #
 
 RECON_INCOMPLETE_NOTE = (
-    "ReconVision has no completed service items and 'Close RO' is incomplete — "
-    "recon is still in progress. Wait and retry."
+    "ReconVision recon is still in progress: 'Close RO' is incomplete (or, "
+    "with no Close RO step, not every service item is complete). Wait and retry."
 )
 
 # --------------------------------------------------------------------------- #
