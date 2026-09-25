@@ -1,5 +1,20 @@
 {% extends "layout.html" %}
 {% block title %}Inventory — Mercedes-Benz of Durham{% endblock %}
+{% block head %}
+<style>
+  .reprice-form { margin: 0; }
+  .btn-reprice {
+    padding: 4px 10px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    background: #fff;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    cursor: pointer;
+  }
+</style>
+{% endblock %}
 {% block content %}
 <div class="wrap-wide">
   <h1 class="page-title">Inventory</h1>
@@ -32,6 +47,7 @@
           <th class="has-ad">Has Ad</th>
           <th class="check-col">Posted</th>
           <th class="check-col" title="Current price minus the price the ad was written at">&Delta; Price</th>
+          <th class="check-col"></th>
         </tr>
       </thead>
       <tbody>
@@ -60,6 +76,13 @@
             {% elif r.price_diff == 0 %}<span class="has-ad-yes">&#10003;</span>
             {% elif r.price_diff > 0 %}<span class="has-ad-fail">+${{ '{:,.0f}'.format(r.price_diff) }}</span>
             {% else %}<span class="has-ad-yes">-${{ '{:,.0f}'.format(-r.price_diff) }}</span>{% endif %}
+          </td>
+          <td class="check-col">
+            {% if r.has_ad %}
+            <form method="post" action="{{ url_for('reprice', stock_number=r.stock_number) }}" target="_blank" class="reprice-form">
+              <button type="submit" class="btn-reprice" title="Reprice against current ACV Max pricing">Reprice</button>
+            </form>
+            {% endif %}
           </td>
         </tr>
         {% endfor %}
@@ -112,8 +135,9 @@
   });
 
   // Whole row is a link (the stock number is also a real <a> for keyboard / middle-click).
+  // Reprice is its own form/button — clicking it must submit the form, not navigate the row.
   tbody.addEventListener("click", function (e) {
-    if (e.target.closest("a")) return;
+    if (e.target.closest("a") || e.target.closest("form")) return;
     var tr = e.target.closest("tr");
     if (tr && tr.getAttribute("data-href")) window.location.href = tr.getAttribute("data-href");
   });

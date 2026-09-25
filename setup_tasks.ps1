@@ -141,17 +141,28 @@ Register-AdWriterTask -Name "AdWriter-VisionProcess" `
     -At (Get-Date "00:00") `
     -Description "Nightly vision-parse retry for cached Carfax/sticker images the live pipeline couldn't vision-parse inline. Logs to C:\adwriter\vision_process.log."
 
+Register-AdWriterTask -Name "AdWriter-CTR-Capture" `
+    -Execute "C:\adwriter\run_ctr_warmup.bat" `
+    -At (Get-Date "05:00") `
+    -TimeLimitHours 3 `
+    -Description "Daily CTR capture (ctr_warmup.py): Durham retail + Northlake/Charlotte benchmark CTR into ctr_history.db. Was previously only captured 2x/week as a side effect of the full AdWriter-Orchestrator run. 5:00am, before the day's reprice/verifier cycle. NOTE: on Fri/Sat this overlaps AdWriter-Orchestrator's own 5am run, which also does CTR capture -- both use the same global scraper.lock (30s wait, not long enough for either run to reliably finish first); a lock loss inside orchestrator.py's crawl_inventory() step is caught by the same handler as its own outer lock and silently exits the WHOLE run with code 0. Accepted as-is per explicit instruction; consider staggering by a few minutes if this is ever observed to actually collide."
+
 Register-AdWriterTask -Name "AdWriter-Orchestrator" `
     -ScriptPath "C:\adwriter\orchestrator.py" `
     -At (Get-Date "05:00") `
     -Description "Ad build/reprice orchestrator. NOTE: the live task runs on a specific weekday subset, not every day — see this file's header before relying on this registration to recreate it."
+
+Register-AdWriterTask -Name "AdWriter-CTR-Email" `
+    -ScriptPath "C:\adwriter\ctr_database.py --daily-scrape" `
+    -At (Get-Date "07:00") `
+    -Description "Daily CTR summary email -- builds and sends from whatever is already in ctr_history.db for today (does NOT scrape; see AdWriter-CTR-Capture, which runs at 5am and populates today's rows). 7am, 2 hours after capture so it reports on same-day data. Renamed from AdWriter-CTR, which implied it did the scraping."
 
 Register-AdWriterTask -Name "AdWriter-Reprice-Daily" `
     -Execute "C:\adwriter\run_orchestrator.bat" `
     -ScriptPath "--reprice-only" `
     -At (Get-Date "07:00") `
     -TimeLimitHours 4 `
-    -Description "Daily reprice-only orchestrator run (run_orchestrator.bat --reprice-only): fresh crawl, rewrite price paragraphs for ads whose price changed. 7:00 AM, before the 9:00 AM verifier."
+    -Description "Daily reprice-only orchestrator run (run_orchestrator.bat --reprice-only): fresh crawl, rewrite price paragraphs for ads whose price changed. 7:00 AM, before the 9:00 AM verifier. Shares this exact minute with AdWriter-CTR-Email, which is safe -- that task never touches a scraper or scraper.lock."
 
 Register-AdWriterTask -Name "AdWriter-Verifier-Hourly" `
     -Execute "C:\adwriter\run_verifier.bat" `
@@ -159,17 +170,6 @@ Register-AdWriterTask -Name "AdWriter-Verifier-Hourly" `
     -RepetitionIntervalHours 1 -RepetitionDurationHours 12 `
     -TimeLimitHours 4 `
     -Description "Standalone verifier, hourly 8am-8pm (13 runs/day): inventory crawl, then hendrickcars.com ad verification. run_verifier.bat itself passes --all --no-email to verifier.py. Replaces the old AM (9am) / PM (8pm) split tasks."
-
-Register-AdWriterTask -Name "AdWriter-CTR-Capture" `
-    -Execute "C:\adwriter\run_ctr_warmup.bat" `
-    -At (Get-Date "20:45") `
-    -TimeLimitHours 3 `
-    -Description "Daily CTR capture (ctr_warmup.py): Durham retail + Northlake/Charlotte benchmark CTR into ctr_history.db. Was previously only captured 2x/week as a side effect of the full AdWriter-Orchestrator run. 8:45pm — after the last verifier (8pm) and recon warmup (8:15pm) runs, before the 9pm AdWriter-CTR-Email summary so it has fresh same-day data."
-
-Register-AdWriterTask -Name "AdWriter-CTR-Email" `
-    -ScriptPath "C:\adwriter\ctr_database.py --daily-scrape" `
-    -At (Get-Date "21:00") `
-    -Description "Daily CTR summary email -- builds and sends from whatever is already in ctr_history.db for today (does NOT scrape; see AdWriter-CTR-Capture, which runs earlier and actually populates today's rows). Renamed from AdWriter-CTR, which implied it did the scraping."
 
 Register-AdWriterMultiTriggerTask -Name "AdWriter-ReconWarmup" `
     -ScriptPath "C:\adwriter\recon_warmup.py" `

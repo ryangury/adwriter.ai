@@ -39,9 +39,11 @@ from flask import Flask, abort, jsonify, redirect, render_template, request, sen
 # Imported exactly as orchestrator.py does.
 from adwriter import (
     _generate_from_package,
+    fresh_pricing_data,
     load_ad_history,
     normalize_stock,
     record_ad,
+    reprice_ad,
     save_ad_history,
     source_status,
 )
@@ -624,6 +626,57 @@ def inventory_detail(stock_number: str):
         notes=notes,
         ad_entry=ad_entry,
         ad_paras=ad_paras,
+    )
+
+
+@app.post("/reprice/<stock_number>")
+def reprice(stock_number: str):
+    """Re-scrape ACV Max pricing for one vehicle and rewrite paragraph two of
+    its existing ad against the fresh price — the Inventory page's per-row
+    Reprice button. A single lightweight pricing scrape (fresh_pricing_data()),
+    not the full aggregate() pipeline /generate uses. Submitted as a plain
+    form POST with target="_blank" (see inventory.html) so the result opens in
+    a new tab and the Inventory page itself never navigates away."""
+    if not session.get("authed"):
+        return redirect(url_for("home"))
+
+    stock = normalize_stock(stock_number)
+    try:
+        pricing_data = fresh_pricing_data(stock)
+        full_ad = reprice_ad(stock, pricing_data)
+    except ValueError:
+        # reprice_ad()'s own error text is written for logs/CLI use, not for
+        # someone reading it in the browser — plain messaging here instead.
+        return render_template(
+            "reprice_result.html",
+            stock_number=stock,
+            error="No ad on record for this vehicle — use Generate New Ad first.",
+            ad_copy=None,
+        )
+    except ScraperError as exc:  # includes VehicleIdentityError
+        print(f"[app] /reprice: ScraperError for {stock!r} — full traceback:", file=sys.stderr, flush=True)
+        traceback.print_exc()
+        return render_template(
+            "reprice_result.html",
+            stock_number=stock,
+            error=f"Scraper error: {exc}",
+            ad_copy=None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[app] /reprice: failed for {stock!r} — full traceback:", file=sys.stderr, flush=True)
+        traceback.print_exc()
+        return render_template(
+            "reprice_result.html",
+            stock_number=stock,
+            error=f"Reprice failed: {exc}",
+            ad_copy=None,
+        )
+
+    return render_template(
+        "reprice_result.html",
+        stock_number=stock,
+        error=None,
+        ad_copy=full_ad,
     )
 
 
@@ -1227,7 +1280,7 @@ def recon_image(vin: str):
 def check():
     """Lightweight existence check for the input-debounce badge — just whether
     a stock number has an ad on file and when it was last written. No
-    vehicle_cache.db hit; use /lookup for the full stored-ad payload."""
+    vehicle_cache.db hit."""
     if not session.get("authed"):
         return redirect(url_for("home"))
 
@@ -1235,68 +1288,6 @@ def check():
     if not entry:
         return jsonify({"found": False})
     return jsonify({"found": True, "last_written": _last_written(entry)})
-
-
-@app.get("/lookup")
-def lookup():
-    """Look up a stock number in ad_history.json without touching any scraper —
-    lets the demo show an already-written ad instantly. {"found": false} if the
-    stock number has no ad on record (or has never had `current_ad_text` set).
-
-    Option A: the data-summary fields (year/make/model, cache_status) come
-    from vehicle_cache.db, keyed by a reverse stock_number -> vin lookup —
-    ad_history.json itself doesn't store a VIN, though /save (see its
-    docstring) does write year_make_model onto the entry when it has one.
-    """
-    if not session.get("authed"):
-        return redirect(url_for("home"))
-
-    stock_number, entry = _ad_history_lookup(request.args.get("stock"))
-    if not entry:
-        return jsonify({"found": False})
-
-    cache_row = get_vehicle_by_stock(stock_number)
-    vin = cache_row.get("vin") if cache_row else None
-    year_make_model = entry.get("year_make_model") or (cache_row or {}).get("year_make_model")
-    if not year_make_model:
-        # Fall back to the last inventory crawl snapshot, same source
-        # /generate's own VIN fallback uses, in case this stock number was
-        # never scraped into vehicle_cache.db (e.g. an ad written before the
-        # cache existed).
-        snap = _snapshot_lookup(stock_number)
-        year_make_model = (snap or {}).get("year_make_model")
-
-    cache_status = {
-        "window_sticker": "cached" if vin and get_window_sticker(vin) else "not_cached",
-        "carfax": "cached" if vin and get_carfax(vin) else "not_cached",
-        "recon": "cached" if vin and get_recon(vin) else "not_cached",
-    }
-
-    # proof_point_used isn't a stored field either; it only ever lived in the
-    # ===FEEDBACK=== block from the generation that produced current_ad_text,
-    # so pull it out with the same regex /generate uses on a live pkg.
-    proof_point = ""
-    m = _PROOF_POINT_RE.search(entry.get("last_feedback") or "")
-    if m:
-        answer = m.group(1).strip().strip("[]").strip()
-        if answer and answer.lower() not in {"none", "n/a"}:
-            proof_point = answer
-
-    return jsonify(
-        {
-            "found": True,
-            "stock_number": stock_number,
-            "ad_copy": entry.get("current_ad_text"),
-            "feedback": entry.get("last_feedback", ""),
-            "price": entry.get("last_price_at_write"),
-            "year_make_model": year_make_model,
-            "last_written": _last_written(entry),
-            "lifecycle_stage": entry.get("lifecycle_stage"),
-            "proof_point": proof_point,
-            "source": "ad_history",
-            "cache_status": cache_status,
-        }
-    )
 
 
 @app.get("/status")

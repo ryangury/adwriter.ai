@@ -81,11 +81,6 @@
   button:disabled { opacity: 0.55; cursor: default; }
 
   .btn-row { display: flex; gap: 10px; align-self: flex-end; }
-  .btn-secondary {
-    background: #fff;
-    color: var(--accent);
-    border: 1px solid var(--accent);
-  }
 
   .lookup-badge { margin-top: 8px; min-height: 22px; }
   .badge-onfile {
@@ -98,16 +93,6 @@
     border-radius: 999px;
     background: var(--ok);
     color: #fff;
-  }
-
-  .banner-onfile {
-    border: 1px solid #b45309;
-    background: #fffbeb;
-    color: #92400e;
-    border-radius: 10px;
-    padding: 14px 16px;
-    margin-bottom: 16px;
-    font-weight: 600;
   }
 
   #results { margin-top: 28px; }
@@ -300,7 +285,6 @@
     </div>
     <div class="btn-row">
       <button type="submit" id="submit-btn">Generate New Ad</button>
-      <button type="button" id="pull-btn" class="btn-secondary">Pull Existing Ad</button>
     </div>
   </form>
 
@@ -321,7 +305,6 @@
   var form = document.getElementById("gen-form");
   var input = document.getElementById("stock_number");
   var btn = document.getElementById("submit-btn");
-  var pullBtn = document.getElementById("pull-btn");
   var badgeEl = document.getElementById("lookup-badge");
   var results = document.getElementById("results");
 
@@ -392,9 +375,7 @@
 
   // -------------------------------------------------------------------- //
   // Quick-glance dashboard — four compact cards shown at the top of the
-  // results area right after a successful Generate New Ad (full data) or
-  // Pull Existing Ad (scrapers card only — recon/proof-point detail isn't
-  // stored in ad_history.json).
+  // results area right after a successful Generate New Ad.
   // -------------------------------------------------------------------- //
 
 
@@ -551,25 +532,6 @@
     });
   }
 
-  // window_sticker/carfax/recon -> the labels shown on the "Cached data"
-  // badges for a pulled (stored) ad's cache_status.
-  var CACHE_STATUS_LABELS = [
-    ["window_sticker", "Window Sticker"],
-    ["carfax", "Carfax"],
-    ["recon", "Recon"]
-  ];
-
-  function sectionCacheStatus(cacheStatus) {
-    if (!cacheStatus) return "";
-    var badges = CACHE_STATUS_LABELS.map(function (pair) {
-      var cached = cacheStatus[pair[0]] === "cached";
-      return '<span class="badge ' + (cached ? "cache-yes" : "cache-no") + '">' +
-        esc(pair[1]) + "</span>";
-    }).join("");
-    return '<div class="section"><h2>Cached data (vehicle_cache.db)</h2><div class="badges">' +
-      badges + "</div></div>";
-  }
-
   function sectionFeedbackCollapsible(text) {
     if (!text) return "";
     return '<div class="section fb">' +
@@ -591,11 +553,22 @@
     });
   }
 
+  // Explicit normalize-and-join rather than a raw .textContent read: collapses
+  // any incidental whitespace runs to exactly one blank line between
+  // paragraphs, so the clipboard content can't drift from what's on screen.
+  function textForCopy(el) {
+    return el.textContent
+      .split(/\n\s*\n/)
+      .map(function (p) { return p.trim(); })
+      .filter(Boolean)
+      .join("\n\n");
+  }
+
   function wireCopyButton() {
     var copyBtn = document.getElementById("copy-ad");
     if (!copyBtn) return;
     copyBtn.addEventListener("click", function () {
-      var t = document.getElementById("ad-text").textContent;
+      var t = textForCopy(document.getElementById("ad-text"));
       var done = function () {
         copyBtn.textContent = "Copied";
         setTimeout(function () { copyBtn.textContent = "Copy"; }, 1600);
@@ -615,7 +588,7 @@
     var copyBtn = document.getElementById("copy-fb");
     if (!copyBtn) return;
     copyBtn.addEventListener("click", function () {
-      var t = document.getElementById("fb-text").textContent;
+      var t = textForCopy(document.getElementById("fb-text"));
       var done = function () {
         copyBtn.textContent = "Copied";
         setTimeout(function () { copyBtn.textContent = "Copy"; }, 1600);
@@ -650,103 +623,10 @@
     wireSaveDiscard();
   }
 
-  // -------------------------------------------------------------------- //
-  // Pull Existing Ad — reads ad_history.json via /lookup, no scrapers run.
-  // -------------------------------------------------------------------- //
-
-  function sectionPulledInfo(data) {
-    var rows =
-      "<dt>Stock</dt><dd>" + esc(data.stock_number || "—") + "</dd>" +
-      "<dt>Vehicle</dt><dd>" + esc(data.year_make_model || "—") + "</dd>" +
-      "<dt>Price</dt><dd>" + esc(fmtPrice(data.price)) + "</dd>" +
-      "<dt>Lifecycle</dt><dd>" + esc(data.lifecycle_stage || "—") + "</dd>";
-    if (data.proof_point) {
-      rows += "<dt>Proof point</dt><dd>" + esc(data.proof_point) + "</dd>";
-    }
-    return '<div class="section"><h2>Vehicle</h2><dl class="kv">' + rows + "</dl></div>";
-  }
-
-  function renderPulled(data) {
-    var html = '<div class="banner-onfile">Showing stored ad — written ' +
-      esc(data.last_written || "an earlier date") + ".</div>";
-    html += sectionPulledInfo(data);
-    html += sectionCacheStatus(data.cache_status);
-    html += sectionAd(data.ad_copy);
-    html += sectionFeedbackCollapsible(data.feedback);
-    html += '<div class="section"><button type="button" id="regen-btn" class="btn-secondary">Regenerate Fresh Ad</button></div>';
-    results.innerHTML = html;
-    wireCopyButton();
-    wireFeedbackToggle();
-    wireFeedbackCopyButton();
-
-    var regenBtn = document.getElementById("regen-btn");
-    if (regenBtn) {
-      regenBtn.addEventListener("click", function () { openGenerateTab(data.stock_number); });
-    }
-  }
-
-  function renderNotFound(stock) {
-    results.innerHTML =
-      '<div class="section"><p>No ad on file for this stock number' +
-      (stock ? " (" + esc(stock) + ")" : "") + ".</p>" +
-      '<button type="button" id="gen-instead-btn">Generate New Ad</button></div>';
-    var genBtn = document.getElementById("gen-instead-btn");
-    if (genBtn) {
-      genBtn.addEventListener("click", function () { openGenerateTab(stock); });
-    }
-  }
-
-  function fetchLookup(stock) {
-    return fetch("/lookup?stock=" + encodeURIComponent(stock))
-      .then(function (r) { return r.json(); });
-  }
-
   function fetchCheck(stock) {
     return fetch("/check?stock=" + encodeURIComponent(stock))
       .then(function (r) { return r.json(); });
   }
-
-  pullBtn.addEventListener("click", function () {
-    var stock = input.value.trim();
-    console.log("[pull-existing-ad] stock number:", stock);
-    if (!stock) return;
-
-    pullBtn.disabled = true;
-    btn.disabled = true;
-    results.innerHTML =
-      '<div class="loading"><span class="spinner"></span><span>Looking up stored ad…</span></div>';
-
-    var url = "/lookup?stock=" + encodeURIComponent(stock);
-    console.log("[pull-existing-ad] fetching:", url);
-
-    fetch(url)
-      .then(function (r) {
-        console.log("[pull-existing-ad] HTTP status:", r.status);
-        return r.json();
-      })
-      .then(function (j) {
-        console.log("[pull-existing-ad] raw /lookup response:", j);
-        console.log("[pull-existing-ad] data.found =", j && j.found);
-        if (j && j.found) {
-          console.log("[pull-existing-ad] calling renderPulled()");
-          renderPulled(j);
-        } else {
-          console.log("[pull-existing-ad] calling renderNotFound()");
-          renderNotFound(stock);
-        }
-      })
-      .catch(function (err) {
-        console.error("[pull-existing-ad] error:", err);
-        render({
-          error: "Lookup failed: " + (err && err.message ? err.message : err),
-          scraper_status: null, vehicle: null, ad_copy: null, feedback: null
-        });
-      })
-      .finally(function () {
-        pullBtn.disabled = false;
-        btn.disabled = false;
-      });
-  });
 
   // -------------------------------------------------------------------- //
   // Auto-check on input — small "Ad on file" badge, 500ms debounce.
@@ -796,7 +676,6 @@
     clearBadge();
 
     btn.disabled = true;
-    pullBtn.disabled = true;
     renderLoading();
     startWalk();
 
@@ -826,12 +705,11 @@
       })
       .finally(function () {
         btn.disabled = false;
-        pullBtn.disabled = false;
       });
   }
 
   // Generate New Ad runs in a new tab (/?stock=X&generate=1) so the current
-  // page (and any ad pulled on it) stays put. Pull Existing Ad stays in-tab.
+  // page stays put.
   function openGenerateTab(stock) {
     stock = (stock || "").trim().toUpperCase();
     if (!stock) return;

@@ -1,0 +1,103 @@
+{% extends "layout.html" %}
+{% block title %}Reprice {{ stock_number }} — Mercedes-Benz of Durham{% endblock %}
+{% block head %}
+<style>
+  .wrap { max-width: 780px; margin: 0 auto; padding: 32px 24px; }
+  .section {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 16px;
+    background: var(--card);
+  }
+  .section h2 {
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+    margin: 0 0 10px;
+  }
+  .section h2.with-btn { padding-right: 84px; }
+  .adwrap { position: relative; }
+  .adwrap pre {
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    font-family: inherit;
+    font-size: 0.97rem;
+    margin: 0;
+  }
+  .copy-btn {
+    position: absolute;
+    top: 0; right: 0;
+    padding: 5px 12px;
+    font-size: 0.8rem;
+    background: #fff;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .error-box {
+    border: 1px solid var(--fail);
+    background: #fef2f2;
+    color: var(--fail);
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-bottom: 16px;
+    font-weight: 500;
+  }
+</style>
+{% endblock %}
+{% block content %}
+<div class="wrap">
+  <h1 class="page-title">Reprice — {{ stock_number }}</h1>
+  <p class="page-sub"><a href="/inventory/{{ stock_number }}">&larr; Back to {{ stock_number }}</a></p>
+
+  {% if error %}
+  <div class="error-box">{{ error }}</div>
+  {% else %}
+  <div class="section adwrap">
+    <h2 class="with-btn">Updated ad copy</h2>
+    <button type="button" class="copy-btn" id="copy-ad">Copy</button>
+    <pre id="ad-text">{{ ad_copy }}</pre>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(function () {
+  "use strict";
+  var copyBtn = document.getElementById("copy-ad");
+  var adText = document.getElementById("ad-text");
+  if (!copyBtn || !adText) return;
+
+  // Explicit normalize-and-join rather than a raw .textContent read: collapses
+  // any incidental whitespace runs to exactly one blank line between
+  // paragraphs, so the clipboard content can't drift from what's on screen.
+  function adTextForCopy() {
+    return adText.textContent
+      .split(/\n\s*\n/)
+      .map(function (p) { return p.trim(); })
+      .filter(Boolean)
+      .join("\n\n");
+  }
+
+  copyBtn.addEventListener("click", function () {
+    var t = adTextForCopy();
+    var done = function () {
+      copyBtn.textContent = "Copied";
+      setTimeout(function () { copyBtn.textContent = "Copy"; }, 1600);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(t).then(done, done);
+    } else {
+      var ta = document.createElement("textarea");
+      ta.value = t; document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); } catch (e) {}
+      document.body.removeChild(ta); done();
+    }
+  });
+})();
+</script>
+{% endblock %}
