@@ -1768,10 +1768,15 @@ def build_provenance_sentence(
     prefix: PM10954A is a trade-in); otherwise PS = private purchase,
     PM = lease return, anything else (P, X, ...) = no method stated.
 
-    Owner count: status 12 (Hendrick Affordable) states it only for a single
-    owner ("One owner"); two or more owners are left out entirely. Every other
-    tier always states it. A missing Carfax owner count is never guessed —
-    the sentence then carries no count and no Carfax attribution.
+    Owner count — one universal rule for every tier except status 16:
+      * 1 owner: stated ("One owner, ..."; "Single-owner lease return, ..."
+        for PM).
+      * 2 owners: stated ("2 owners, most recently a {method}, ...").
+      * 3+ owners: the count is omitted entirely; the method is kept when
+        present ("Lease return, ...", "Local trade-in, ...", or just
+        "Personal use confirmed by Carfax." with no method).
+    A missing Carfax owner count is never guessed — the sentence then carries
+    no count and no Carfax attribution.
 
     Status 16 (courtesy vehicle) keeps its fixed language, no owner count.
 
@@ -1813,11 +1818,8 @@ def build_provenance_sentence(
         # No Carfax owner count: state only what the stock number establishes.
         return f"{_upper_first(method)}." if method else ""
 
-    if status_code == 12:
-        if owners == 1:
-            return f"One owner, {method}, {tail}" if method else f"One owner, {tail}"
-        return _upper_first(tail)
-
+    if owners >= 3:
+        return f"{_upper_first(method)}, {tail}" if method else _upper_first(tail)
     if owners == 1:
         if method == "lease return":
             return f"Single-owner lease return, {tail}"
