@@ -3434,11 +3434,16 @@ def _carfax_disqualifying_gate(
 
 
 def _recon_is_complete(line_items: list[dict[str, Any]]) -> bool:
-    """Recon is 'not complete' only when there are no completed service items AND
-    the 'Close RO' step is itself incomplete."""
-    has_completed_service = any(
-        li.get("kind") == "service" and li.get("completed") for li in line_items
-    )
+    """Recon is complete when the 'Close RO' step is completed — its status is
+    authoritative whenever the work order has one. Without a Close RO row
+    (e.g. vision-only line items), every non-rejected service item must be
+    completed; rejected items are declined work that never completes. No Close
+    RO and no service items at all means nothing confirms completion, so it
+    counts as incomplete rather than assumed done.
+
+    Line items only carry kind "task" (workflow steps: Check In, Pre-Wash,
+    Close RO, Final QC, ...) or "service" (the actual repair lines, with their
+    labor/parts costs), so "service" is the complete set of real work."""
     close_ro = next(
         (
             li
@@ -3447,8 +3452,14 @@ def _recon_is_complete(line_items: list[dict[str, Any]]) -> bool:
         ),
         None,
     )
-    close_ro_incomplete = close_ro is not None and not close_ro.get("completed")
-    return not (not has_completed_service and close_ro_incomplete)
+    if close_ro is not None:
+        return bool(close_ro.get("completed"))
+    service_items = [
+        li for li in line_items if li.get("kind") == "service" and not li.get("rejected")
+    ]
+    if not service_items:
+        return False
+    return all(li.get("completed") for li in service_items)
 
 
 def check_recon(
@@ -3659,7 +3670,7 @@ def aggregate(
                 recon_raw.pop("recon_image_bytes", None)
 
                 items = recon_raw.get("line_items", [])
-                # Completeness (Close RO / has-a-completed-service-item) is
+                # Completeness (Close RO status, else all service items done) is
                 # decided from the raw DOM scrape, BEFORE the vision overlay
                 # below — see _apply_recon_vision()'s docstring for why.
                 recon_complete_now = _recon_is_complete(items)
