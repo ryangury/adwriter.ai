@@ -4895,9 +4895,11 @@ class ACVMaxScraper(_BrowserSession):
         then switch back to Mercedes-Benz of Durham. Durham is always restored,
         even if the crawl raises.
 
-        Returns one dict per vehicle with a CTR read: stock_number, vin,
-        year_make_model, mileage, current_price, certified, days_on_lot,
-        ctr_data.
+        Returns (successes, failures): one dict per vehicle with a CTR read
+        (stock_number, vin, year_make_model, mileage, current_price, certified,
+        days_on_lot, ctr_data), and one dict per vehicle whose CTR read failed
+        (stock_number, vin, error) — e.g. the Merchandising iframe never
+        attaching, which happens occasionally at Charlotte.
         """
         assert self.page is not None
         # Lazy import: inventory_crawler imports this module at load time.
@@ -4912,6 +4914,7 @@ class ACVMaxScraper(_BrowserSession):
 
         page = self.page
         out: list[dict[str, Any]] = []
+        failures: list[dict[str, Any]] = []
         try:
             self.switch_dealership(dealership_name)
             page.goto(ACVMAX_INVENTORY_URL, wait_until="domcontentloaded")
@@ -4964,6 +4967,13 @@ class ACVMaxScraper(_BrowserSession):
                         f"[scraper] {dealership_name}: no CTR for "
                         f"{v.get('stock_number')} — {exc}"
                     )
+                    failures.append(
+                        {
+                            "stock_number": v.get("stock_number"),
+                            "vin": v.get("vin"),
+                            "error": str(exc),
+                        }
+                    )
                     continue
                 out.append(
                     {
@@ -4977,7 +4987,7 @@ class ACVMaxScraper(_BrowserSession):
                         "ctr_data": ctr,
                     }
                 )
-            return out
+            return out, failures
         finally:
             try:
                 self.switch_dealership(ACVMAX_DEALERSHIP)

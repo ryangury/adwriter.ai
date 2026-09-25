@@ -42,7 +42,7 @@ from adwriter import (
     update_recon,
 )
 from aggregator import DEALER_DOC_FEE, ScraperError, aggregate, check_recon
-from ctr_database import BENCHMARK_DEALERSHIPS, infer_tier, record_ctr
+from ctr_warmup import capture_benchmark_ctr, capture_durham_ctr
 from verifier import HendrickCarsScraper, run_verification, send_verification_alert
 from inventory_crawler import (
     crawl_inventory,
@@ -693,6 +693,9 @@ def _run_inner(
     ad_history = load_ad_history()
 
     # --- 5. DURHAM CTR CAPTURE (every retail vehicle) ------------- #
+    # Logic lives in ctr_warmup.py (capture_durham_ctr()) so the standalone
+    # daily AdWriter-CTR-Capture task and this full-orchestrator run share one
+    # implementation.
     print(f"\n=== 5. DURHAM CTR CAPTURE ({len(retail)} vehicle(s)) ===")
     ctr_records = 0
     if reprice_only:
@@ -701,41 +704,18 @@ def _run_inner(
         try:
             with ACVMaxScraper(headless=True) as ax:
                 ax.login()
-                for v in retail:
-                    stock = v.get("stock_number")
-                    ctr_data = aggregated_ctr.get(stock)
-                    if not isinstance(ctr_data, dict) or ctr_data.get("error"):
-                        try:
-                            pr = ax.scrape_pricing(stock)
-                            ctr_data = ax.scrape_ctr(pr.get("vehicle_id"))
-                        except Exception as exc:  # noqa: BLE001
-                            errors.append({"stock": stock, "phase": "ctr", "error": str(exc)})
-                            print(f"[ctr] {stock}: scrape failed — {exc}")
-                            continue
-                    hist = ad_history.get(stock, {})
-                    try:
-                        record_ctr(
-                            v,
-                            ctr_data,
-                            ad_written=bool(hist),
-                            ad_written_date=hist.get("last_ad_date"),
-                        )
-                        ctr_records += 1
-                        print(
-                            f"[ctr] {stock}: recorded "
-                            f"(AT {ctr_data.get('latest_autotrader_ctr')}, "
-                            f"CG {ctr_data.get('latest_cargurus_ctr')}, "
-                            f"avg {ctr_data.get('latest_average_ctr')})"
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        errors.append({"stock": stock, "phase": "ctr_db", "error": str(exc)})
+                durham_counts = capture_durham_ctr(
+                    ax, retail, ad_history=ad_history,
+                    aggregated_ctr=aggregated_ctr, errors=errors,
+                )
+                ctr_records = durham_counts["recorded"]
         except ScraperError as exc:
             errors.append({"stock": "-", "phase": "ctr_login", "error": str(exc)})
             print(f"[ctr] ACV MAX login failed — {exc}", file=sys.stderr)
 
     # --- 6. BENCHMARK CTR CAPTURE ------------------------------- #
     print("\n=== 6. BENCHMARK CTR CAPTURE ===")
-    benchmark_counts: dict[str, int] = {d: 0 for d in BENCHMARK_DEALERSHIPS}
+    benchmark_counts: dict[str, dict[str, int]] = {}
     if skip_benchmark or reprice_only:
         # Competitive benchmark: crawls every vehicle at Northlake and Charlotte and
         # reads its CTR (~250 pricing-page loads) — the slowest part of a run, and it
@@ -746,47 +726,7 @@ def _run_inner(
         try:
             with ACVMaxScraper(headless=True) as bx:
                 bx.login()  # lands on Mercedes-Benz of Durham
-                for dealership_name in BENCHMARK_DEALERSHIPS:
-                    short = dealership_name.split()[-1]
-                    try:
-                        vehicles = bx.scrape_benchmark_inventory(dealership_name)
-                    except Exception as exc:  # noqa: BLE001 - one store must not stop the other
-                        errors.append(
-                            {"stock": "-", "phase": "benchmark",
-                             "error": f"{dealership_name}: {exc}"}
-                        )
-                        print(f"[benchmark] {short} FAILED — {exc}", file=sys.stderr)
-                        continue
-
-                    n_total = len(vehicles)
-                    for i, veh in enumerate(vehicles, 1):
-                        tier = infer_tier(
-                            certified=veh.get("certified"),
-                            price=veh.get("current_price"),
-                        )
-                        try:
-                            record_ctr(
-                                veh,
-                                veh.get("ctr_data") or {},
-                                dealership_name=dealership_name,
-                                dealership_role="benchmark",
-                                certification_tier=tier,
-                            )
-                            benchmark_counts[dealership_name] += 1
-                        except Exception as exc:  # noqa: BLE001
-                            errors.append(
-                                {"stock": veh.get("stock_number"),
-                                 "phase": "benchmark_db", "error": str(exc)}
-                            )
-                            continue
-                        print(
-                            f"[benchmark] {short}: {i} of {n_total} vehicles — "
-                            f"{veh.get('year_make_model') or '?'} "
-                            f"{veh.get('stock_number') or '?'}"
-                        )
-                    print(
-                        f"[benchmark] {short} complete — {n_total} vehicles, CTR recorded"
-                    )
+                benchmark_counts = capture_benchmark_ctr(bx, errors=errors)
         except ScraperError as exc:
             errors.append({"stock": "-", "phase": "benchmark_login", "error": str(exc)})
             print(f"[benchmark] ACV MAX login failed — {exc}", file=sys.stderr)
@@ -941,11 +881,11 @@ def _run_inner(
     print(f"  CTR records written:           {ctr_records}")
     print(
         f"  Benchmark CTR — Northlake:     "
-        f"{benchmark_counts.get('Mercedes-Benz of Northlake', 0)} vehicles"
+        f"{benchmark_counts.get('Mercedes-Benz of Northlake', {}).get('recorded', 0)} vehicles"
     )
     print(
         f"  Benchmark CTR — Charlotte:     "
-        f"{benchmark_counts.get('Hendrick Motors of Charlotte', 0)} vehicles"
+        f"{benchmark_counts.get('Hendrick Motors of Charlotte', {}).get('recorded', 0)} vehicles"
     )
     print(
         f"  Verification checks run: {verification_checks_run} | "
