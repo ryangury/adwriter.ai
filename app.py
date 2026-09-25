@@ -944,9 +944,14 @@ def generate():
         file=sys.stderr,
         flush=True,
     )
+    # The VIN we already know for this stock number (last crawl, else the
+    # cache). Passing it lets aggregate() reuse complete cached recon, persist
+    # a live recon scrape via save_recon(), and have scrape_pricing() refuse a
+    # pricing page whose VIN doesn't match (VehicleIdentityError).
+    known_vin = (snap or {}).get("vin") or (get_vehicle_by_stock(stock_number) or {}).get("vin")
     try:
         pkg = aggregate(
-            stock_number, skip_recon=False, expected_vin=None, vehicle_id=snap_vehicle_id,
+            stock_number, skip_recon=False, expected_vin=known_vin, vehicle_id=snap_vehicle_id,
             status_code=snap_status_code, bypass_rate_limits=True,
         )
     except WorkOrderNotFoundError as exc:
