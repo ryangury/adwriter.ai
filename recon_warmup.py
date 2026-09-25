@@ -9,8 +9,8 @@ e.g. 1 = needs certification assigned). For each VIN whose recon is not yet
 cached, or is cached but not yet complete (vehicle_cache.needs_recon() is
 True), pulls the work order from ReconVision by stock number in a single
 browser session and caches the result. recon_complete is decided by
-aggregator._recon_is_complete() — the same "no completed service items AND
-Close RO incomplete" rule the ad-writer pipeline uses, so this script and
+aggregator._recon_is_complete() — the same "Close RO status, else every
+service item done" rule the ad-writer pipeline uses, so this script and
 aggregate() never disagree about whether a vehicle's recon is done.
 
 A single bad vehicle (no work order found, a ReconVision timeout, any other
@@ -27,7 +27,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from aggregator import _apply_recon_vision, _recon_is_complete
+from aggregator import _recon_is_complete
 from scraper import ReconVisionScraper, ScraperError
 from vehicle_cache import needs_recon, save_recon
 
@@ -109,10 +109,9 @@ def warmup(*, limit: int | None = None, headless: bool = True) -> int:
             # scrape_work_order()'s docstring note) — never json.dumps()'d.
             recon_data.pop("recon_image_bytes", None)
 
-            # Completeness is decided from the raw scrape, before the vision
-            # overlay — see _apply_recon_vision()'s docstring for why.
+            # DOM-scraped line items are cached as-is — no vision overlay (see
+            # aggregator._apply_recon_vision()'s docstring).
             recon_complete = _recon_is_complete(recon_data.get("line_items", []))
-            recon_data = _apply_recon_vision(recon_data, recon_data.get("vin") or vin)
             save_recon(
                 vin, stock, recon_data, recon_complete,
                 image_path=recon_data.get("recon_image_path"),

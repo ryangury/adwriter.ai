@@ -1950,13 +1950,10 @@ def update_recon(stock_number: str) -> str:
     p3 = _paragraph(entry, "paragraph_three")
     p4 = _paragraph(entry, "paragraph_four")
 
-    from aggregator import _apply_recon_vision  # local: avoid widening the module surface
-
     with ReconVisionScraper(headless=True) as rv:
         rv.login()
         recon_raw = rv.scrape_work_order(stock)
     recon_raw.pop("recon_image_bytes", None)
-    recon_raw = _apply_recon_vision(recon_raw, recon_raw.get("vin"))
     filtered = _filter_recon(recon_raw.get("line_items", []))
 
     if not _recon_has_includeable(filtered):

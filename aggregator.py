@@ -486,7 +486,9 @@ def _filter_recon(line_items: list[dict[str, Any]], status_code: int = 10) -> di
         # replacement") only reads as a brake-confidence signal starting at
         # Hendrick Affordable; on stricter tiers it falls through to the
         # generic drop below.
-        is_brake = ("brake" in d and ("pad" in d or "rotor" in d or "service" in d or "inspect" in d)) or (
+        # Inspections are not repair work — a brake inspection alone must
+        # never read as "Brakes replaced".
+        is_brake = ("brake" in d and ("pad" in d or "rotor" in d or "service" in d)) or (
             status_code in (12, 13) and _ROTOR_STANDALONE_RE.search(d) and "brake" not in d
         )
         if is_brake:
@@ -1641,7 +1643,17 @@ def _recon_vision_item_to_normalized(li: dict[str, Any]) -> dict[str, Any]:
 def _apply_recon_vision(
     recon_raw: dict[str, Any], vin: str | None
 ) -> dict[str, Any]:
-    """Vision-parse recon_raw's screenshot (recon_image_path, set by
+    """RETIRED — no longer called anywhere. Kept for reference only.
+
+    Measured on PM19395 (WO 4196706, 2026-09-24): the DOM scrape matched the
+    screenshot on all 27 rows (description, completion status, totals),
+    while two vision runs on the same screenshot invented a "Brake
+    Inspection" item (from "State Inspection - Safety"), flipped completed
+    items to incomplete, read B Service as A Service, garbled "M&B 1" and
+    misread costs — differently on each run. The DOM reads each row's status
+    cell text, not glyphs, so it has nothing for vision to fix.
+
+    Original description: vision-parse recon_raw's screenshot (recon_image_path, set by
     scraper.ReconVisionScraper._capture_recon_screenshot()) and overlay the
     result onto recon_raw's line_items, so vision becomes the primary source
     for line-item extraction — the raw DOM-walker/regex parse is fragile
@@ -3669,19 +3681,12 @@ def aggregate(
                 # dict goes anywhere near json.dumps() (save_recon() below).
                 recon_raw.pop("recon_image_bytes", None)
 
+                # The DOM-scraped line items are the sole source for
+                # descriptions, completion status and recon categories — no
+                # vision overlay (see _apply_recon_vision()'s docstring).
                 items = recon_raw.get("line_items", [])
-                # Completeness (Close RO status, else all service items done) is
-                # decided from the raw DOM scrape, BEFORE the vision overlay
-                # below — see _apply_recon_vision()'s docstring for why.
                 recon_complete_now = _recon_is_complete(items)
                 recon_status = "scraped" if recon_complete_now else "failed"
-
-                # Vision-parse the freshly captured screenshot (if any) before
-                # caching, so a later cache hit on this VIN reuses the
-                # enriched result instead of paying for another vision call
-                # on data that hasn't changed. Only line_items changes.
-                recon_raw = _apply_recon_vision(recon_raw, recon_raw.get("vin") or expected_vin)
-                items = recon_raw.get("line_items", items)
 
                 if expected_vin:
                     save_recon(
