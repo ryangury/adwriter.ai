@@ -33,7 +33,24 @@ $WorkingDir = "C:\adwriter"
 # $env:USERDOMAIN is unreliable here (observed stale as "WORKGROUP" against a
 # real computer name of GURYGANGPC, which Register-ScheduledTask then can't
 # resolve to a SID) — $env:COMPUTERNAME is the value that actually works.
-$User = "$env:COMPUTERNAME\$env:USERNAME"
+#
+# CAUTION — this used to resolve dynamically to whoever ran this script,
+# which is exactly what broke it. All "Interactive only" tasks need Task
+# Scheduler to see a real interactive/RDP logon (Logon Type 2 or 10) for
+# $User at trigger time. On 2026-09-26 four tasks (AdWriter-CTR-Capture,
+# AdWriter-CTR-Email, AdWriter-Verifier-Hourly, AdWriter-ReconWarmup) were
+# found registered to "adwriter" instead of "19196" and had NEVER fired
+# (schtasks Last Result 267011 — task has not run), because "adwriter" is
+# only ever reached over SSH (Logon Type 3/8, Network) for Claude Code
+# sessions like this one, and structurally never holds an interactive
+# desktop session — while "$env:COMPUTERNAME\$env:USERNAME" silently picked
+# up "adwriter" whenever this idempotent, safe-to-re-run script happened to
+# be run from such a session. "19196" is the account that's actually logged
+# in at the console and is what every working AdWriter-* task runs as.
+# $User is now hardcoded below (rather than derived from whoever invokes
+# this script) specifically so a future re-run from any account — SSH,
+# Claude Code, or otherwise — can't silently re-break registration again.
+$User = "$env:COMPUTERNAME\19196"
 
 function Register-AdWriterTask {
     param(
