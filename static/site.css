@@ -202,6 +202,7 @@
 .has-ad-yes { color: var(--ok); font-weight: 700; }
 .has-ad-no { color: var(--muted); }
 .has-ad-fail { color: var(--fail); font-weight: 700; }
+.mismatch-note { font-size: 0.7rem; font-weight: 400; color: var(--muted); white-space: nowrap; }
 .status-pill {
   display: inline-block;
   font-size: 0.72rem;

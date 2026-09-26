@@ -579,6 +579,13 @@ def inventory():
     for v in vehicles:
         stock = normalize_stock(v.get("stock_number"))
         entry = ad_history.get(stock)
+        verdict = entry.get("verification_verdict") if entry else None
+        if verdict == "current":
+            verdict_state = "current"  # confirmed accurate on the live site
+        elif verdict in ("outdated", "not_posted", "not_found"):
+            verdict_state = "wrong"  # checked, but doesn't match what's live
+        else:
+            verdict_state = "unchecked"  # verification hasn't run against this stock yet
         rows.append(
             {
                 "stock_number": stock,
@@ -592,13 +599,14 @@ def inventory():
                 "status_label": _status_label(v.get("status_code")),
                 "has_ad": bool(entry and entry.get("current_ad_text")),
                 "last_ad_date": entry.get("last_ad_date") if entry else None,
-                "posted": entry.get("verification_verdict") is not None if entry else False,  # has verification ever run against this stock
-                "verdict": entry.get("verification_verdict") if entry else None,  # "current", "outdated", "not_posted", "not_found"
+                "verdict_state": verdict_state,  # "current" | "wrong" | "unchecked"
+                "verdict": verdict,  # "current", "outdated", "not_posted", "not_found", or None
                 "match_score": entry.get("match_score") if entry else None,
                 "last_price_at_write": entry.get("last_price_at_write") if entry else None,
                 "price_diff": _price_diff(
                     v.get("current_price"), entry.get("last_price_at_write") if entry else None
                 ),
+                "price_mismatch": entry.get("price_mismatch") if entry else None,
             }
         )
     return render_template("inventory.html", rows=rows, snapshot_time=_fmt_snapshot_time(stamp))

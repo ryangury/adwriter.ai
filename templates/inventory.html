@@ -68,8 +68,12 @@
           <td class="has-ad" title="{{ ('Last ad ' ~ r.last_ad_date) if r.last_ad_date else 'No ad on file' }}">
             {% if r.has_ad %}<span class="has-ad-yes">&#10003;</span>{% else %}<span class="has-ad-no">&ndash;</span>{% endif %}
           </td>
-          <td class="check-col" title="{{ ('Verdict: ' ~ r.verdict) if r.verdict else 'Never verified against the live site' }}">
-            {% if r.posted %}<span class="has-ad-yes">&#10003;</span>{% else %}<span class="has-ad-no">&ndash;</span>{% endif %}
+          <td class="check-col"
+              title="{% if r.verdict_state == 'current' %}Verdict: current{% elif r.verdict_state == 'wrong' %}Verdict: {{ r.verdict }}{% if r.price_mismatch %} &mdash; live ${{ '{:,.0f}'.format(r.price_mismatch.live_price) }} vs ad ${{ '{:,.0f}'.format(r.price_mismatch.expected_price) }}{% endif %}{% else %}Never verified against the live site{% endif %}">
+            {% if r.verdict_state == 'current' %}<span class="has-ad-yes">&#10003;</span>
+            {% elif r.verdict_state == 'wrong' %}<span class="has-ad-fail">&#10007;</span>
+              {% if r.price_mismatch %}<div class="mismatch-note">Live ${{ '{:,.0f}'.format(r.price_mismatch.live_price) }} vs ad ${{ '{:,.0f}'.format(r.price_mismatch.expected_price) }}</div>{% endif %}
+            {% else %}<span class="has-ad-no">&ndash;</span>{% endif %}
           </td>
           <td class="check-col" title="{{ ('Ad written at ${:,.0f}'.format(r.last_price_at_write)) if r.price_diff is not none else 'No ad on file, or no price recorded' }}">
             {% if r.price_diff is none %}<span class="has-ad-no">&ndash;</span>

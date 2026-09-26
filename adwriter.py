@@ -1628,7 +1628,7 @@ def run_adwriter_pre_recon(stock_number: str) -> str:
 #          last_advertised_price, current_ad_text, paragraph_one,
 #          paragraph_two, paragraph_three, paragraph_four, recon_included,
 #          recon_pending, lifecycle_stage, last_verified,
-#          verification_verdict, match_score, last_feedback}}
+#          verification_verdict, match_score, price_mismatch, last_feedback}}
 #
 # last_price_at_write   — raw ACV Max list price when the ad (or its reprice)
 #   was written; drives reprice detection.
@@ -1650,8 +1650,10 @@ def run_adwriter_pre_recon(stock_number: str) -> str:
 # verification fields (written by verifier.run_verification):
 #   last_verified        — ISO date of the last hendrickcars.com check, or null
 #   verification_verdict — "current" | "outdated" | "not_posted" | "not_found"
-#   match_score          — 0-100 fuzzy match of stored copy vs the live VDP
-#   All three are reset to null whenever the ad text is rewritten
+#   match_score           — 0-100 fuzzy match of stored copy vs the live VDP
+#   price_mismatch        — {live_price, expected_price, checked_date} when the
+#     direct price check caught a stale live price, else null
+#   All four are reset to null whenever the ad text is rewritten
 #   (record_ad(), reprice_ad()), since an old verdict no longer applies.
 
 AD_HISTORY_PATH = Path(__file__).with_name("ad_history.json")
@@ -1754,6 +1756,7 @@ def record_ad(
     entry["last_verified"] = None
     entry["verification_verdict"] = None
     entry["match_score"] = None
+    entry["price_mismatch"] = None
     history[stock] = entry
     return entry
 
@@ -1869,6 +1872,7 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
     entry["verification_verdict"] = None
     entry["match_score"] = None
     entry["last_verified"] = None
+    entry["price_mismatch"] = None
     history[stock] = entry
     save_ad_history(history)
     return full

@@ -409,6 +409,13 @@ def _verification_due(entry: dict[str, Any], today: date) -> bool:
         ):
             return True
 
+    # C: a reprice cleared the verdict (reprice_ad() sets it to None so the
+    # site shows "unverified" until re-checked) but the ad is too young for
+    # A or B to fire yet — that same-day re-check is the whole point of
+    # clearing the verdict, so don't make it wait out the 3-day age gates.
+    if entry.get("lifecycle_stage") == "repriced" and entry.get("verification_verdict") is None:
+        return True
+
     return False
 
 
@@ -468,6 +475,14 @@ def run_verification(
         entry["last_verified"] = today.isoformat()
         entry["verification_verdict"] = cmp["verdict"]
         entry["match_score"] = cmp["match_score"]
+        if cmp.get("price_mismatch"):
+            entry["price_mismatch"] = {
+                "live_price": cmp["live_price"],
+                "expected_price": cmp["expected_price"],
+                "checked_date": today.isoformat(),
+            }
+        else:
+            entry["price_mismatch"] = None
 
         row = {
             "stock_number": stock,
