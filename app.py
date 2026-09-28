@@ -21,8 +21,9 @@ import json
 import os
 import re
 import sys
+import time
 import traceback
-from datetime import datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,7 @@ os.chdir("C:/adwriter")
 sys.path.insert(0, "C:/adwriter")
 
 import anthropic
+import requests
 from flask import Flask, abort, jsonify, redirect, render_template, request, send_file, session, url_for
 
 # Imported exactly as orchestrator.py does.
@@ -51,6 +53,7 @@ from aggregator import ScraperError, _filter_recon, _make_from_ymm, _packages_wi
 from scraper import STICKER_CACHE_DIR, WorkOrderNotFoundError
 from vehicle_cache import _connect as _cache_connect
 from vehicle_cache import get_carfax, get_carfax_image_path, get_recon, get_recon_image_path, get_seller_comments, get_sticker_image_path, get_vehicle, get_vehicle_by_stock, get_window_sticker, needs_recon, save_seller_comments, save_window_sticker
+import credentials as _credentials
 from credentials import DEMO_PASSWORD
 from run_lock import ScraperBusyError
 
@@ -983,6 +986,189 @@ def ctr():
     if not session.get("authed"):
         return render_template("login.html", error=request.args.get("error"))
     return render_template("ctr.html")
+
+
+# --------------------------------------------------------------------------- #
+# /cost — Anthropic Admin API spending dashboard
+# --------------------------------------------------------------------------- #
+
+_ANTHROPIC_API_VERSION = "2023-06-01"
+_COST_REPORT_URL = "https://api.anthropic.com/v1/organizations/cost_report"
+_USAGE_REPORT_URL = "https://api.anthropic.com/v1/organizations/usage_report/messages"
+_BILLING_CACHE_TTL_SECONDS = 3600
+
+# Simple process-lifetime cache -- billing data, not real-time; no need to hit
+# Anthropic's API on every page load. Keyed by nothing (single global report).
+_billing_cache: dict[str, Any] = {"fetched_at": 0.0, "cost_data": None, "usage_data": None, "error": None}
+
+
+def _billing_api_key() -> str | None:
+    """ANTHROPIC_BILLING_COST_API_KEY from credentials.py, or None if it isn't
+    set there. Never logged/printed -- only ever placed in a request header."""
+    return getattr(_credentials, "ANTHROPIC_BILLING_COST_API_KEY", None) or None
+
+
+def _fetch_admin_report(url: str, params: dict[str, Any], key: str) -> dict[str, Any]:
+    """GET an Admin API report, following has_more/next_page pagination.
+    Raises RuntimeError (message never includes the key -- it's header-only
+    and requests never echoes headers into an exception message) on any
+    non-200 response or network failure."""
+    headers = {"x-api-key": key, "anthropic-version": _ANTHROPIC_API_VERSION}
+    all_data: list[Any] = []
+    page_params = dict(params)
+    for _ in range(20):  # hard cap against a pathological pagination loop
+        resp = requests.get(url, params=page_params, headers=headers, timeout=30)
+        if resp.status_code != 200:
+            raise RuntimeError(f"HTTP {resp.status_code} from {url.rsplit('/', 1)[-1]}")
+        body = resp.json()
+        all_data.extend(body.get("data") or [])
+        if not body.get("has_more") or not body.get("next_page"):
+            break
+        page_params = dict(params)
+        page_params["page"] = body["next_page"]
+    return {"data": all_data}
+
+
+def _get_billing_data() -> dict[str, Any]:
+    """Cached (1h) {cost_data, usage_data, error} -- error is a safe, printable
+    string (never the key itself) set whenever the key is missing or either
+    Admin API call fails, so the page can show it instead of crashing."""
+    now = time.time()
+    if _billing_cache["fetched_at"] and now - _billing_cache["fetched_at"] < _BILLING_CACHE_TTL_SECONDS:
+        return _billing_cache
+
+    key = _billing_api_key()
+    if not key:
+        _billing_cache.update(
+            fetched_at=now, cost_data=None, usage_data=None,
+            error="ANTHROPIC_BILLING_COST_API_KEY is not set in credentials.py.",
+        )
+        return _billing_cache
+
+    month_start = datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    now_utc = datetime.now(timezone.utc)
+    date_params = {
+        "starting_at": month_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "ending_at": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    try:
+        cost_data = _fetch_admin_report(
+            _COST_REPORT_URL, {**date_params, "bucket_width": "1d"}, key
+        )
+        usage_data = _fetch_admin_report(
+            _USAGE_REPORT_URL, {**date_params, "group_by": ["model"]}, key
+        )
+        error = None
+    except Exception as exc:  # noqa: BLE001 -- the dashboard must never crash the page
+        cost_data, usage_data = None, None
+        error = f"Billing data unavailable — check ANTHROPIC_BILLING_COST_API_KEY in credentials.py ({exc})"
+
+    _billing_cache.update(fetched_at=now, cost_data=cost_data, usage_data=usage_data, error=error)
+    return _billing_cache
+
+
+def _sum_cost_report(cost_data: dict[str, Any] | None) -> tuple[float, list[tuple[str, float]]]:
+    """(month_to_date_total, [(date, day_total), ...]) from a cost_report
+    payload's daily buckets."""
+    daily: list[tuple[str, float]] = []
+    total = 0.0
+    for bucket in (cost_data or {}).get("data") or []:
+        day_total = 0.0
+        for item in bucket.get("results") or []:
+            amt = item.get("amount")
+            if isinstance(amt, dict):
+                amt = amt.get("amount") or amt.get("value")
+            try:
+                day_total += float(amt)
+            except (TypeError, ValueError):
+                continue
+        total += day_total
+        daily.append(((bucket.get("starting_at") or "")[:10], day_total))
+    return total, daily
+
+
+_TOKEN_FIELDS = (
+    "uncached_input_tokens", "input_tokens", "cache_creation_input_tokens",
+    "cache_read_input_tokens", "output_tokens",
+)
+
+
+def _model_token_totals(usage_data: dict[str, Any] | None) -> dict[str, int]:
+    """{model_name: total_tokens_this_month} from a usage_report/messages
+    payload grouped by model."""
+    totals: dict[str, int] = {}
+    for bucket in (usage_data or {}).get("data") or []:
+        for item in bucket.get("results") or []:
+            model = item.get("model") or "unknown"
+            tokens = sum(
+                v for k in _TOKEN_FIELDS if isinstance((v := item.get(k)), (int, float))
+            )
+            totals[model] = totals.get(model, 0) + tokens
+    return totals
+
+
+def _sonnet_haiku_split(total_cost: float, token_totals: dict[str, int]) -> dict[str, float]:
+    """Allocate total_cost across sonnet/haiku/other model families, weighted
+    by each family's share of tokens this month. The Admin cost_report isn't
+    groupable by model (only usage_report is), so this is a proportional
+    ESTIMATE from token share, not a per-model dollar figure from the ledger."""
+    buckets = {"sonnet": 0.0, "haiku": 0.0, "other": 0.0}
+    for model, tokens in token_totals.items():
+        ml = model.lower()
+        family = "haiku" if "haiku" in ml else "sonnet" if "sonnet" in ml else "other"
+        buckets[family] += tokens
+    grand_total = sum(buckets.values())
+    if grand_total <= 0:
+        return {"sonnet": 0.0, "haiku": 0.0, "other": 0.0}
+    return {k: total_cost * (v / grand_total) for k, v in buckets.items()}
+
+
+@app.get("/cost")
+def cost():
+    if not session.get("authed"):
+        return render_template("login.html", error=request.args.get("error"))
+
+    billing = _get_billing_data()
+    error = billing.get("error")
+    mtd_total = 0.0
+    daily_rows: list[tuple[str, float]] = []
+    split = {"sonnet": 0.0, "haiku": 0.0, "other": 0.0}
+    est_cost_per_ad = None
+    ad_count = 0
+
+    if not error:
+        mtd_total, daily_rows = _sum_cost_report(billing.get("cost_data"))
+        token_totals = _model_token_totals(billing.get("usage_data"))
+        split = _sonnet_haiku_split(mtd_total, token_totals)
+
+        # Rough denominator for "est. cost per fresh ad": vehicles whose FIRST
+        # ad was written this month, counting the initial generate_ad() call
+        # that record_ad() logs for a full build or a pre-recon build --
+        # lifecycle_stage=="active" is the common case, but a pre_recon build
+        # still spent one full Sonnet call even though its stage isn't
+        # "active" yet, so ad_count==1 (first-time build) is included too.
+        # Reprices / recon-updates are separate, cheaper calls not counted
+        # here -- see the label on this number, it's an estimate, not a ledger.
+        history = load_ad_history()
+        month_prefix = date.today().isoformat()[:7]
+        ad_count = sum(
+            1 for e in history.values()
+            if (e.get("first_ad_date") or "")[:7] == month_prefix
+            and (e.get("lifecycle_stage") == "active" or e.get("ad_count") == 1)
+        )
+        if ad_count > 0:
+            est_cost_per_ad = split["sonnet"] / ad_count
+
+    return render_template(
+        "cost.html",
+        error=error,
+        month_label=date.today().strftime("%B %Y"),
+        mtd_total=mtd_total,
+        daily_rows=daily_rows,
+        split=split,
+        est_cost_per_ad=est_cost_per_ad,
+        ad_count=ad_count,
+    )
 
 
 @app.post("/generate")

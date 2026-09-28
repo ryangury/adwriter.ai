@@ -1,0 +1,74 @@
+{% extends "layout.html" %}
+{% block title %}Spending — Mercedes-Benz of Durham{% endblock %}
+{% block head %}
+<style>
+  .cost-tiles { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 24px; }
+  .cost-tile {
+    border: 1px solid var(--line); border-radius: 10px; padding: 16px 20px;
+    min-width: 180px; background: var(--card);
+  }
+  .cost-tile .k { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+  .cost-tile .v { font-size: 1.6rem; font-weight: 650; color: var(--accent); margin-top: 4px; }
+  .cost-tile .v.small { font-size: 1.1rem; }
+  .cost-estimate { margin: 4px 0 24px; color: var(--muted); font-size: 0.88rem; }
+  .cost-table td.num, .cost-table th.num { text-align: right; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="wrap-wide">
+  <h1 class="page-title">Spending</h1>
+  <p class="page-sub">Anthropic API cost for {{ month_label }} &middot; cached up to 1 hour</p>
+
+  {% if error %}
+  <div class="inv-wrap"><div class="empty-note">{{ error }}</div></div>
+  {% else %}
+  <div class="cost-tiles">
+    <div class="cost-tile">
+      <div class="k">Month-to-date total</div>
+      <div class="v">${{ '%.2f' % mtd_total }}</div>
+    </div>
+    <div class="cost-tile">
+      <div class="k">Sonnet spend</div>
+      <div class="v small">${{ '%.2f' % split.sonnet }}</div>
+    </div>
+    <div class="cost-tile">
+      <div class="k">Haiku spend</div>
+      <div class="v small">${{ '%.2f' % split.haiku }}</div>
+    </div>
+    {% if split.other and split.other > 0.005 %}
+    <div class="cost-tile">
+      <div class="k">Other models</div>
+      <div class="v small">${{ '%.2f' % split.other }}</div>
+    </div>
+    {% endif %}
+  </div>
+
+  <p class="cost-estimate">
+    {% if est_cost_per_ad is not none %}
+    Est. cost per fresh ad: <strong>${{ '%.2f' % est_cost_per_ad }}</strong>
+    (Sonnet spend &divide; {{ ad_count }} fresh ad{{ '' if ad_count == 1 else 's' }} built this month) &mdash;
+    rough estimate, not precise accounting. Reprices and recon updates aren't counted in the denominator.
+    {% else %}
+    Est. cost per fresh ad: not enough data yet (no fresh ads recorded this month).
+    {% endif %}
+    Sonnet/Haiku split is an estimate too, proportional to each model's token share this month &mdash;
+    the Admin cost report isn't broken out by model, only usage (tokens) is.
+  </p>
+
+  <div class="inv-wrap">
+    <table class="inv-table cost-table">
+      <thead>
+        <tr><th>Date</th><th class="num">Cost</th></tr>
+      </thead>
+      <tbody>
+        {% for day, amount in daily_rows %}
+        <tr><td>{{ day }}</td><td class="num">${{ '%.2f' % amount }}</td></tr>
+        {% else %}
+        <tr><td colspan="2">No cost data returned for this month yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
