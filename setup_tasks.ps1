@@ -16,11 +16,15 @@
     The CTR, ReconWarmup, CarfaxWarmup, Browse,
     Orchestrator tasks below already existed on this machine before this file did; they
     are included here so this script is a complete, accurate record of what
-    AdWriter has scheduled, not just the newest addition. AdWriter-Orchestrator
-    runs on a specific subset of weekdays rather than daily — if this script
-    is ever used to actually recreate that task, verify its DaysOfWeek against
-    the live task first (`(Get-ScheduledTask AdWriter-Orchestrator).Triggers`)
-    rather than trust the "daily" placeholder used below.
+    AdWriter has scheduled, not just the newest addition.
+
+    As of 2026-09-27, AdWriter-Orchestrator runs DAILY at 5:00 AM (moved off its
+    former Friday/Saturday-only schedule now that it's the sole source of both
+    ad building/reprice detection and CTR capture every day). Two tasks that
+    schedule became redundant are still registered here, but disabled rather
+    than deleted (see AdWriter-Reprice-Daily and AdWriter-CTR-Capture below) —
+    re-running this script preserves that disabled state via the -Disabled
+    switch on Register-AdWriterTask.
 
 .NOTES
     Run from an elevated PowerShell prompt.
@@ -69,7 +73,11 @@ function Register-AdWriterTask {
         # -RepetitionIntervalHours 1 -RepetitionDurationHours 12 fires at
         # 08:00, 09:00, ... 20:00 = 13 runs/day).
         [int] $RepetitionIntervalHours = 0,
-        [int] $RepetitionDurationHours = 0
+        [int] $RepetitionDurationHours = 0,
+        # Register the task but leave it disabled (schtasks /disable equivalent).
+        # Used for tasks kept on record rather than deleted outright, in case
+        # we want them back for a one-off later.
+        [switch] $Disabled
     )
 
     $existing = Get-ScheduledTask -TaskName $Name -ErrorAction SilentlyContinue
@@ -114,10 +122,14 @@ function Register-AdWriterTask {
 
     Register-ScheduledTask -TaskName $Name -Action $action -Trigger $trigger `
         -Principal $principal -Description $Description @extra | Out-Null
+    if ($Disabled) {
+        Disable-ScheduledTask -TaskName $Name | Out-Null
+    }
+    $suffix = if ($Disabled) { " [DISABLED]" } else { "" }
     if ($RepetitionIntervalHours -gt 0) {
-        Write-Host "Registered: $Name (daily at $($At.ToString('HH:mm')), every ${RepetitionIntervalHours}h for ${RepetitionDurationHours}h)"
+        Write-Host "Registered: $Name (daily at $($At.ToString('HH:mm')), every ${RepetitionIntervalHours}h for ${RepetitionDurationHours}h)$suffix"
     } else {
-        Write-Host "Registered: $Name (daily at $($At.ToString('HH:mm')))"
+        Write-Host "Registered: $Name (daily at $($At.ToString('HH:mm')))$suffix"
     }
 }
 
@@ -162,24 +174,26 @@ Register-AdWriterTask -Name "AdWriter-CTR-Capture" `
     -Execute "C:\adwriter\run_ctr_warmup.bat" `
     -At (Get-Date "05:20") `
     -TimeLimitHours 3 `
-    -Description "Daily CTR capture (ctr_warmup.py): Durham retail + Northlake/Charlotte benchmark CTR into ctr_history.db. Was previously only captured 2x/week as a side effect of the full AdWriter-Orchestrator run. 5:20am -- staggered 20 minutes after AdWriter-Orchestrator's 5:00am start (only matters Fri/Sat, when Orchestrator actually runs) so its crawl_inventory() step, the first thing it does and also on scraper.lock, has cleared before this task's own ACVMaxScraper session tries to acquire the lock. Both use the same global scraper.lock (30s wait); a lock loss inside orchestrator.py's crawl_inventory() step is caught by the same handler as its own outer lock and silently exits the WHOLE run with code 0, which is why this is staggered rather than left to contend."
+    -Disabled `
+    -Description "DISABLED 2026-09-27: redundant now that AdWriter-Orchestrator runs daily and captures this same CTR data as part of its own run (previously Orchestrator was Fri/Sat-only, so this task covered the other 5 days). Kept registered rather than deleted in case CTR capture ever needs to run standalone again -- ctr_warmup.py itself is unchanged and still runnable manually. Daily CTR capture (ctr_warmup.py): Durham retail + Northlake/Charlotte benchmark CTR into ctr_history.db."
 
 Register-AdWriterTask -Name "AdWriter-Orchestrator" `
-    -ScriptPath "C:\adwriter\orchestrator.py" `
+    -Execute "C:\adwriter\run_orchestrator.bat" `
     -At (Get-Date "05:00") `
-    -Description "Ad build/reprice orchestrator. NOTE: the live task runs on a specific weekday subset, not every day — see this file's header before relying on this registration to recreate it."
-
-Register-AdWriterTask -Name "AdWriter-CTR-Email" `
-    -ScriptPath "C:\adwriter\ctr_database.py --daily-scrape" `
-    -At (Get-Date "07:00") `
-    -Description "Daily CTR summary email -- builds and sends from whatever is already in ctr_history.db for today (does NOT scrape; see AdWriter-CTR-Capture, which runs at 5am and populates today's rows). 7am, 2 hours after capture so it reports on same-day data. Renamed from AdWriter-CTR, which implied it did the scraping."
+    -Description "Ad build/reprice/CTR orchestrator. Runs DAILY as of 2026-09-27 (previously Friday/Saturday only) -- now the sole daily source of ad building, reprice detection, and CTR capture, which is why AdWriter-Reprice-Daily and AdWriter-CTR-Capture are disabled below."
 
 Register-AdWriterTask -Name "AdWriter-Reprice-Daily" `
     -Execute "C:\adwriter\run_orchestrator.bat" `
     -ScriptPath "--reprice-only" `
     -At (Get-Date "07:00") `
     -TimeLimitHours 4 `
-    -Description "Daily reprice-only orchestrator run (run_orchestrator.bat --reprice-only): fresh crawl, rewrite price paragraphs for ads whose price changed. 7:00 AM, before the 9:00 AM verifier. Shares this exact minute with AdWriter-CTR-Email, which is safe -- that task never touches a scraper or scraper.lock."
+    -Disabled `
+    -Description "DISABLED 2026-09-27: redundant now that AdWriter-Orchestrator runs daily and covers reprice detection every morning -- this task would just collide with orchestrator.lock most days and exit doing nothing. Kept registered rather than deleted in case reprice-only mode is needed standalone for a one-off later. Daily reprice-only orchestrator run (run_orchestrator.bat --reprice-only): fresh crawl, rewrite price paragraphs for ads whose price changed."
+
+Register-AdWriterTask -Name "AdWriter-CTR-Email" `
+    -ScriptPath "C:\adwriter\ctr_database.py --daily-scrape" `
+    -At (Get-Date "08:00") `
+    -Description "Daily CTR summary email -- builds and sends from whatever is already in ctr_history.db for today (does NOT scrape; today's rows now come from AdWriter-Orchestrator's own CTR step, since AdWriter-CTR-Capture is disabled). Moved from 7:00 to 8:00 AM on 2026-09-27 to buffer against the full orchestrator run occasionally taking longer than its typical 2-2.5 hours, so this always reports same-morning fresh data instead of risking a stale read. Renamed from AdWriter-CTR, which implied it did the scraping."
 
 Register-AdWriterTask -Name "AdWriter-Verifier-Hourly" `
     -Execute "C:\adwriter\run_verifier.bat" `
