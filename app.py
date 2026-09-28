@@ -586,6 +586,43 @@ def inventory():
             verdict_state = "wrong"  # checked, but doesn't match what's live
         else:
             verdict_state = "unchecked"  # verification hasn't run against this stock yet
+
+        identity_confirmed = entry.get("identity_confirmed") if entry else None
+        # Posted: green only when identity_confirmed is True (our proof-point $
+        # or provenance sentence phrase-matched the live page — see verifier.py
+        # compare_ad()); red when it's explicitly False (nothing of ours found,
+        # e.g. a generic Homenet auto-blurb); grey when never verified (None,
+        # covers both "no ad" and "cleared, forced due on next pass").
+        if identity_confirmed is True:
+            posted_state = "green"
+        elif identity_confirmed is False:
+            posted_state = "red"
+        else:
+            posted_state = "grey"
+
+        price_mismatch = entry.get("price_mismatch") if entry else None
+        # Price Accurate is only meaningful once Posted is green -- if our copy
+        # isn't confirmed present, a price match/mismatch on the live page
+        # could just be coincidence (or there's nothing to compare at all).
+        if posted_state != "green":
+            price_state = "grey"
+        elif price_mismatch is None:
+            price_state = "green"
+        else:
+            price_state = "red"
+
+        recon_included = entry.get("recon_included") if entry else None
+        recon_pending = entry.get("recon_pending") if entry else None
+        # recon_pending is the single source of truth for "still waiting on
+        # recon" regardless of lifecycle_stage (a repriced vehicle can still
+        # be recon_pending -- confirmed in the orchestrator gate investigation).
+        if recon_pending:
+            recon_state = "amber"
+        elif recon_included:
+            recon_state = "green"
+        else:
+            recon_state = "grey"  # no ad yet, or recon correctly had nothing to include
+
         rows.append(
             {
                 "stock_number": stock,
@@ -602,11 +639,15 @@ def inventory():
                 "verdict_state": verdict_state,  # "current" | "wrong" | "unchecked"
                 "verdict": verdict,  # "current", "outdated", "not_posted", "not_found", or None
                 "match_score": entry.get("match_score") if entry else None,
+                "identity_confirmed": identity_confirmed,  # True | False | None (never verified)
+                "posted_state": posted_state,  # "green" | "red" | "grey"
+                "price_state": price_state,  # "green" | "red" | "grey"
+                "recon_state": recon_state,  # "green" | "amber" | "grey"
                 "last_price_at_write": entry.get("last_price_at_write") if entry else None,
                 "price_diff": _price_diff(
                     v.get("current_price"), entry.get("last_price_at_write") if entry else None
                 ),
-                "price_mismatch": entry.get("price_mismatch") if entry else None,
+                "price_mismatch": price_mismatch,
             }
         )
     return render_template("inventory.html", rows=rows, snapshot_time=_fmt_snapshot_time(stamp))

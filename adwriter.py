@@ -1757,6 +1757,7 @@ def record_ad(
     entry["verification_verdict"] = None
     entry["match_score"] = None
     entry["price_mismatch"] = None
+    entry["identity_confirmed"] = None
     history[stock] = entry
     return entry
 
@@ -1873,6 +1874,7 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
     entry["match_score"] = None
     entry["last_verified"] = None
     entry["price_mismatch"] = None
+    entry["identity_confirmed"] = None
     history[stock] = entry
     save_ad_history(history)
     return full

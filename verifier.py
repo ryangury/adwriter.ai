@@ -213,6 +213,15 @@ def _first_sentence(paragraph: str) -> str:
     return (m.group(1) if m else p[:140]).strip()
 
 
+def _second_sentence(paragraph: str) -> str:
+    """Paragraph one, sentence two — the PROVENANCE_SENTENCE slot per the
+    system prompts (aggregator.build_provenance_sentence()). Empty string
+    when there isn't a distinct second sentence to find."""
+    p = re.sub(r"\s+", " ", (paragraph or "").strip())
+    m = re.search(r"^.{15,}?[.!?]\s+(.{20,}?[.!?])(?:\s|$)", p)
+    return (m.group(1) if m else "").strip()
+
+
 def _extract_key_phrases(stored_ad_text: str) -> list[dict[str, str]]:
     """Pull 5-6 distinctive phrases we expect to survive syndication verbatim."""
     text = stored_ad_text or ""
@@ -275,6 +284,36 @@ def _extract_key_phrases(stored_ad_text: str) -> list[dict[str, str]]:
     return phrases
 
 
+def _extract_identity_phrases(stored_ad_text: str) -> list[dict[str, str]]:
+    """The subset of key phrases a generic listing-service template cannot
+    plausibly reproduce: our specific proof-point dollar figure, and the
+    provenance sentence (paragraph one, sentence two) naming this vehicle's
+    ownership/certification history. VIN, mileage, and package names are
+    spec data any auto-generated blurb can echo, so they're deliberately
+    excluded here — see identity_confirmed in compare_ad(). Kept as a
+    separate extraction (rather than folded into _extract_key_phrases) so
+    adding this signal doesn't change match_score's phrase count/denominator
+    for every existing vehicle."""
+    text = stored_ad_text or ""
+    paras = [p.strip() for p in re.split(r"\n\s*\n", text.strip()) if p.strip()]
+    p1 = paras[0] if paras else text
+    p2 = paras[1] if len(paras) > 1 else ""
+
+    phrases: list[dict[str, str]] = []
+
+    m = re.search(r"\$[\d,]{3,}(?=\s+(?:below|under|less))", p2) or re.search(
+        r"\$[\d,]{3,}", p2
+    )
+    if m:
+        phrases.append({"label": "proof point $", "kind": "exact", "phrase": m.group(0)})
+
+    prov = _second_sentence(p1)
+    if prov:
+        phrases.append({"label": "provenance sentence", "kind": "fuzzy", "phrase": prov})
+
+    return phrases
+
+
 def _phrase_present(phrase: dict[str, str], live_norm: str) -> bool:
     target = _normalize(phrase["phrase"])
     if not target:
@@ -318,9 +357,18 @@ def compare_ad(
 ) -> dict[str, Any]:
     """Fuzzy-compare the stored ad against the live VDP description.
 
-    Returns {match_score (0-100), matched_phrases, missing_phrases, verdict},
-    plus live_price / expected_price / price_mismatch when a price check ran.
-    verdict: "current" | "outdated" | "not_posted" | "not_found".
+    Returns {match_score (0-100), matched_phrases, missing_phrases, verdict,
+    identity_confirmed}, plus live_price / expected_price / price_mismatch
+    when a price check ran. verdict: "current" | "outdated" | "not_posted" |
+    "not_found".
+
+    identity_confirmed: True only if the live page phrase-matched our
+    proof-point dollar figure or our provenance sentence (see
+    _extract_identity_phrases) — the two things a generic template can't
+    accidentally reproduce. VIN/mileage/package-name overlap (which a
+    Homenet auto-blurb can echo as plain spec data) doesn't count. This is
+    independent of match_score/verdict: a vehicle can be "outdated" on drift
+    in other phrases while identity_confirmed is still True.
 
     Price check: when `expected_price` (the fee-inclusive asking price the
     stored ad states) is given and the live text has a "Current asking price
@@ -337,6 +385,7 @@ def compare_ad(
             "matched_phrases": [],
             "missing_phrases": labels,
             "verdict": "not_found",
+            "identity_confirmed": False,
         }
 
     live = live_description_text.strip()
@@ -346,12 +395,16 @@ def compare_ad(
             "matched_phrases": [],
             "missing_phrases": labels,
             "verdict": "not_posted",
+            "identity_confirmed": False,
         }
 
     live_norm = _normalize(live)
     matched, missing = [], []
     for p in phrases:
         (matched if _phrase_present(p, live_norm) else missing).append(p["label"])
+
+    identity_phrases = _extract_identity_phrases(stored_ad_text)
+    identity_confirmed = any(_phrase_present(p, live_norm) for p in identity_phrases)
 
     score = round(100 * len(matched) / len(phrases)) if phrases else 0
     verdict = "current" if score > 80 else "outdated"
@@ -360,6 +413,7 @@ def compare_ad(
         "matched_phrases": matched,
         "missing_phrases": missing,
         "verdict": verdict,
+        "identity_confirmed": identity_confirmed,
     }
 
     m = _LIVE_PRICE_RE.search(live)
@@ -475,6 +529,7 @@ def run_verification(
         entry["last_verified"] = today.isoformat()
         entry["verification_verdict"] = cmp["verdict"]
         entry["match_score"] = cmp["match_score"]
+        entry["identity_confirmed"] = cmp.get("identity_confirmed", False)
         if cmp.get("price_mismatch"):
             entry["price_mismatch"] = {
                 "live_price": cmp["live_price"],
@@ -494,6 +549,7 @@ def run_verification(
         }
         print(
             f"[verify] {stock}: {cmp['verdict']} (score {cmp['match_score']}, "
+            f"identity {'confirmed' if cmp.get('identity_confirmed') else 'NOT confirmed'}, "
             f"url {live.get('url_found') or 'n/a'})"
         )
         if cmp["verdict"] == "current":
@@ -665,7 +721,10 @@ def _main_locked(
             live["description_text"] if live["page_found"] else None,
             expected_advertised_price(entry),
         )
-        print(f"\nverdict: {cmp['verdict']}  score: {cmp['match_score']}")
+        print(
+            f"\nverdict: {cmp['verdict']}  score: {cmp['match_score']}  "
+            f"identity_confirmed: {cmp.get('identity_confirmed')}"
+        )
         if cmp.get("price_mismatch"):
             print(cmp["price_mismatch"])
         print(f"matched:  {cmp['matched_phrases']}")

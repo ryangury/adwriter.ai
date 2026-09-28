@@ -10,6 +10,7 @@
     --accent: #00263e;      /* MB deep navy */
     --ok: #15803d;
     --fail: #b91c1c;
+    --warn: #b45309;
     --card: #f9fafb;
   }
   * { box-sizing: border-box; }
@@ -202,6 +203,7 @@
 .has-ad-yes { color: var(--ok); font-weight: 700; }
 .has-ad-no { color: var(--muted); }
 .has-ad-fail { color: var(--fail); font-weight: 700; }
+.has-ad-pending { color: var(--warn); font-weight: 700; }
 .mismatch-note { font-size: 0.7rem; font-weight: 400; color: var(--muted); white-space: nowrap; }
 .status-pill {
   display: inline-block;

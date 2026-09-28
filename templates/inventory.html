@@ -45,7 +45,9 @@
           <th class="sortable num" data-sort="age">Age</th>
           <th class="sortable" data-sort="status">Status</th>
           <th class="has-ad">Has Ad</th>
-          <th class="check-col">Posted</th>
+          <th class="check-col" title="Green: recon included. Amber: recon still pending (regardless of lifecycle stage). Grey: no ad, or recon correctly had nothing to include.">Recon</th>
+          <th class="check-col" title="Green: our proof-point $ or provenance sentence confirmed present on the live page. Red: nothing of ours found (e.g. a generic auto-generated blurb). Grey: never verified.">Posted</th>
+          <th class="check-col" title="Only meaningful once Posted is green. Green: live price matches the ad. Red: live price differs from the ad. Grey: Posted isn't green, or never verified.">Price Accurate</th>
           <th class="check-col" title="Current price minus the price the ad was written at">&Delta; Price</th>
           <th class="check-col"></th>
         </tr>
@@ -69,10 +71,22 @@
             {% if r.has_ad %}<span class="has-ad-yes">&#10003;</span>{% else %}<span class="has-ad-no">&ndash;</span>{% endif %}
           </td>
           <td class="check-col"
-              title="{% if r.verdict_state == 'current' %}Verdict: current{% elif r.verdict_state == 'wrong' %}Verdict: {{ r.verdict }}{% if r.price_mismatch %} &mdash; live ${{ '{:,.0f}'.format(r.price_mismatch.live_price) }} vs ad ${{ '{:,.0f}'.format(r.price_mismatch.expected_price) }}{% endif %}{% else %}Never verified against the live site{% endif %}">
-            {% if r.verdict_state == 'current' %}<span class="has-ad-yes">&#10003;</span>
-            {% elif r.verdict_state == 'wrong' %}<span class="has-ad-fail">&#10007;</span>
-              {% if r.price_mismatch %}<div class="mismatch-note">Live ${{ '{:,.0f}'.format(r.price_mismatch.live_price) }} vs ad ${{ '{:,.0f}'.format(r.price_mismatch.expected_price) }}</div>{% endif %}
+              title="{% if r.recon_state == 'green' %}Recon included{% elif r.recon_state == 'amber' %}Recon still pending{% else %}No ad, or recon correctly had nothing to include{% endif %}">
+            {% if r.recon_state == 'green' %}<span class="has-ad-yes">&#10003;</span>
+            {% elif r.recon_state == 'amber' %}<span class="has-ad-pending">&#9679;</span>
+            {% else %}<span class="has-ad-no">&ndash;</span>{% endif %}
+          </td>
+          <td class="check-col"
+              title="{% if r.posted_state == 'green' %}Our copy confirmed on the live page (verdict: {{ r.verdict }}){% elif r.posted_state == 'red' %}Nothing of ours found on the live page{% else %}Never verified against the live site{% endif %}">
+            {% if r.posted_state == 'green' %}<span class="has-ad-yes">&#10003;</span>
+            {% elif r.posted_state == 'red' %}<span class="has-ad-fail">&#10007;</span>
+            {% else %}<span class="has-ad-no">&ndash;</span>{% endif %}
+          </td>
+          <td class="check-col"
+              title="{% if r.price_state == 'green' %}Live price matches the ad{% elif r.price_state == 'red' %}Live ${{ '{:,.0f}'.format(r.price_mismatch.live_price) }} vs ad ${{ '{:,.0f}'.format(r.price_mismatch.expected_price) }}{% else %}Not meaningful -- Posted isn't confirmed green{% endif %}">
+            {% if r.price_state == 'green' %}<span class="has-ad-yes">&#10003;</span>
+            {% elif r.price_state == 'red' %}<span class="has-ad-fail">&#10007;</span>
+              <div class="mismatch-note">Live ${{ '{:,.0f}'.format(r.price_mismatch.live_price) }} vs ad ${{ '{:,.0f}'.format(r.price_mismatch.expected_price) }}</div>
             {% else %}<span class="has-ad-no">&ndash;</span>{% endif %}
           </td>
           <td class="check-col" title="{{ ('Ad written at ${:,.0f}'.format(r.last_price_at_write)) if r.price_diff is not none else 'No ad on file, or no price recorded' }}">
