@@ -24,7 +24,7 @@ from datetime import date, datetime, timezone
 from difflib import SequenceMatcher
 from typing import Any
 
-from inventory_crawler import crawl_inventory
+from inventory_crawler import _as_list, crawl_inventory, load_previous_snapshot
 from run_lock import (
     ORCHESTRATOR_LOCK_PATH,
     ScraperBusyError,
@@ -501,6 +501,15 @@ def run_verification(
 
     history = ad_history if ad_history is not None else load_ad_history()
     today = date.today()
+    # Stocks currently in inventory. A stock absent from the snapshot is sold /
+    # removed: it is still verified (history is unchanged) but never reported as
+    # an action item. None (snapshot missing/empty) means don't filter at all —
+    # a failed crawl must not silently hide real problems.
+    in_inventory = {
+        str(v.get("stock_number")).strip().upper()
+        for v in _as_list(load_previous_snapshot())
+        if v.get("stock_number")
+    } or None
     current: list[dict] = []
     needs_posting: list[dict] = []
     needs_update: list[dict] = []
@@ -554,6 +563,8 @@ def run_verification(
         )
         if cmp["verdict"] == "current":
             current.append(row)
+        elif in_inventory is not None and stock.strip().upper() not in in_inventory:
+            print(f"[verify] {stock}: not in inventory snapshot (sold/removed) — excluded from report")
         elif cmp["verdict"] == "outdated":
             needs_update.append(row)
         else:  # not_posted / not_found
