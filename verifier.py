@@ -24,7 +24,12 @@ from datetime import date, datetime, timezone
 from difflib import SequenceMatcher
 from typing import Any
 
-from inventory_crawler import _as_list, crawl_inventory, load_previous_snapshot
+from inventory_crawler import (
+    _as_list,
+    crawl_inventory,
+    flag_absent_ad_history,
+    load_previous_snapshot,
+)
 from run_lock import (
     ORCHESTRATOR_LOCK_PATH,
     ScraperBusyError,
@@ -696,6 +701,31 @@ def main(argv: list[str] | None = None) -> int:
         release_lock_if_owned(ORCHESTRATOR_LOCK_PATH)
 
 
+def _flag_absent(crawled: list[dict[str, Any]]) -> None:
+    """Same absent-flagging the orchestrator does after its crawl (same
+    health-guarded flag_absent_ad_history), run here on the verifier's own
+    crawl so a sold car is flagged within the hour. A no-op when nothing
+    changed. Never fatal: verification runs regardless."""
+    from adwriter import load_ad_history, save_ad_history
+
+    try:
+        history = load_ad_history()
+        newly_absent, back_in_stock = flag_absent_ad_history(
+            history, crawled, date.today().isoformat()
+        )
+        if newly_absent or back_in_stock:
+            save_ad_history(history)
+            for s in newly_absent:
+                print(
+                    f"[ad-history] {s}: absent from inventory "
+                    f"({history[s]['absent_reason']}) — flagged, verification stops"
+                )
+            for s in back_in_stock:
+                print(f"[ad-history] {s}: back in inventory — absent flag cleared")
+    except Exception as exc:  # noqa: BLE001 - flagging must never block verification
+        print(f"[ad-history] absent-flagging failed — {exc}", file=sys.stderr)
+
+
 def _main_locked(
     args: argparse.Namespace, parser: argparse.ArgumentParser, headless: bool
 ) -> int:
@@ -707,6 +737,7 @@ def _main_locked(
             result = crawl_inventory(save=True)
             n = len(result) if result else 0
             print(f"[verifier] inventory crawl complete — {n} vehicles in snapshot")
+            _flag_absent(result)
         except Exception as exc:  # noqa: BLE001 - the crawl must never block verification
             print(f"[verifier] inventory crawl failed — using existing snapshot: {exc}")
         current, needs_posting, needs_update = run_verification(headless=headless)
