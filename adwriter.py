@@ -887,7 +887,9 @@ def generate_ad(
     )
     kwargs: dict = {
         "model": MODEL,
-        "max_tokens": 3000 if needs_lookup else MAX_TOKENS,
+        "max_tokens": (
+            min(10000, 3000 + 700 * len(needs_lookup)) if needs_lookup else MAX_TOKENS
+        ),
         "system": system_prompt,
     }
     if needs_lookup:
@@ -1009,6 +1011,24 @@ _ALLCAPS_STOPWORDS = {
 }
 
 _MAX_FEATURE_LOOKUPS = 10
+
+# Paint descriptors that never name equipment. Deliberately narrow: "metallic",
+# "pearl"/"pearlcoat", "tri-coat"/"tricoat", "clearcoat" as whole words.
+_WB = "(?<![A-Za-z])"  # word-boundary helpers (avoid backslash escapes)
+_WE = "(?![A-Za-z])"
+_PAINT_NAME_RE = re.compile(
+    _WB + "(metallic|pearl|pearlcoat|tri-?coat|clear-?coat)" + _WE, re.IGNORECASE
+)
+# A paint word alongside one of these is an equipment item, not a paint name.
+_PAINT_EXCLUDE_RE = re.compile(
+    _WB + "(film|protection|wheels?|trim|accents?|interior|seats?|leather|roof|"
+    "mirrors?|pkg|package|badge|graphic)" + _WE,
+    re.IGNORECASE,
+)
+
+
+def _is_paint_name(name: str) -> bool:
+    return bool(_PAINT_NAME_RE.search(name)) and not _PAINT_EXCLUDE_RE.search(name)
 
 
 def _looks_branded(name: str) -> bool:
@@ -1255,6 +1275,8 @@ def format_data_package(pkg: dict) -> tuple[str, list[dict]]:
             if not fname or key in seen or not _looks_branded(fname):
                 continue
             seen.add(key)
+            if _is_paint_name(fname):
+                continue  # plain color name — nothing to research
             cached = get_feature(brand, fname)
             if cached and cached.get("description"):
                 feature_context.append(f"  - {fname}: {cached['description']}")

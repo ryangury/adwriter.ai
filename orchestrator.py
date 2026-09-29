@@ -532,7 +532,7 @@ def _run_inner(
         c["stock_number"]: c for c in price_changes if c.get("stock_number")
     }
 
-    def _build_and_record(v: dict[str, Any], *, skip_recon: bool) -> None:
+    def _build_one(v: dict[str, Any], *, skip_recon: bool) -> None:
         stock = v.get("stock_number")
         stage = "pre_recon" if skip_recon else "active"
         tag = "pre-recon" if skip_recon else "build"
@@ -580,7 +580,7 @@ def _run_inner(
 
         try:
             ad_copy, feedback = _generate_from_package(pkg)
-        except (anthropic.APIError, RuntimeError) as exc:
+        except (anthropic.APIError, RuntimeError, ValueError) as exc:
             errors.append({"stock": stock, "phase": "claude", "error": str(exc)})
             print(f"[{tag}] {stock}: ad generation failed — {exc}")
             return
@@ -614,6 +614,8 @@ def _run_inner(
             today=today,
             last_feedback=feedback,
         )
+        # Persist per vehicle so a later crash can't erase completed work.
+        save_ad_history(ad_history)
         print(f"[{tag}] {stock}: ad generated ({stage})")
 
         _safe_send(
@@ -622,6 +624,24 @@ def _run_inner(
             ),
             f"{change_note}\n\n{'=' * 60}\nAD COPY\n{'=' * 60}\n\n{ad_copy}\n",
         )
+
+    def _build_and_record(v: dict[str, Any], *, skip_recon: bool) -> None:
+        # Per-vehicle boundary: one vehicle's failure must never kill the queue.
+        try:
+            _build_one(v, skip_recon=skip_recon)
+        except Exception as exc:  # noqa: BLE001
+            import traceback
+
+            stock = v.get("stock_number")
+            tag = "pre-recon" if skip_recon else "build"
+            errors.append(
+                {"stock": stock, "phase": "build", "error": f"{type(exc).__name__}: {exc}"}
+            )
+            print(
+                f"[{tag}] {stock}: unexpected {type(exc).__name__} — {exc}\n"
+                f"{traceback.format_exc()}",
+                file=sys.stderr,
+            )
 
     for v in build_queue:
         _build_and_record(v, skip_recon=False)
