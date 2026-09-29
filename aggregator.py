@@ -3300,6 +3300,20 @@ RECON_INCOMPLETE_NOTE = (
 MB_CPO_GATE_STATUS_CODES = {10, 16}
 
 
+def _gate_diagnostics(pricing_raw: dict[str, Any]) -> str:
+    """One-line pricing snapshot logged whenever a data gate fails, whichever
+    condition tripped: the raw current_internet_price and how many proof points
+    sit above / below it. Lets a transient scrape failure be diagnosed from the
+    log alone."""
+    proof_points = pricing_raw.get("pricing_proof_points") or []
+    above = sum(1 for p in proof_points if p.get("direction") == "above")
+    below = sum(1 for p in proof_points if p.get("direction") == "below")
+    return (
+        f"current_internet_price={pricing_raw.get('current_internet_price')!r}, "
+        f"proof points: {above} above, {below} below ({len(proof_points)} total)"
+    )
+
+
 def _mb_cpo_data_gate(
     stock: str,
     stock_prefix: str,
@@ -3329,11 +3343,8 @@ def _mb_cpo_data_gate(
     current_price = pricing_raw.get("current_internet_price")
     proof_points = pricing_raw.get("pricing_proof_points") or []
     has_below = any(p.get("direction") == "below" for p in proof_points)
-    acvmax_ok = (
-        isinstance(current_price, (int, float))
-        and current_price > 0
-        and has_below
-    )
+    price_ok = isinstance(current_price, (int, float)) and current_price > 0
+    acvmax_ok = price_ok and has_below
 
     total_msrp = (msrp_data or {}).get("total_msrp")
     msrp_source = (msrp_data or {}).get("source")
@@ -3346,8 +3357,17 @@ def _mb_cpo_data_gate(
         return None
 
     failures: list[tuple[str, str]] = []
-    if not acvmax_ok:
+    if not price_ok:
         failures.append(("acvmax_pricing", "ACV Max pricing unavailable"))
+    elif not has_below:
+        # A real price came back; it just isn't favorably positioned against
+        # any benchmark. Still no ad — but that's not a data failure.
+        failures.append(
+            (
+                "no_favorable_proof_point",
+                "No favorable pricing proof point — priced at or above all benchmarks",
+            )
+        )
     if not sticker_ok:
         failures.append(("autoipacket_sticker", "window sticker missing"))
 
@@ -4076,6 +4096,10 @@ def aggregate(
         print(
             f"[aggregator] {stock}: {gate_failure['message']} — "
             f"skipping the Claude API call",
+            file=sys.stderr,
+        )
+        print(
+            f"[aggregator] {stock}: gate diagnostics — {_gate_diagnostics(pricing_raw)}",
             file=sys.stderr,
         )
         return gate_failure

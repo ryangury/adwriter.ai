@@ -550,6 +550,15 @@ def _run_inner(
             print(f"[{tag}] {stock}: recon flipped incomplete — moved to waiting")
             return
 
+        # A data-gate failure package carries only the gate's own message — no
+        # carfax / msrp_data — so source_status() below would misreport
+        # carfax + autoipacket as failed. Report the gate's real reason instead.
+        if pkg.get("reason") == "incomplete_data":
+            gate_msg = pkg.get("message") or "data gate failed"
+            errors.append({"stock": stock, "phase": "sources", "error": gate_msg})
+            print(f"[{tag}] {stock}: {gate_msg}")
+            return
+
         failed = {k: d for k, (s, d) in source_status(pkg).items() if s == "failed"}
         if failed:
             detail = "; ".join(f"{k}: {d}" for k, d in failed.items())
