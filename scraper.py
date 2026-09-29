@@ -3740,7 +3740,7 @@ class ACVMaxScraper(_BrowserSession):
         if overall_market_days is not None and matching_market_days is not None:
             hi = max(overall_market_days, matching_market_days)
             lo = min(overall_market_days, matching_market_days)
-            doubled_relationship = lo > 0 and abs(hi - 2 * lo) <= 0.05 * hi
+            doubled_relationship = lo > 0 and abs(hi - 2 * lo) <= 0.01 * hi
             suspiciously_low = overall_market_days <= 0 or matching_market_days <= 0
             repeated_pattern = (
                 _is_doubled_digits(overall_market_days)
