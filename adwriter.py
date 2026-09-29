@@ -1655,6 +1655,14 @@ def run_adwriter_pre_recon(stock_number: str) -> str:
 #     direct price check caught a stale live price, else null
 #   All four are reset to null whenever the ad text is rewritten
 #   (record_ad(), reprice_ad()), since an old verdict no longer applies.
+#
+# absent fields (written by inventory_crawler.flag_absent_ad_history, from the
+# orchestrator's crawl step; entries written before they existed just lack them):
+#   absent_since  — ISO date the stock was first found missing from the crawl,
+#     or null. While set, verifier._verification_due() returns False.
+#   absent_reason — "sold" (crawl never saw it) | "wholesale" (seen, objective
+#     no longer RETAIL) | "unmapped_status" (retail, status code not mapped),
+#     or null. Both fields are cleared if the stock reappears in a crawl.
 
 AD_HISTORY_PATH = Path(__file__).with_name("ad_history.json")
 

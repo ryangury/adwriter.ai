@@ -447,6 +447,10 @@ def _as_date(value: Any) -> date | None:
 def _verification_due(entry: dict[str, Any], today: date) -> bool:
     if not entry.get("current_ad_text"):
         return False
+    # Flagged absent by the orchestrator's crawl (sold / wholesale / ...): the
+    # vehicle is gone, so never spend a verifier cycle on it.
+    if entry.get("absent_since"):
+        return False
     first = _as_date(entry.get("first_ad_date"))
     last_ad = _as_date(entry.get("last_ad_date")) or first
     last_verified = _as_date(entry.get("last_verified"))

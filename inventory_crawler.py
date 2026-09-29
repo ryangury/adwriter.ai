@@ -35,6 +35,10 @@ MAPPED_STATUS_CODES = {1, 10, 11, 12, 16}
 
 _PAGE_SAFETY_LIMIT = 100
 
+# stock (upper) -> "wholesale" | "unmapped_status", for rows the most recent
+# crawl_inventory() saw but dropped as non-retail. Reset on every crawl.
+LAST_CRAWL_NONRETAIL: dict[str, str] = {}
+
 
 # --------------------------------------------------------------------------- #
 # small parse helpers
@@ -246,6 +250,18 @@ def crawl_inventory(
     vehicles = [_normalize_row(r) for r in raw_rows]
     retail = [v for v in vehicles if _is_retail(v)]
 
+    # Remember why each non-retail row was dropped, so flag_absent_ad_history()
+    # can label an absent stock "wholesale" / "unmapped_status" instead of
+    # guessing "sold". Rows the crawl never saw at all are the truly sold ones.
+    LAST_CRAWL_NONRETAIL.clear()
+    for v in vehicles:
+        if v.get("stock_number") and not _is_retail(v):
+            LAST_CRAWL_NONRETAIL[str(v["stock_number"]).strip().upper()] = (
+                "wholesale"
+                if (v.get("objective") or "").upper() != "RETAIL"
+                else "unmapped_status"
+            )
+
     excluded = len(vehicles) - len(retail)
     wholesale = sum(
         1 for v in vehicles if (v.get("objective") or "").upper() != "RETAIL"
@@ -283,13 +299,61 @@ def save_snapshot(vehicles: list[dict[str, Any]]) -> None:
     print(f"[crawler] wrote {SNAPSHOT_PATH.name} ({len(vehicles)} vehicles)")
 
 
+def _active_vins(vehicles: list[dict[str, Any]]) -> set[str]:
+    """VINs in a crawl. An empty set is the crawl-health guard: a failed/blank
+    scrape has none, and destructive follow-ups (sticker-cache pruning,
+    absent-flagging in flag_absent_ad_history) must be skipped entirely."""
+    return {(v.get("vin") or "").strip().upper() for v in vehicles if v.get("vin")}
+
+
+def flag_absent_ad_history(
+    history: dict[str, Any],
+    vehicles: list[dict[str, Any]],
+    today: str,
+    nonretail: dict[str, str] | None = None,
+) -> tuple[list[str], list[str]]:
+    """Keep ad_history's absent_since / absent_reason in step with a crawl.
+
+    `vehicles` is the crawl's retail list, INCLUDING status-1 units (an
+    uncertified unit is still in inventory, so it is never "absent"). A stock
+    in history but not in `vehicles` gets absent_since=today (only if not
+    already set) and an absent_reason: "wholesale" / "unmapped_status" when the
+    crawl saw the row but dropped it (see LAST_CRAWL_NONRETAIL), else "sold".
+    A flagged stock that is back in `vehicles` has both fields cleared.
+    Entries are mutated in place; returns (newly_flagged, cleared) stock lists.
+
+    Same health guard as prune_sticker_cache: a crawl with no VINs flags
+    nothing."""
+    if not _active_vins(vehicles):
+        print("[ad-history] no VINs in this crawl, skipping absent-flagging")
+        return [], []
+    nonretail = LAST_CRAWL_NONRETAIL if nonretail is None else nonretail
+    present = {
+        str(v.get("stock_number")).strip().upper() for v in vehicles if v.get("stock_number")
+    }
+    flagged: list[str] = []
+    cleared: list[str] = []
+    for stock, entry in history.items():
+        key = str(stock).strip().upper()
+        if key in present:
+            if entry.get("absent_since") or entry.get("absent_reason"):
+                entry["absent_since"] = None
+                entry["absent_reason"] = None
+                cleared.append(stock)
+        elif not entry.get("absent_since"):
+            entry["absent_since"] = today
+            entry["absent_reason"] = nonretail.get(key, "sold")
+            flagged.append(stock)
+    return flagged, cleared
+
+
 def prune_sticker_cache(vehicles: list[dict[str, Any]]) -> int:
     """Delete sticker_cache/<VIN>.pdf and <VIN>_sticker.html for every VIN not
     in `vehicles` (a fresh crawl's active inventory) — sold/transferred units.
     <VIN>.png files are left alone: vision_processor.py manages those. Skipped
     entirely on an empty crawl so a failed/blank scrape can't wipe the cache.
     Returns the number of files removed."""
-    active = {(v.get("vin") or "").strip().upper() for v in vehicles if v.get("vin")}
+    active = _active_vins(vehicles)
     if not active:
         print("[sticker-cache] no VINs in this crawl, skipping cleanup")
         return 0

@@ -47,6 +47,7 @@ from verifier import HendrickCarsScraper, run_verification, send_verification_al
 from inventory_crawler import (
     crawl_inventory,
     detect_reprices_needed,
+    flag_absent_ad_history,
     prune_sticker_cache,
     save_snapshot,
 )
@@ -313,6 +314,17 @@ def _run_inner(
     # Before the status-1 filter below: an uncertified unit is still in
     # inventory, and its cached sticker files are still worth keeping.
     prune_sticker_cache(retail)
+    # Same pre-status-1-filter list, same health guard: flag ad_history entries
+    # for vehicles no longer in inventory (stops verification against them) and
+    # clear the flag on any that have come back.
+    absent_history = load_ad_history()
+    newly_absent, back_in_stock = flag_absent_ad_history(absent_history, retail, today)
+    if newly_absent or back_in_stock:
+        save_ad_history(absent_history)
+        for s in newly_absent:
+            print(f"[ad-history] {s}: absent from inventory ({absent_history[s]['absent_reason']}) — flagged, verification stops")
+        for s in back_in_stock:
+            print(f"[ad-history] {s}: back in inventory — absent flag cleared")
     excluded_not_certified = [v for v in retail if v.get("status_code") == 1]
     retail = [v for v in retail if v.get("status_code") != 1]
     if excluded_not_certified:
