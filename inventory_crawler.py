@@ -39,6 +39,16 @@ _PAGE_SAFETY_LIMIT = 100
 # crawl_inventory() saw but dropped as non-retail. Reset on every crawl.
 LAST_CRAWL_NONRETAIL: dict[str, str] = {}
 
+# Rows collected (ALL rows, wholesale included — not just the retail list
+# crawl_inventory returns) vs the page's own reported total, for the most
+# recent crawl_inventory(). Read by _crawl_healthy().
+LAST_CRAWL_HEALTH: dict[str, int | None] = {}
+
+# A crawl is healthy only if it collected at least this share of the rows the
+# page says exist. Leaves room for the odd row that fails to render without
+# accepting a genuinely partial crawl.
+MIN_CRAWL_COMPLETENESS = 0.9
+
 
 # --------------------------------------------------------------------------- #
 # small parse helpers
@@ -246,8 +256,13 @@ def crawl_inventory(
                 break
             if not _next_page(page):
                 break
+        # The count can be missing at first read (it was, on the 9/28 5am run)
+        # but is on screen by the last page ("81-97 of 97"), so try again.
+        total = total or _total_count(page)
 
-    vehicles = [_normalize_row(r) for r in raw_rows]
+    LAST_CRAWL_HEALTH.update(collected=len(raw_rows), total=total)
+
+    vehicles =[_normalize_row(r) for r in raw_rows]
     retail = [v for v in vehicles if _is_retail(v)]
 
     # Remember why each non-retail row was dropped, so flag_absent_ad_history()
@@ -300,10 +315,42 @@ def save_snapshot(vehicles: list[dict[str, Any]]) -> None:
 
 
 def _active_vins(vehicles: list[dict[str, Any]]) -> set[str]:
-    """VINs in a crawl. An empty set is the crawl-health guard: a failed/blank
-    scrape has none, and destructive follow-ups (sticker-cache pruning,
-    absent-flagging in flag_absent_ad_history) must be skipped entirely."""
+    """VINs in a crawl."""
     return {(v.get("vin") or "").strip().upper() for v in vehicles if v.get("vin")}
+
+
+def _crawl_healthy(
+    vehicles: list[dict[str, Any]], health: dict[str, int | None] | None = None
+) -> bool:
+    """The crawl-health guard shared by prune_sticker_cache and
+    flag_absent_ad_history: destructive follow-ups (deleting cached stickers,
+    flagging ad_history entries absent) run only when this is True. Logs the
+    reason when it isn't.
+
+    Healthy means: the crawl has at least one VIN, AND it collected at least
+    MIN_CRAWL_COMPLETENESS of the total the inventory page itself reports
+    (`health`, default LAST_CRAWL_HEALTH). An unreadable page total fails
+    closed — the guard can't vouch for the crawl, so nothing destructive runs
+    until a crawl that can be checked."""
+    if not _active_vins(vehicles):
+        print("[crawl-health] WARNING: no VINs in this crawl — treating as unhealthy")
+        return False
+    health = LAST_CRAWL_HEALTH if health is None else health
+    collected, total = health.get("collected"), health.get("total")
+    if not total:
+        print(
+            "[crawl-health] WARNING: the page's reported inventory total was "
+            "unreadable — cannot verify the crawl is complete, treating as unhealthy"
+        )
+        return False
+    if collected is None or collected < MIN_CRAWL_COMPLETENESS * total:
+        print(
+            f"[crawl-health] WARNING: partial crawl — collected {collected} of the "
+            f"{total} rows the page reports (< {MIN_CRAWL_COMPLETENESS:.0%}) — "
+            f"treating as unhealthy"
+        )
+        return False
+    return True
 
 
 def flag_absent_ad_history(
@@ -311,6 +358,7 @@ def flag_absent_ad_history(
     vehicles: list[dict[str, Any]],
     today: str,
     nonretail: dict[str, str] | None = None,
+    health: dict[str, int | None] | None = None,
 ) -> tuple[list[str], list[str]]:
     """Keep ad_history's absent_since / absent_reason in step with a crawl.
 
@@ -322,10 +370,11 @@ def flag_absent_ad_history(
     A flagged stock that is back in `vehicles` has both fields cleared.
     Entries are mutated in place; returns (newly_flagged, cleared) stock lists.
 
-    Same health guard as prune_sticker_cache: a crawl with no VINs flags
-    nothing."""
-    if not _active_vins(vehicles):
-        print("[ad-history] no VINs in this crawl, skipping absent-flagging")
+    Same health guard as prune_sticker_cache (_crawl_healthy): an unhealthy
+    crawl — no VINs, or well short of the page's reported total — flags and
+    clears nothing."""
+    if not _crawl_healthy(vehicles, health):
+        print("[ad-history] unhealthy crawl, skipping absent-flagging")
         return [], []
     nonretail = LAST_CRAWL_NONRETAIL if nonretail is None else nonretail
     present = {
@@ -354,8 +403,8 @@ def prune_sticker_cache(vehicles: list[dict[str, Any]]) -> int:
     entirely on an empty crawl so a failed/blank scrape can't wipe the cache.
     Returns the number of files removed."""
     active = _active_vins(vehicles)
-    if not active:
-        print("[sticker-cache] no VINs in this crawl, skipping cleanup")
+    if not _crawl_healthy(vehicles):
+        print("[sticker-cache] unhealthy crawl, skipping cleanup")
         return 0
     removed = 0
     for path in [*STICKER_CACHE_DIR.glob("*.pdf"), *STICKER_CACHE_DIR.glob("*_sticker.html")]:
