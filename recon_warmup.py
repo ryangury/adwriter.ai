@@ -9,9 +9,11 @@ e.g. 1 = needs certification assigned). For each VIN whose recon is not yet
 cached, or is cached but not yet complete (vehicle_cache.needs_recon() is
 True), pulls the work order from ReconVision by stock number in a single
 browser session and caches the result. recon_complete is decided by
-aggregator._recon_is_complete() — the same "Close RO status, else every
-service item done" rule the ad-writer pipeline uses, so this script and
-aggregate() never disagree about whether a vehicle's recon is done.
+aggregator._recon_is_complete() — the same rule the ad-writer pipeline uses,
+so this script and aggregate() never disagree about whether a vehicle's
+recon is done: the Final Quality Control task's status is authoritative when
+present (Close RO is ignored); only when FQC is absent does it fall back to
+Close RO status, else every service item done.
 
 A single bad vehicle (no work order found, a ReconVision timeout, any other
 scraper error) is logged and skipped — it never stops the run.
