@@ -203,7 +203,7 @@ Register-AdWriterTask -Name "AdWriter-Verifier-Hourly" `
     -Description "Standalone verifier, hourly 8am-8pm (13 runs/day): inventory crawl, then hendrickcars.com ad verification. run_verifier.bat itself passes --all --no-email to verifier.py. Replaces the old AM (9am) / PM (8pm) split tasks."
 
 Register-AdWriterMultiTriggerTask -Name "AdWriter-ReconWarmup" `
-    -ScriptPath "C:\adwriter\recon_warmup.py" `
+    -Execute "C:\adwriter\run_recon_warmup.bat" `
     -AtTimes @((Get-Date "08:15"), (Get-Date "13:15"), (Get-Date "17:15"), (Get-Date "20:15")) `
     -Description "Recon cache warmup, 4x daily at :15 past the hour (8:15am/1:15pm/5:15pm/8:15pm). Offset from the on-the-hour verifier runs so the two don't collide on scraper.lock, which only waits 30s before giving up. Replaces the old single 10pm run."
 
