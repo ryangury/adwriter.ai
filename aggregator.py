@@ -3472,8 +3472,15 @@ def _carfax_disqualifying_gate(
 
 
 def _recon_is_complete(line_items: list[dict[str, Any]]) -> bool:
-    """Recon is complete when the 'Close RO' step is completed — its status is
-    authoritative whenever the work order has one. Without a Close RO row
+    """Recon is complete when the 'Final Quality Control' task is completed —
+    its status is authoritative whenever the work order has one. Close RO can
+    close before QC finishes, so it is ignored when FQC is present. Only a
+    normalized "completed" status counts (see ReconVisionScraper.
+    _normalize_line_item()): "Completed by Vendor Add PO" and the "COMPLETE
+    TASK" call-to-action do not.
+
+    Without an FQC row, fall back to the older rule: the 'Close RO' step is
+    authoritative when present. Without a Close RO row
     (e.g. vision-only line items), every non-rejected service item must be
     completed; rejected items are declined work that never completes. No Close
     RO and no service items at all means nothing confirms completion, so it
@@ -3482,6 +3489,18 @@ def _recon_is_complete(line_items: list[dict[str, Any]]) -> bool:
     Line items only carry kind "task" (workflow steps: Check In, Pre-Wash,
     Close RO, Final QC, ...) or "service" (the actual repair lines, with their
     labor/parts costs), so "service" is the complete set of real work."""
+    fqc = next(
+        (
+            li
+            for li in line_items
+            if li.get("kind") == "task"
+            and re.sub(r"[^a-z]", "", (li.get("section") or "").lower())
+            == "finalqualitycontrol"
+        ),
+        None,
+    )
+    if fqc is not None:
+        return bool(fqc.get("completed"))
     close_ro = next(
         (
             li
