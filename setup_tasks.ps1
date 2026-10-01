@@ -198,9 +198,9 @@ Register-AdWriterTask -Name "AdWriter-CTR-Email" `
 Register-AdWriterTask -Name "AdWriter-Verifier-Hourly" `
     -Execute "C:\adwriter\run_verifier.bat" `
     -At (Get-Date "08:00") `
-    -RepetitionIntervalHours 1 -RepetitionDurationHours 12 `
+    -RepetitionIntervalHours 2 -RepetitionDurationHours 12 `
     -TimeLimitHours 4 `
-    -Description "Standalone verifier, hourly 8am-8pm (13 runs/day): inventory crawl, then hendrickcars.com ad verification. run_verifier.bat itself passes --all --no-email to verifier.py. Replaces the old AM (9am) / PM (8pm) split tasks."
+    -Description "Standalone verifier, every 2 hours 8am-8pm (7 runs/day: 8, 10, 12, 2, 4, 6, 8; was hourly/13 runs until 2026-10-01 -- task name kept as -Hourly so existing references still resolve): inventory crawl, then hendrickcars.com ad verification. run_verifier.bat itself passes --all --no-email to verifier.py. Replaces the old AM (9am) / PM (8pm) split tasks."
 
 Register-AdWriterMultiTriggerTask -Name "AdWriter-ReconWarmup" `
     -Execute "C:\adwriter\run_recon_warmup.bat" `
