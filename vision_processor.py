@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from aggregator import _apply_carfax_vision
+from aggregator import _accept_vision_sticker, _apply_carfax_vision
 from scraper import CARFAX_CACHE_DIR, STICKER_CACHE_DIR
 from vehicle_cache import (
     get_carfax,
@@ -137,18 +137,16 @@ def _process_sticker(vin: str, image_path: Path) -> bool:
     if vjson is None:
         return False
 
-    if vjson.get("exterior_color"):
-        msrp_raw["exterior_color"] = vjson["exterior_color"]
-    if vjson.get("interior_color"):
-        msrp_raw["interior_color"] = vjson["interior_color"]
-    if vjson.get("base_price") is not None:
-        msrp_raw["base_price"] = vjson["base_price"]
-    if vjson.get("total_msrp") is not None:
-        msrp_raw["total_msrp"] = vjson["total_msrp"]
-    if vjson.get("packages") is not None:
+    # Text parse stays authoritative; vision only fills gaps and must pass the
+    # sanity/reconciliation checks (see aggregator._accept_vision_sticker()).
+    accepted = _accept_vision_sticker(msrp_raw, vjson, vin)
+    for key in ("exterior_color", "interior_color", "base_price", "total_msrp"):
+        if key in accepted:
+            msrp_raw[key] = accepted[key]
+    if "packages" in accepted:
         added_options_all: list[dict[str, Any]] = []
         option_packages: list[dict[str, Any]] = []
-        for p in vjson["packages"]:
+        for p in accepted["packages"]:
             entry = {"code": None, "name": p.get("name"), "price": p.get("price")}
             option_packages.append(entry)
             added_options_all.append(entry)
@@ -156,9 +154,9 @@ def _process_sticker(vin: str, image_path: Path) -> bool:
                 added_options_all.append({"code": None, "name": content, "price": None})
         msrp_raw["option_packages"] = option_packages
         msrp_raw["added_options_all"] = added_options_all
-    if vjson.get("standard_features") is not None:
-        msrp_raw["standard_features"] = vjson["standard_features"]
-    msrp_raw["sticker_parse_source"] = "vision"
+    if "standard_features" in accepted:
+        msrp_raw["standard_features"] = accepted["standard_features"]
+    msrp_raw["sticker_parse_source"] = "vision" if accepted else "text_regex"
 
     row = get_vehicle(vin) or {}
     save_window_sticker(

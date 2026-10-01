@@ -27,6 +27,7 @@ from datetime import date, datetime, timezone
 from typing import Any
 
 from scraper import (
+    RECONCILE_TOLERANCE,
     ACVMaxScraper,
     AutoiPacketScraper,
     CarfaxError,
@@ -1066,24 +1067,87 @@ def _msrp_data(ap: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
+_VISION_LABEL_COLORS = ("INTERIOR", "EXTERIOR")
+
+
+def _vision_color_ok(value: Any) -> bool:
+    """A vision color that is just the sticker's own INTERIOR / EXTERIOR label
+    (read off the header row instead of the value beside it) is not a color."""
+    if not isinstance(value, str) or not value.strip():
+        return False
+    return not any(lab in value.upper() for lab in _VISION_LABEL_COLORS)
+
+
+def _sticker_reconciles(
+    base: Any, packages: list[dict[str, Any]], freight: Any, total: Any
+) -> bool:
+    """base + priced packages + destination lands within RECONCILE_TOLERANCE of
+    the printed total (the same check scraper._reconcile_sticker() applies to
+    a text parse)."""
+    if base is None or total is None:
+        return False
+    opts = sum((p.get("price") or 0) for p in packages)
+    return abs(total - (base + opts + (freight or 0))) <= RECONCILE_TOLERANCE
+
+
+def _accept_vision_sticker(
+    text: dict[str, Any], vjson: dict[str, Any], vin: str | None
+) -> dict[str, Any]:
+    """Decide which vision-parsed sticker fields may be used. The text parse is
+    authoritative: a field it populated is never overwritten. Vision only fills
+    a field the text parse left empty — Haiku vision has been seen reading "$"
+    as a digit ($2,000 -> 52,000) and taking the INTERIOR label as the exterior
+    color, so every vision value is also sanity-checked. Vision packages are
+    used only when the text parse has no reconciling package list, and only if
+    they themselves reconcile against the printed base/total (+ destination).
+
+    Returns the accepted subset: any of exterior_color, interior_color,
+    base_price, total_msrp, packages (vision shape), standard_features."""
+    out: dict[str, Any] = {}
+    if not text.get("exterior_color") and _vision_color_ok(vjson.get("exterior_color")):
+        out["exterior_color"] = vjson["exterior_color"]
+    if not text.get("interior_color") and _vision_color_ok(vjson.get("interior_color")):
+        out["interior_color"] = vjson["interior_color"]
+    if text.get("base_price") is None and vjson.get("base_price") is not None:
+        out["base_price"] = vjson["base_price"]
+    if text.get("total_msrp") is None and vjson.get("total_msrp") is not None:
+        out["total_msrp"] = vjson["total_msrp"]
+
+    base = text.get("base_price") if text.get("base_price") is not None else out.get("base_price")
+    total = text.get("total_msrp") if text.get("total_msrp") is not None else out.get("total_msrp")
+    freight = text.get("freight")
+    text_pkgs = text.get("option_packages") or []
+    text_ok = bool(text_pkgs) and _sticker_reconciles(base, text_pkgs, freight, total)
+    vpkgs = vjson.get("packages")
+    if vpkgs is not None and not text_ok:
+        if _sticker_reconciles(base, vpkgs, freight, total):
+            out["packages"] = vpkgs
+        else:
+            print(
+                f"[vision] {vin}: vision package prices do not reconcile with the "
+                f"sticker total — discarded",
+                file=sys.stderr,
+            )
+    if vjson.get("standard_features") is not None:
+        out["standard_features"] = vjson["standard_features"]
+    return out
+
+
 def _apply_sticker_vision(
     msrp_data: dict[str, Any] | None, msrp_raw: dict[str, Any] | None, vin: str | None
 ) -> dict[str, Any] | None:
     """Vision-parse msrp_raw's sticker image (sticker_image_path, set by
-    scraper.AutoiPacketScraper's HTML-iframe or PDF-page-1 capture) and
-    overlay the result onto msrp_data, field by field — the same "vision
-    primary for what it covers, text parser everywhere else" pattern as
-    _apply_carfax_vision().
+    scraper.AutoiPacketScraper's HTML-iframe or PDF-page-1 capture) and use it
+    to FILL GAPS in msrp_data — the text parser (via _msrp_data()) stays
+    authoritative for every field it populated. See _accept_vision_sticker()
+    for the rules and the reconciliation gate on vision package prices.
 
     Fields the vision prompt's JSON schema doesn't produce (freight,
-    selected_packages, msrp_note, source, standalone_options — see
-    vision_parser.STICKER_VISION_PROMPT) are left exactly as _msrp_data()
-    (the text-parser-driven shaping function) produced them; only
-    exterior_color, interior_color, base_price, total_msrp, and
-    option_packages come from vision when it succeeds, plus a new
-    standard_features field vision alone provides. Returns msrp_data
-    unchanged (no vision fields added) if there's no image, no msrp_data to
-    begin with (e.g. msrp_raw errored), or the vision call fails.
+    selected_packages, msrp_note, source, standalone_options) are left exactly
+    as _msrp_data() produced them. Returns msrp_data unchanged (sticker_parse_source
+    "text_regex") if there's no image, no msrp_data (e.g. msrp_raw errored), or
+    the vision call fails; sticker_parse_source is "vision" only when vision
+    actually supplied something.
     """
     if msrp_data is None or msrp_data.get("error"):
         return msrp_data
@@ -1097,15 +1161,11 @@ def _apply_sticker_vision(
         msrp_data.setdefault("sticker_parse_source", "text_regex")
         return msrp_data
 
-    if vjson.get("exterior_color"):
-        msrp_data["exterior_color"] = vjson["exterior_color"]
-    if vjson.get("interior_color"):
-        msrp_data["interior_color"] = vjson["interior_color"]
-    if vjson.get("base_price") is not None:
-        msrp_data["base_price"] = vjson["base_price"]
-    if vjson.get("total_msrp") is not None:
-        msrp_data["total_msrp"] = vjson["total_msrp"]
-    if vjson.get("packages") is not None:
+    accepted = _accept_vision_sticker(msrp_data, vjson, vin)
+    for key in ("exterior_color", "interior_color", "base_price", "total_msrp"):
+        if key in accepted:
+            msrp_data[key] = accepted[key]
+    if "packages" in accepted:
         msrp_data["option_packages"] = [
             {
                 "code": None,
@@ -1115,11 +1175,12 @@ def _apply_sticker_vision(
                     {"code": None, "name": c} for c in p.get("contents") or []
                 ],
             }
-            for p in vjson["packages"]
+            for p in accepted["packages"]
         ]
-    if vjson.get("standard_features") is not None:
-        msrp_data["standard_features"] = vjson["standard_features"]
-    msrp_data["sticker_parse_source"] = "vision"
+    if "standard_features" in accepted:
+        msrp_data["standard_features"] = accepted["standard_features"]
+    used_vision = bool(accepted)
+    msrp_data["sticker_parse_source"] = "vision" if used_vision else "text_regex"
     return msrp_data
 
 
