@@ -32,7 +32,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from ctr_database import BENCHMARK_DEALERSHIPS, infer_tier, record_ctr
+from ctr_database import (
+    BENCHMARK_DEALERSHIPS,
+    CHARLOTTE_DEALERSHIP,
+    infer_charlotte_tier,
+    infer_tier,
+    record_ctr,
+)
 from scraper import ACVMaxScraper, ScraperError
 
 SNAPSHOT_PATH = Path(__file__).with_name("last_inventory_snapshot.json")
@@ -164,7 +170,18 @@ def capture_benchmark_ctr(
             )
 
         for i, veh in enumerate(vehicles, 1):
-            tier = infer_tier(certified=veh.get("certified"), price=veh.get("current_price"))
+            if dealership_name == CHARLOTTE_DEALERSHIP:
+                # Charlotte: tier from the row's real status code, objective and
+                # mileage (see infer_charlotte_tier). Northlake keeps the
+                # certified-flag + price heuristic.
+                tier = infer_charlotte_tier(
+                    veh.get("status_code"),
+                    veh.get("objective"),
+                    veh.get("mileage"),
+                    veh.get("year_make_model"),
+                )
+            else:
+                tier = infer_tier(certified=veh.get("certified"), price=veh.get("current_price"))
             if dry_run:
                 print(
                     f"[benchmark] {short}: {i} of {n_total} vehicles — "
@@ -178,6 +195,7 @@ def capture_benchmark_ctr(
                     dealership_name=dealership_name,
                     dealership_role="benchmark",
                     certification_tier=tier,
+                    status_code=veh.get("status_code"),
                 )
                 results[dealership_name]["recorded"] += 1
             except Exception as exc:  # noqa: BLE001

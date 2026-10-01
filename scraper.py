@@ -5017,6 +5017,8 @@ class ACVMaxScraper(_BrowserSession):
                         "mileage": v.get("mileage"),
                         "current_price": v.get("current_price"),
                         "certified": v.get("certified"),
+                        "status_code": v.get("status_code"),
+                        "objective": v.get("objective"),
                         "days_on_lot": v.get("days_on_lot"),
                         "ctr_data": ctr,
                     }

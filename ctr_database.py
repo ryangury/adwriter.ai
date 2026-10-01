@@ -21,6 +21,9 @@ from typing import Any
 
 DB_PATH = Path(__file__).with_name("ctr_history.db")
 
+CHARLOTTE_DEALERSHIP = "Hendrick Motors of Charlotte"
+CHARLOTTE_AFFORDABLE_MIN_MILES = 70_000
+
 BENCHMARK_DEALERSHIPS = (
     "Mercedes-Benz of Northlake",
     "Hendrick Motors of Charlotte",
@@ -120,6 +123,38 @@ def infer_tier(
     if certified is False:
         return "hendrick_affordable"
     return "unknown"
+
+
+def infer_charlotte_tier(
+    status_code: int | str | None,
+    objective: str | None,
+    mileage: int | float | None,
+    year_make_model: str | None,
+) -> str:
+    """Tier for a Charlotte (Hendrick Motors of Charlotte) row, in priority order:
+
+    1. RETAIL and mileage > 70,000 -> hendrick_affordable, any brand/status.
+    2. RETAIL and mileage <= 70,000, not a Mercedes-Benz, status 1 -> as_is.
+    3. Otherwise the status-code mapping (10/16 -> mb_cpo, 11 ->
+       hendrick_certified, 12 -> hendrick_affordable); an unmapped or missing
+       status stays "unknown" (untiered).
+
+    Recomputed from each day's scrape — nothing is carried forward."""
+    retail = (objective or "").strip().upper() == "RETAIL"
+    try:
+        miles = float(mileage) if mileage is not None else None
+    except (TypeError, ValueError):
+        miles = None
+    try:
+        sc = int(status_code) if status_code is not None and str(status_code).strip() != "" else None
+    except (TypeError, ValueError):
+        sc = None
+    if retail and miles is not None:
+        if miles > CHARLOTTE_AFFORDABLE_MIN_MILES:
+            return "hendrick_affordable"
+        if sc == 1 and "MERCEDES" not in (year_make_model or "").upper():
+            return "as_is"
+    return infer_tier(status_code=sc) if sc is not None else "unknown"
 
 
 def record_ctr(
