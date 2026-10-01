@@ -837,9 +837,16 @@ class _BrowserSession:
         ctx_kwargs: dict[str, Any] = {"storage_state": state}
         if self._viewport:
             ctx_kwargs["viewport"] = self._viewport
+        ctx_kwargs.update(self._context_overrides())
         self._context = self._browser.new_context(**ctx_kwargs)
         self._context.set_default_timeout(self.timeout_ms)
         self.page = self._context.new_page()
+
+    def _context_overrides(self) -> dict[str, Any]:
+        """Extra new_context() kwargs for a subclass (e.g. browser-identity
+        headers). Called once the browser is launched, so self._browser.version
+        is available."""
+        return {}
 
     def stop(self) -> None:
         try:

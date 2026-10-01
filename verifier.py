@@ -66,6 +66,23 @@ VERIFY_INTERVAL_DAYS = 3
 # --------------------------------------------------------------------------- #
 
 
+class HendrickCarsBlocked(RuntimeError):
+    """hendrickcars.com answered with Akamai's "Access Denied" block page — the
+    check never reached the site, so it says nothing about whether the ad is
+    posted. Callers must treat it as a failed check, never as "not found"."""
+
+
+_BLOCK_REF_RE = re.compile(r"Reference\s*(?:#|&#35;)\s*\d+\.[0-9a-f]+", re.IGNORECASE)
+
+
+def _is_block_page(html: str | None) -> bool:
+    """Akamai's block page is tiny (a few hundred bytes): "Access Denied" in the
+    title plus a "Reference #18.xxxx.<epoch>.xxxx" line. A real inventory page
+    is hundreds of KB, so only the head is inspected."""
+    head = (html or "")[:3000]
+    return "Access Denied" in head and bool(_BLOCK_REF_RE.search(head))
+
+
 class HendrickCarsScraper(_BrowserSession):
     """Public-site scraper: no login, no saved session."""
 
@@ -74,6 +91,31 @@ class HendrickCarsScraper(_BrowserSession):
     def __init__(self, *, headless: bool = True, **kw: Any) -> None:
         kw.setdefault("use_saved_session", False)
         super().__init__(headless=headless, **kw)
+
+    def _context_overrides(self) -> dict[str, Any]:
+        """Present the headless browser as ordinary desktop Chrome. Around 9/29
+        Akamai (in front of hendrickcars.com) began returning 403 "Access
+        Denied" to headless Chromium. The trigger is the headless markers: the
+        'HeadlessChrome' token in the user agent AND the "HeadlessChrome" brand
+        in the sec-ch-ua client-hint header — overriding only the user agent is
+        not enough, the hint header still gives it away. The UA and hints are
+        built from the launched browser's real version so they always agree."""
+        full = self._browser.version  # e.g. "151.0.7922.34"
+        major = full.split(".")[0]
+        return {
+            "user_agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                f"(KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36"
+            ),
+            "extra_http_headers": {
+                "sec-ch-ua": (
+                    f'"Chromium";v="{major}", "Google Chrome";v="{major}", '
+                    '"Not.A/Brand";v="24"'
+                ),
+                "sec-ch-ua-mobile": "?0",
+                "sec-ch-ua-platform": '"Windows"',
+            },
+        }
 
     # -- helpers ---------------------------------------------------------- #
 
@@ -128,6 +170,14 @@ class HendrickCarsScraper(_BrowserSession):
             except Exception:  # noqa: BLE001
                 pass
             self.page.wait_for_timeout(1200)
+            try:
+                blocked = _is_block_page(self.page.content())
+            except Exception:  # noqa: BLE001
+                blocked = False
+            if blocked:
+                raise HendrickCarsBlocked(
+                    f"Akamai Access Denied on {path.split('?')[0]}"
+                )
             vdp_links = self._collect_vdp_links()
             body = ""
             try:
@@ -161,6 +211,7 @@ class HendrickCarsScraper(_BrowserSession):
             "page_found": False,
             "description_text": "",
             "scraped_at": scraped_at,
+            "blocked": False,
         }
 
         try:
@@ -183,6 +234,11 @@ class HendrickCarsScraper(_BrowserSession):
             result["description_text"] = self._read_description()
             if not result["description_text"]:
                 self._dump_debug(f"hendrickcars-no-description-{stock}")
+            return result
+        except HendrickCarsBlocked as exc:
+            self._dump_debug(f"hendrickcars-blocked-{stock}")
+            result["blocked"] = True
+            result["error"] = str(exc)
             return result
         except Exception as exc:  # noqa: BLE001 - never fatal, just report
             self._dump_debug(f"hendrickcars-error-{stock}")
@@ -496,6 +552,11 @@ def _days_since(entry: dict[str, Any], today: date) -> int | None:
     return (today - d).days if d else None
 
 
+# A block hits every request alike, so a pass stops after this many in a row
+# instead of hammering the site through the whole due list.
+_MAX_CONSECUTIVE_BLOCKS = 3
+
+
 def run_verification(
     ad_history: dict[str, Any] | None = None, *, headless: bool = True
 ) -> tuple[list[dict], list[dict], list[dict]]:
@@ -523,6 +584,7 @@ def run_verification(
     needs_posting: list[dict] = []
     needs_update: list[dict] = []
 
+    blocked_in_a_row = 0
     for stock, entry in history.items():
         if not _verification_due(entry, today):
             continue
@@ -533,6 +595,22 @@ def run_verification(
         except Exception as exc:  # noqa: BLE001
             print(f"[verify] {stock}: scrape failed — {exc}", file=sys.stderr)
             continue
+
+        if live.get("blocked"):
+            # The check never reached the site: leave verdict, identity_confirmed
+            # and last_verified exactly as they were (so the vehicle stays due
+            # and is retried next cycle) instead of recording a false not_found.
+            blocked_in_a_row += 1
+            print(f"[verify] {stock}: blocked (Akamai) — keeping previous verdict")
+            if blocked_in_a_row >= _MAX_CONSECUTIVE_BLOCKS:
+                print(
+                    f"[verify] {_MAX_CONSECUTIVE_BLOCKS} blocked checks in a row — "
+                    f"stopping this pass; remaining vehicles stay due for the next run",
+                    file=sys.stderr,
+                )
+                break
+            continue
+        blocked_in_a_row = 0
 
         live_text = live["description_text"] if live.get("page_found") else None
         cmp = compare_ad(
@@ -764,6 +842,9 @@ def _main_locked(
 
     stock = args.stock.strip().lstrip("#").upper()
     live = check_hendrickcars(stock, headless=headless)
+    if live.get("blocked"):
+        print(f"{stock}: blocked (Akamai) — no verdict; try again later", file=sys.stderr)
+        return 1
     print(f"page_found: {live['page_found']}  url: {live['url_found']}")
     print(f"description ({len(live['description_text'])} chars):")
     print(live["description_text"][:600] or "(empty)")
