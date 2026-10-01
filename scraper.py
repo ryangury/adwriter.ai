@@ -284,7 +284,7 @@ STICKER_TOTAL_LABELS = (SEC_TOTAL, "TOTAL PREDICTED PRICE", "TOTAL PRICE")
 
 _CHROME_LINES = {"Single Page", "Multi Page", "Text Only", ""}
 
-_MONEY_LINE = re.compile(r"^\$?\s*[\d,]+(?:\.\d{2})?$")
+_MONEY_LINE = re.compile(r"^-?\s*\$?\s*-?\s*[\d,]+(?:\.\d{2})?$")  # leading minus = credit line
 _OPTION_LINE = re.compile(r"^([0-9A-Z]{2,6})\s+-\s+(.+)$")
 _VIN_RE = re.compile(r"[A-HJ-NPR-Z0-9]{11,17}")
 
@@ -417,6 +417,15 @@ def _money(text: str | None) -> float | None:
         return float(m.group(1).replace(",", ""))
     except ValueError:
         return None
+
+
+def _signed_money(text: str | None) -> float | None:
+    """_money() that keeps the sign of a credit line ('-$700' / '$-700' ->
+    -700.0). _money() itself drops it and stays as-is for its other callers."""
+    v = _money(text)
+    if v is not None and re.match(r"\s*(?:\$\s*)?-", text or ""):
+        return -v
+    return v
 
 
 def _int(text: str | None) -> int | None:
@@ -1583,7 +1592,7 @@ class AutoiPacketScraper(_BrowserSession):
                     continue
                 price = None
                 if k + 1 < len(block) and _MONEY_LINE.match(block[k + 1]):
-                    price = _money(block[k + 1])
+                    price = _signed_money(block[k + 1])
                     k += 1
                 out.append(
                     {"code": m.group(1), "name": _clean(m.group(2)), "price": price}
@@ -1623,6 +1632,24 @@ class AutoiPacketScraper(_BrowserSession):
                     freight = _money(ln) or _money(nxt)
                 elif up in STICKER_TOTAL_LABELS:
                     total_msrp = _money(ln) or _money(nxt) or total_msrp
+
+        # Older stickers print the destination charge at the end of ADDED OPTIONS
+        # (sometimes glued onto the previous option's text) instead of under
+        # PRICE DETAILS — look for it anywhere in the document.
+        if freight is None:
+            for j, ln in enumerate(lines):
+                up = ln.upper()
+                if "DESTINATION" in up and ("DELIVERY" in up or "&" in up) or up.startswith("FREIGHT"):
+                    nxt = lines[j + 1] if j + 1 < len(lines) else ""
+                    # The label can be glued onto the previous option's text
+                    # ('18" Wheels DESTINATION &DELIVERY'), so a figure on the same
+                    # line only counts when it follows the label with a '$'.
+                    tail = ln[max(up.find("DESTINATION"), up.find("FREIGHT"), 0):]
+                    freight = _money(tail) if "$" in tail else None
+                    if freight is None and _MONEY_LINE.match(nxt):
+                        freight = _money(nxt)
+                    if freight is not None:
+                        break
 
         return {
             "source": "autoipacket",
