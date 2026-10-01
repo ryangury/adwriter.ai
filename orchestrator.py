@@ -28,6 +28,7 @@ from typing import Any
 import anthropic
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
+from ad_timeline import stamp_eligible
 from adwriter import (
     _format_ads_ready_email,
     _generate_from_package,
@@ -338,6 +339,13 @@ def _run_inner(
     # this particular run's ad-generation work to a subset of vehicles. (Reprice
     # detection is unaffected either way: it compares against ad_history.)
     save_snapshot(retail)
+    # Time-to-post clock: first sighting of each vehicle at a build-eligible status.
+    try:
+        newly_eligible = stamp_eligible(retail, today)
+        if newly_eligible:
+            print(f"[timeline] first_eligible_date stamped for {len(newly_eligible)} vehicle(s)")
+    except Exception as exc:  # noqa: BLE001 - instrumentation must never sink the run
+        print(f"[timeline] eligibility stamping failed — {exc}", file=sys.stderr)
 
     if status:
         retail = [v for v in retail if v.get("status_code") in status]

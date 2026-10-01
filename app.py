@@ -985,7 +985,36 @@ def _file_kind(path: str | None) -> str | None:
 def ctr():
     if not session.get("authed"):
         return render_template("login.html", error=request.args.get("error"))
-    return render_template("ctr.html")
+    from markupsafe import Markup
+
+    import ctr_report
+
+    try:
+        mb = ctr_report.model_breakdown("mb_cpo")
+        certified = ctr_report.model_breakdown("hendrick_certified")
+        affordable = ctr_report.model_breakdown("hendrick_affordable")
+        before_after = ctr_report.before_after()
+        error = None
+    except Exception as exc:  # noqa: BLE001 - the page should explain, not 500
+        mb = certified = affordable = {"as_of": {}, "models": []}
+        before_after, error = None, str(exc)
+
+    def chart(data, metric, title):
+        return Markup(ctr_report.grouped_bar_svg(data["models"], metric, title))
+
+    return render_template(
+        "ctr.html",
+        error=error,
+        stores=ctr_report.STORES,
+        store_colors=ctr_report.STORE_COLORS,
+        min_vehicles=ctr_report.MIN_VEHICLES,
+        mb=mb,
+        mb_cg=chart(mb, "cg", "CarGurus CTR"),
+        mb_at=chart(mb, "at", "AutoTrader CTR"),
+        certified=certified,
+        affordable=affordable,
+        before_after=before_after,
+    )
 
 
 # --------------------------------------------------------------------------- #

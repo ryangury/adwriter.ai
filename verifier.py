@@ -548,6 +548,14 @@ def run_verification(
         entry["verification_verdict"] = cmp["verdict"]
         entry["match_score"] = cmp["match_score"]
         entry["identity_confirmed"] = cmp.get("identity_confirmed", False)
+        if entry["identity_confirmed"]:
+            try:
+                from ad_timeline import stamp_confirmed_live
+
+                if stamp_confirmed_live(stock, today.isoformat()):
+                    print(f"[timeline] {stock}: first_confirmed_live_date stamped {today.isoformat()}")
+            except Exception as exc:  # noqa: BLE001 - never sink verification
+                print(f"[timeline] {stock}: stamping failed — {exc}")
         if cmp.get("price_mismatch"):
             entry["price_mismatch"] = {
                 "live_price": cmp["live_price"],

@@ -1,8 +1,129 @@
 {% extends "layout.html" %}
 {% block title %}Click Through Rate — Mercedes-Benz of Durham{% endblock %}
+{% block head %}
+<style>
+  .ctr-legend { display: flex; gap: 18px; flex-wrap: wrap; margin: 0 0 16px; font-size: 0.85rem; }
+  .ctr-legend .sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+  .ctr-charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 20px; margin-bottom: 20px; }
+  .ctr-section { margin-top: 36px; }
+  .ctr-section h2 { font-size: 1.15rem; margin: 0 0 4px; }
+  .ctr-note { color: var(--muted); font-size: 0.85rem; margin: 0 0 14px; }
+  .ctr-table td.num, .ctr-table th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .ctr-table td .n { color: var(--muted); font-size: 0.78rem; }
+  .ctr-secondary { border: 1px solid var(--line); border-radius: 10px; background: var(--card); padding: 12px 16px; }
+  .ctr-secondary > summary { cursor: pointer; font-weight: 600; }
+  .ctr-tiles { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
+  .ctr-tile { border: 1px solid var(--line); border-radius: 10px; padding: 14px 18px; min-width: 210px; background: var(--card); }
+  .ctr-tile .k { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+  .ctr-tile .v { font-size: 1.5rem; font-weight: 650; color: var(--accent); margin-top: 4px; }
+  .ctr-tile .s { font-size: 0.8rem; color: var(--muted); margin-top: 2px; }
+  .ctr-warn { border-left: 3px solid var(--warn); background: #fffbeb; padding: 8px 12px; font-size: 0.85rem; margin-bottom: 12px; }
+</style>
+{% endblock %}
+
+{% macro cell(c, key) -%}
+  {%- if c and c[key] is not none -%}{{ '%.2f' % c[key] }}% <span class="n">n={{ c.n }}</span>{%- else -%}<span class="n">&mdash;</span>{%- endif -%}
+{%- endmacro %}
+
+{% macro breakdown_table(data) %}
+<div class="inv-wrap">
+  <table class="inv-table ctr-table">
+    <thead>
+      <tr>
+        <th rowspan="2">{{ 'Model' if data.models and data.models[0].model != 'All' else 'Tier' }}</th>
+        <th colspan="{{ stores|length }}" class="num">CarGurus CTR</th>
+        <th colspan="{{ stores|length }}" class="num">AutoTrader CTR</th>
+      </tr>
+      <tr>
+        {% for _ in range(2) %}{% for s in stores %}<th class="num">{{ s }}</th>{% endfor %}{% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for m in data.models %}
+      <tr>
+        <td>{{ m.model }}</td>
+        {% for s in stores %}<td class="num">{{ cell(m.cells[s], 'cg') }}</td>{% endfor %}
+        {% for s in stores %}<td class="num">{{ cell(m.cells[s], 'at') }}</td>{% endfor %}
+      </tr>
+      {% else %}
+      <tr><td colspan="{{ 1 + stores|length * 2 }}">No stores have {{ min_vehicles }}+ vehicles here yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endmacro %}
+
+{% macro fmt_delta(d) -%}
+  {%- if d.median is none -%}&mdash;{%- else -%}{{ '%+.2f' % d.median }} pts{%- endif -%}
+{%- endmacro %}
+
 {% block content %}
 <div class="wrap-wide">
   <h1 class="page-title">Click Through Rate</h1>
-  <p class="page-sub">Under construction.</p>
+  <p class="page-sub">
+    Durham vs. the Northlake and Charlotte benchmarks. CTR is each store's latest full scrape day
+    (not an all-time average); a model appears for a store only with {{ min_vehicles }}+ vehicles.
+  </p>
+
+  {% if error %}
+  <div class="inv-wrap"><div class="empty-note">Couldn't load CTR data: {{ error }}</div></div>
+  {% else %}
+
+  <div class="ctr-legend">
+    {% for s in stores %}<span><span class="sw" style="background: {{ store_colors[s] }}"></span>{{ s }}{% if mb.as_of.get(s) %} <span class="n" style="color:var(--muted)">(as of {{ mb.as_of[s] }})</span>{% endif %}</span>{% endfor %}
+  </div>
+
+  <section class="ctr-section" style="margin-top: 0">
+    <h2>MB Certified Pre-Owned by model</h2>
+    <p class="ctr-note">Status 10/16 vehicles. GLE, GLC, GLS, C-Class and E-Class are broken out; every other model is grouped as Other.</p>
+    <div class="ctr-charts">
+      <div>{{ mb_cg }}</div>
+      <div>{{ mb_at }}</div>
+    </div>
+    {{ breakdown_table(mb) }}
+  </section>
+
+  <section class="ctr-section">
+    <h2>Before / after the ad was posted <span style="font-weight:400; color: var(--warn); font-size: 0.85rem">&middot; early data</span></h2>
+    <div class="ctr-warn">
+      Small sample. Most Durham ads predate CTR tracking (which began 9/7), so few vehicles have a real
+      "before" baseline yet. This gets more reliable as more vehicles accumulate clean before/after windows.
+    </div>
+    {% if before_after %}
+    <div class="ctr-tiles">
+      <div class="ctr-tile">
+        <div class="k">CarGurus &mdash; median change</div>
+        <div class="v">{{ fmt_delta(before_after.solid.cg) }}</div>
+        <div class="s">{{ before_after.solid.cg.n }} vehicles with 3+ days each side &middot; {{ before_after.solid.cg.improved }} improved</div>
+      </div>
+      <div class="ctr-tile">
+        <div class="k">AutoTrader &mdash; median change</div>
+        <div class="v">{{ fmt_delta(before_after.solid.at) }}</div>
+        <div class="s">{{ before_after.solid.at.n }} vehicles with 3+ days each side &middot; {{ before_after.solid.at.improved }} improved</div>
+      </div>
+    </div>
+    <p class="ctr-note">
+      Looser view (1+ day each side, much weaker baselines): CarGurus {{ fmt_delta(before_after.any.cg) }}
+      across {{ before_after.any.cg.n }} vehicles; AutoTrader {{ fmt_delta(before_after.any.at) }}
+      across {{ before_after.any.at.n }} vehicles. Change = mean CTR after the ad was written minus mean before,
+      per vehicle, then the median across vehicles, in percentage points.
+    </p>
+    {% endif %}
+  </section>
+
+  <section class="ctr-section">
+    <details class="ctr-secondary">
+      <summary>Hendrick Certified &amp; Hendrick Affordable</summary>
+      <p class="ctr-note" style="margin-top: 10px">
+        Directional only &mdash; brand and trim mix varies a lot from store to store in these tiers, so these
+        are not a clean like-for-like comparison.
+      </p>
+      <h3 style="font-size:0.95rem; margin: 12px 0 6px">Hendrick Certified</h3>
+      {{ breakdown_table(certified) }}
+      <h3 style="font-size:0.95rem; margin: 18px 0 6px">Hendrick Affordable</h3>
+      {{ breakdown_table(affordable) }}
+    </details>
+  </section>
+  {% endif %}
 </div>
 {% endblock %}
