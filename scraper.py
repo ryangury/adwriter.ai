@@ -2569,8 +2569,52 @@ def _toyota_position_blocks(page, words: list[dict[str, Any]]) -> str | None:
     return f"{_OPTIONS_COLUMN_MARK}\n{text}"
 
 
+def _fca_position_blocks(page, words: list[dict[str, Any]]) -> str | None:
+    """The FCA (Jeep / Ram / Dodge / Chrysler) 'OPTIONAL EQUIPMENT (May Replace
+    Standard Equipment)' column, cropped by position so the standard-equipment
+    and EPA fuel-economy columns on either side can't run into its option lines
+    (a plain-text extraction took the fuel-cost figure printed in the next
+    column over for an option price and lost the real prices). The crop runs
+    from that header down to the TOTAL PRICE row and from just left of the
+    header to just right of the price column; None on any other layout."""
+    hdr = next(
+        (
+            i
+            for i, w in enumerate(words[:-2])
+            if w["text"].upper() == "OPTIONAL"
+            and words[i + 1]["text"].upper() == "EQUIPMENT"
+            and words[i + 2]["text"].lower().startswith("(may")
+        ),
+        None,
+    )
+    if hdr is None:
+        return None
+    first = words[hdr]
+    close = next(
+        (w for w in words[hdr + 2 : hdr + 8] if w["text"].endswith(")")), words[hdr + 1]
+    )
+    left = first["x0"] - 5
+    right = close["x1"] + 70  # the price column sits just right of the header
+    total = next(
+        (
+            w
+            for j, w in enumerate(words[:-1])
+            if w["text"].upper() == "TOTAL"
+            and words[j + 1]["text"].upper().startswith("PRICE")
+            and w["x0"] > left
+            and w["top"] > first["top"]
+        ),
+        None,
+    )
+    if total is None:
+        return None
+    crop = page.crop((left, first["top"] - 1, right, total["bottom"] + 2))
+    text = crop.extract_text(x_tolerance=1.0) or ""
+    return f"{_OPTIONS_COLUMN_MARK}\n{text}"
+
+
 def _position_blocks_text(pdf) -> str:
-    """Position-cropped blocks for a GM, Ford or Toyota/Lexus sticker PDF (an
+    """Position-cropped blocks for a GM, Ford, Toyota/Lexus or FCA sticker PDF (an
     open pdfplumber document), each after its marker line; "" for any other
     layout. Never raises — a crop failure just means the parsers fall back to
     the plain text."""
@@ -2580,7 +2624,12 @@ def _position_blocks_text(pdf) -> str:
             words = page.extract_words()
         except Exception:  # noqa: BLE001
             continue
-        for builder in (_gm_position_blocks, _ford_position_blocks, _toyota_position_blocks):
+        for builder in (
+            _gm_position_blocks,
+            _ford_position_blocks,
+            _toyota_position_blocks,
+            _fca_position_blocks,
+        ):
             try:
                 block = builder(page, words)
             except Exception:  # noqa: BLE001
@@ -2733,7 +2782,88 @@ def _parse_generic_oem_sticker_text(text: str) -> dict[str, Any]:
     return _finalize_oem_totals(data, text)
 
 
+# Hyundai Motor America Monroney (and any other make whose sticker uses the same
+# labels, detected by layout rather than by make): 'Manufacturer's Suggested
+# Retail Price: $X' is the BASE price (not the total), dealer-added items are
+# '*Name $price' (an asterisk-led item; a bare trailing '*' is a warranty
+# footnote), and the pricing block ends 'Inland Freight & Handling : $F' and
+# 'Total Price : $T'.
+_HMG_LAYOUT_RE = re.compile(
+    r"Manufacturer'?s Suggested Retail Price\s*:\s*\$[\d,]+\.\d{2}", re.IGNORECASE
+)
+_HMG_ADDED_RE = re.compile(r"(?<![\w)\"])\*(?![\s*])([^*$\n]+?)\s+\$([\d,]+\.\d{2})")
+
+
+def _looks_hmg_layout(text: str) -> bool:
+    return bool(_HMG_LAYOUT_RE.search(text or "")) and bool(
+        re.search(r"Inland Freight\s*&\s*Handling", text or "", re.IGNORECASE)
+    )
+
+
+def _parse_hmg_sticker_text(text: str) -> dict[str, Any]:
+    packages = []
+    for m in _HMG_ADDED_RE.finditer(text):
+        name = _clean(m.group(1))
+        if re.search(r"[A-Za-z]{3,}", name):
+            packages.append(
+                {"code": None, "name": name, "price": float(m.group(2).replace(",", ""))}
+            )
+    data = {
+        "base_price": _find_oem_amount(text, "Manufacturer's Suggested Retail Price"),
+        "freight": _find_oem_amount(text, "Inland Freight & Handling"),
+        "total_msrp": _find_oem_amount(text, "Total Price"),
+        "option_packages": packages,
+        "added_options_all": [dict(p) for p in packages],
+        "standard_options": [],
+    }
+    return _finalize_oem_totals(data, text)
+
+
 _FCA_OPTION_LINE_RE = re.compile(r"^(.+?)\s+\$([\d,]+(?:\.\d{2})?)\s*$")
+# Position-cropped column line: 'Name $875' or 'Name -$400'. A discount's minus
+# sign comes out of these PDFs as a dash or an unmappable glyph right before the
+# '$'; reconciliation against the printed total is the check on that reading.
+_FCA_COLUMN_LINE_RE = re.compile(
+    r"^(.+?)\s+([-\u2013\u2014\u2212\ufffd])?\s?\$([\d,]+(?:\.\d{2})?)\s*$"
+)
+
+
+def _parse_fca_column(text: str, column: str) -> dict[str, Any]:
+    """FCA parse from the position-cropped options column (_fca_position_blocks()):
+    'Name $price' lines are options, other text lines are the contents of the
+    option above, 'Destination Charge' and 'TOTAL PRICE' end the options."""
+    packages: list[dict[str, Any]] = []
+    added: list[dict[str, Any]] = []
+    freight = total = None
+    for raw in column.splitlines()[1:]:  # first line is the column header
+        line = _clean(raw)
+        if not line:
+            continue
+        up = line.upper()
+        if up.startswith("DESTINATION"):
+            freight = _find_oem_amount(line, "Destination Charge")
+            continue
+        if up.startswith("TOTAL"):
+            total = _find_oem_amount(line, "TOTAL PRICE")
+            break
+        m = _FCA_COLUMN_LINE_RE.match(line)
+        if m and re.search(r"[A-Za-z]{3,}", m.group(1)):
+            price = float(m.group(3).replace(",", ""))
+            if m.group(2):
+                price = -price
+            entry = {"code": None, "name": m.group(1).strip(), "price": price}
+            packages.append(entry)
+            added.append(dict(entry))
+        elif packages and re.search(r"[A-Za-z]{3,}", line):
+            added.append({"code": None, "name": line, "price": None})
+    return {
+        "base_price": _find_oem_amount(text, "Base Price"),
+        "freight": freight if freight is not None else _find_oem_amount(text, "Destination Charge"),
+        "total_msrp": total if total is not None else _find_oem_amount(text, "TOTAL PRICE"),
+        "option_packages": packages,
+        "added_options_all": added,
+        "standard_options": [],
+    }
 
 
 def _parse_fca_sticker_text(text: str) -> dict[str, Any]:
@@ -2750,6 +2880,9 @@ def _parse_fca_sticker_text(text: str) -> dict[str, Any]:
     combined value is still reported as unlisted_options_total (TOTAL PRICE
     minus base, destination and the listed options) so the gap is visible
     rather than silently dropped."""
+    column = _marked_block(text, _OPTIONS_COLUMN_MARK)
+    if column:
+        return _parse_fca_column(text, column)
     block = _slice_between(
         text,
         "OPTIONAL EQUIPMENT (May Replace Standard Equipment)",
@@ -3012,6 +3145,8 @@ def _parse_oem_sticker(url: str, vin: str, make: str | None = None) -> dict[str,
         data = _parse_toyota_sticker_text(text)
     elif _oem_sticker_family(vin, text):
         data = _OEM_STICKER_PARSERS[_oem_sticker_family(vin, text)](text)
+    elif _looks_hmg_layout(text):
+        data = _parse_hmg_sticker_text(text)
     else:
         data = _parse_generic_oem_sticker_text(text)
 

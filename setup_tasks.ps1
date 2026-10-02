@@ -207,6 +207,12 @@ Register-AdWriterMultiTriggerTask -Name "AdWriter-ReconWarmup" `
     -AtTimes @((Get-Date "08:15"), (Get-Date "13:15"), (Get-Date "17:15"), (Get-Date "20:15")) `
     -Description "Recon cache warmup, 4x daily at :15 past the hour (8:15am/1:15pm/5:15pm/8:15pm). Offset from the on-the-hour verifier runs so the two don't collide on scraper.lock, which only waits 30s before giving up. Replaces the old single 10pm run."
 
+Register-AdWriterTask -Name "AdWriter-StickerWarmup" `
+    -Execute "C:\adwriter\run_sticker_warmup.bat" `
+    -At (Get-Date "14:10") `
+    -TimeLimitHours 3 `
+    -Description "Daily non-MB window sticker warmup (sticker_warmup.py --skip-predictive), 2:10pm. Replaces ACV Max options-tab approximations with real OEM stickers: Carfax sticker link first, then AutoiPacket with every rate limit enforced (never bypassed). 2:10pm sits inside the AutoiPacket non-MB window (Mon-Sat 11am-6pm) with ~3h50m of runway; 10 pulls at 5 min spacing plus 45-90s waits is about 65-70 min. Slot chosen to avoid the 2:00pm verifier (done by ~2:05), the 1:15pm recon warmup (done by ~1:20) and the 4:00pm verifier; the warmup holds orchestrator.lock for its whole run, so no verifier run should be skipped. Sundays the window is closed, so only the Carfax-link path can do anything. Logs to C:\adwriter\sticker_logs."
+
 Register-AdWriterTask -Name "AdWriter-CarfaxWarmup" `
     -ScriptPath "C:\adwriter\carfax_warmup.py" `
     -At (Get-Date "22:30") `
