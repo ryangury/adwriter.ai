@@ -1698,6 +1698,28 @@ _WARRANTY_START_RE = re.compile(
 )
 
 
+# Tool-call markup the model sometimes writes as plain text during the web-search
+# loop (pretend <tool_call>/<tool_response> blocks with JSON payloads) instead of
+# using the real server tool. The ad-body extraction cannot tell it from prose.
+_TOOL_LEAK_RE = re.compile(
+    r"</?\s*(?:tool_call|tool_response|tool_result|tool_use|function_calls?|function_results"
+    r"|invoke|parameter|antml:[a-z_]+)\b"
+    r"|\{\s*\"(?:name|query|result|results|type|input|content)\"\s*:"
+    r"|\"\s*\}\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+class LeakedToolOutputError(RuntimeError):
+    """The generated ad still contained tool-call markup after one retry."""
+
+
+def find_tool_output_leaks(text: str | None) -> list[str]:
+    """Short excerpts of every tool-output fragment in `text` (empty when clean)."""
+    t = text or ""
+    return [t[max(0, m.start() - 20): m.end() + 20].replace("\n", " ") for m in _TOOL_LEAK_RE.finditer(t)]
+
+
 def _ws(text: str | None) -> str:
     return re.sub(r"\s+", " ", text or "").strip()
 
@@ -1801,25 +1823,32 @@ def insert_required_sentences(
 
 def _generate_from_package(pkg: dict) -> tuple[str, str | None]:
     """(ad_copy, feedback_block) for one aggregated package. Every tier's ad is
-    checked for banned scarcity wording and for each Python-built sentence
-    (REQUIRED_SENTENCE_KEYS) verbatim. Either problem gets one retry; banned
-    wording after the retry raises BannedScarcityPhraseError (callers log it and
-    skip the vehicle), a required sentence still missing is inserted at its
-    normal position and logged."""
+    checked for tool-call markup leaked into the text, banned scarcity wording,
+    and each Python-built sentence (REQUIRED_SENTENCE_KEYS) verbatim. Any problem
+    gets one retry; after it, leaked markup raises LeakedToolOutputError and
+    banned wording BannedScarcityPhraseError (callers log either and skip the
+    vehicle), and a required sentence still missing is inserted at its normal
+    position and logged."""
     stock = pkg.get("stock_number")
     required = required_sentences_from(pkg)
     for attempt in (1, 2):
         ad_copy, feedback = _generate_once(pkg)
+        leaks = find_tool_output_leaks(ad_copy)
         hits = find_banned_scarcity_phrases(ad_copy, pkg.get("scarcity_sentence"))
         missing = missing_required_sentences(ad_copy, required)
-        if not hits and not missing:
+        if not leaks and not hits and not missing:
             return ad_copy, feedback
-        problems = ([f"banned scarcity wording {sorted(set(hits))}"] if hits else []) + (
-            [f"missing required sentence(s) {missing}"] if missing else []
+        problems = (
+            ([f"tool output in the ad text {leaks[:2]}"] if leaks else [])
+            + ([f"banned scarcity wording {sorted(set(hits))}"] if hits else [])
+            + ([f"missing required sentence(s) {missing}"] if missing else [])
         )
         if attempt == 1:
             print(f"[adwriter] {stock}: {'; '.join(problems)} - retrying once", file=sys.stderr)
             continue
+        if leaks:
+            print(f"[adwriter] {stock}: tool output still in the ad text after retry - skipping this vehicle", file=sys.stderr)
+            raise LeakedToolOutputError(f"tool-call markup in the ad text after retry: {leaks[:2]}")
         if hits:
             print(
                 f"[adwriter] {stock}: banned scarcity wording "
