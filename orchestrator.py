@@ -663,7 +663,7 @@ def _run_inner(
         stock = v.get("stock_number")
         print(f"[recon-update] {stock}: topping up paragraph one ...")
         try:
-            ad_copy = update_recon(stock)
+            ad_copy = update_recon(stock, v.get("status_code"))
         except PlaywrightTimeoutError as exc:
             print(f"[orchestrator] ReconVision timeout on {stock} — skipping to next vehicle")
             errors.append(

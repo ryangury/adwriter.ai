@@ -25,7 +25,14 @@ import anthropic
 
 import credentials
 from credentials import ANTHROPIC_API_KEY
-from aggregator import DEALER_DOC_FEE, _filter_recon, aggregate, dedupe_equipment_descriptors
+from aggregator import (
+    _RECON_DONE_FALLBACK,
+    _RECON_PENDING_FALLBACK,
+    DEALER_DOC_FEE,
+    _filter_recon,
+    aggregate,
+    dedupe_equipment_descriptors,
+)
 from feature_cache import (
     get_feature,
     get_towing,
@@ -1964,12 +1971,27 @@ def _format_recon_update_package(paragraph_one: str, filtered_recon: dict) -> st
     return "\n".join(lines)
 
 
-def update_recon(stock_number: str) -> str:
+def swap_pending_recon_sentence(text: str, status_code: int | None) -> str | None:
+    """Replace the tier's "currently undergoing ..." recon-pending sentence in
+    `text` with the same tier's post-recon fallback sentence (the pair built in
+    aggregator.build_recon_fallback_sentence). Returns the new text, or None
+    when the tier is unmapped or the pending sentence isn't in `text`."""
+    code = 10 if status_code == 16 else status_code
+    pending = _RECON_PENDING_FALLBACK.get(code)
+    done = _RECON_DONE_FALLBACK.get(code)
+    if not pending or not done or pending not in (text or ""):
+        return None
+    return text.replace(pending, done, 1)
+
+
+def update_recon(stock_number: str, status_code: int | None = None) -> str:
     """A pre-recon ad's reconditioning is now complete. Re-scrape ReconVision for
     this stock number, filter it, and:
 
       * no includeable items -> mark recon_pending False, lifecycle_stage
-        "recon_updated", return the existing ad unchanged;
+        "recon_updated", and swap the stale "currently undergoing ..." sentence
+        for the tier's post-recon fallback sentence (text left unchanged and
+        logged if the sentence isn't found or status_code is unknown);
       * includeable items    -> ask Claude to top up paragraph one, reconstruct
         the ad, persist it, and return it.
     """
@@ -1993,6 +2015,18 @@ def update_recon(stock_number: str) -> str:
     filtered = _filter_recon(recon_raw.get("line_items", []))
 
     if not _recon_has_includeable(filtered):
+        new_p1 = swap_pending_recon_sentence(p1, status_code)
+        new_full = swap_pending_recon_sentence(entry.get("current_ad_text") or "", status_code)
+        if new_p1 is not None:
+            entry["paragraph_one"] = new_p1
+        if new_full is not None:
+            entry["current_ad_text"] = new_full
+        if new_p1 is None and new_full is None:
+            print(
+                f"[update_recon] {stock}: no includeable recon, but the pending "
+                f"sentence was not found for status_code={status_code!r} — "
+                f"ad text left unchanged"
+            )
         entry["recon_pending"] = False
         entry["lifecycle_stage"] = "recon_updated"
         entry["last_ad_date"] = date.today().isoformat()
