@@ -441,14 +441,7 @@ def logout():
 # --------------------------------------------------------------------------- #
 
 # ACV Max status code -> label shown on the Inventory pages.
-_STATUS_LABELS = {
-    1: "Not certified",
-    10: "MB CPO",
-    11: "Hendrick Certified",
-    12: "Hendrick Affordable",
-    13: "As-Is",
-    16: "Courtesy (MB CPO)",
-}
+from status_codes import STATUS_LABELS as _STATUS_LABELS  # noqa: E402
 
 
 def _status_label(code: Any) -> str:

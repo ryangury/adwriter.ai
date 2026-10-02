@@ -28,10 +28,10 @@ from scraper import (
 
 SNAPSHOT_PATH = Path(__file__).with_name("last_inventory_snapshot.json")
 
-# Status codes we know how to route (mirrors adwriter.py's system-prompt router:
-# 1 = needs certification assigned, 10/11/12/16 = postable). Anything else is
-# excluded until it's mapped.
-MAPPED_STATUS_CODES = {1, 10, 11, 12, 16}
+# Status codes we know how to route: status_codes.MAPPED_STATUS_CODES (1 = needs
+# certification assigned, 10/11/12/13/16 = postable). Anything else is excluded
+# until it's mapped there.
+from status_codes import MAPPED_STATUS_CODES  # noqa: E402
 
 _PAGE_SAFETY_LIMIT = 100
 

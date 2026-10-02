@@ -73,7 +73,7 @@ MAX_TOKENS = 2500
 # else routes the vehicle to a review section of the daily report:
 #   1 / None -> certification not yet assigned in the system
 #   not in {1, 10, 11, 12, 13, 16} -> unknown code, needs mapping
-POSTABLE_STATUS_CODES = {10, 11, 12, 13, 16}
+from status_codes import BUILD_STATUS_CODES as POSTABLE_STATUS_CODES  # noqa: E402
 
 # --------------------------------------------------------------------------- #
 # Ad framework — this is the system prompt. Edit freely to match your house style.

@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 TIMELINE_PATH = Path(__file__).with_name("ad_timeline.json")
-BUILD_ELIGIBLE_STATUS_CODES = {10, 11, 12, 13, 16}
+from status_codes import BUILD_STATUS_CODES as BUILD_ELIGIBLE_STATUS_CODES  # noqa: E402
 
 
 def load_timeline() -> dict[str, dict[str, Any]]:

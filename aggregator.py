@@ -697,7 +697,7 @@ def _advertised_price(pr: dict[str, Any]) -> float | None:
 # not the vehicle's own status, and came back empty/False whenever a
 # pre-resolved vehicle_id skipped the inventory-row scrape it depended on —
 # which is the common case throughout this file).
-CERTIFIED_STATUS_CODES = {10, 11, 16}
+from status_codes import CERTIFIED_STATUS_CODES  # noqa: E402
 
 
 def _vehicle(pr: dict[str, Any]) -> dict[str, Any]:
@@ -3358,7 +3358,7 @@ RECON_INCOMPLETE_NOTE = (
 # For these units ONLY, ACV Max pricing and the AutoiPacket window sticker must
 # both have returned usable data before we spend a Claude call. Carfax and
 # ReconVision are supplementary sources and never gate ad generation.
-MB_CPO_GATE_STATUS_CODES = {10, 16}
+from status_codes import MB_CPO_STATUS_CODES as MB_CPO_GATE_STATUS_CODES  # noqa: E402
 
 
 def _gate_diagnostics(pricing_raw: dict[str, Any]) -> str:
@@ -3451,7 +3451,7 @@ def _mb_cpo_data_gate(
 # manufacturer CPO — a window sticker is optional for these tiers (many
 # non-MB trade-ins never have one). ACV Max pricing is still required; without
 # it there's no advertised_price and no proof point to write the ad from.
-NON_CPO_GATE_STATUS_CODES = {11, 12, 13}
+from status_codes import NON_CPO_STATUS_CODES as NON_CPO_GATE_STATUS_CODES  # noqa: E402
 
 
 def _non_cpo_data_gate(

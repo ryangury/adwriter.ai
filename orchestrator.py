@@ -60,7 +60,7 @@ from run_lock import (
     release_lock_if_owned,
 )
 
-BUILD_STATUS_CODES = {10, 11, 12, 13, 16}
+from status_codes import BUILD_STATUS_CODES  # noqa: E402
 
 # A vehicle whose reprice can't be processed this run (over the per-run cap)
 # is persisted here and given priority next run, ahead of newly detected

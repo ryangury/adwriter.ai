@@ -69,7 +69,7 @@ PREDICTIVE_SOURCE = "autoipacket_predictive"
 # Targets are worked in this order so the day's limited non-MB pulls (a pull
 # that fails still uses its slot) go to vehicles that can get an ad first.
 # Status 1 (needs certification) and any unmapped status come last.
-_PRIORITY_STATUS_CODES = {10, 11, 12, 13, 16}
+from status_codes import BUILD_STATUS_CODES as _PRIORITY_STATUS_CODES  # noqa: E402
 
 # How long to wait for orchestrator.lock before giving up (the verifier holds it
 # for a few minutes every 2 hours).
