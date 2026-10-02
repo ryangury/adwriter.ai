@@ -26,7 +26,7 @@
     <td class="check-col" title="{{ ('Carfax cached ' ~ r.carfax_date) if r.carfax_ok else 'No Carfax cached' }}">
       {% if r.carfax_ok %}<span class="has-ad-yes">&#10003;</span>{% else %}<span class="has-ad-no">&ndash;</span>{% endif %}
     </td>
-    <td title="{% if r.sticker_ok %}{{ ('Total MSRP ${:,.0f}'.format(r.sticker_msrp)) if r.sticker_msrp is not none else 'No total MSRP' }}{% if r.sticker_date %} · cached {{ r.sticker_date }}{% endif %}{% else %}No sticker cached{% endif %}">
+    <td title="{% if r.sticker_ok %}{{ ('Total MSRP ${:,.0f}'.format(r.sticker_msrp)) if r.sticker_msrp is number else 'No total MSRP' }}{% if r.sticker_date %} · cached {{ r.sticker_date }}{% endif %}{% else %}No sticker cached{% endif %}">
       {% if r.sticker_ok %}<span class="src">{{ r.sticker_label }}</span>{% else %}<span class="has-ad-no">&mdash;</span>{% endif %}
     </td>
     <td title="{{ ('Recon cached ' ~ r.recon_date) if r.recon_ok else 'No recon cached' }}">

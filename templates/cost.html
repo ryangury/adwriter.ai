@@ -44,7 +44,7 @@
   </div>
 
   <p class="cost-estimate">
-    {% if est_cost_per_ad is not none %}
+    {% if est_cost_per_ad is number %}
     Est. cost per fresh ad: <strong>${{ '%.2f' % est_cost_per_ad }}</strong>
     (Sonnet spend &divide; {{ ad_count }} fresh ad{{ '' if ad_count == 1 else 's' }} built this month) &mdash;
     rough estimate, not precise accounting. Reprices and recon updates aren't counted in the denominator.

@@ -22,7 +22,7 @@
 {% endblock %}
 
 {% macro cell(c, key) -%}
-  {%- if c and c[key] is not none -%}{{ '%.2f' % c[key] }}% <span class="n">n={{ c.n }}</span>{%- else -%}<span class="n">&mdash;</span>{%- endif -%}
+  {%- if c and c[key] is number -%}{{ '%.2f' % c[key] }}% <span class="n">n={{ c.n }}</span>{%- else -%}<span class="n">&mdash;</span>{%- endif -%}
 {%- endmacro %}
 
 {% macro breakdown_table(data) %}
@@ -54,7 +54,7 @@
 {% endmacro %}
 
 {% macro fmt_delta(d) -%}
-  {%- if d.median is none -%}&mdash;{%- else -%}{{ '%+.2f' % d.median }} pts{%- endif -%}
+  {%- if d.median is not number -%}&mdash;{%- else -%}{{ '%+.2f' % d.median }} pts{%- endif -%}
 {%- endmacro %}
 
 {% block content %}
