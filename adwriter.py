@@ -51,6 +51,7 @@ from shared_prompt_constants import (
     PROVENANCE_RULE,
     RECON_FALLBACK_RULE,
     SELLER_COMMENTS_RULE,
+    STICKER_PRICES_APPROXIMATE_RULE,
     STORE_CLOSER_PARAGRAPH,
 )
 from system_prompt_as_is import AS_IS_PROMPT
@@ -174,6 +175,8 @@ MSRP UNAVAILABLE RULE: When the data package shows MSRP as unavailable with no p
 MSRP APPROXIMATE RULE: When msrp_note indicates approximate pricing, mention package names and contents but do not state specific dollar amounts for packages — the prices are approximate and may not reflect the original window sticker. State original MSRP is unavailable for this vehicle.
 
 {PREDICTIVE_STICKER_RULE}
+
+{STICKER_PRICES_APPROXIMATE_RULE}
 
 MSRP DEPRECIATION: If MSRP DEPRECIATION SENTENCE is present in the data package, include it verbatim in paragraph two immediately before the proof point sentence. If it shows (omit), skip it entirely. Do not apply any threshold or age gate yourself — those decisions are pre-made by the data pipeline.
 
@@ -1198,6 +1201,11 @@ def format_data_package(pkg: dict) -> tuple[str, list[dict]]:
         + ("true" if pkg.get("sticker_is_predictive") else "false")
         + "  (true = AutoiPacket estimated build, not a manufacturer sticker)"
     )
+    lines.append(
+        "STICKER_PRICES_APPROXIMATE: "
+        + ("true" if pkg.get("sticker_prices_approximate") else "false")
+        + "  (true = equipment from ACV Max's options tab; no price in it is a factory figure)"
+    )
     msrp_source = msrp.get("source")
     if msrp_source == "acvmax_options_tab":
         lines.append("=" * 48)
@@ -1208,19 +1216,14 @@ def format_data_package(pkg: dict) -> tuple[str, list[dict]]:
         if not packages:
             lines.append("  (no selected packages found)")
         for p in packages:
-            price = p.get("approx_msrp")
-            price_txt = f"approx. {_usd(price)}" if price is not None else "approx. price unavailable"
+            # Prices are deliberately not shown: they are approximations, not
+            # factory figures, and STICKER_PRICES_APPROXIMATE_RULE bars stating
+            # them. Names and contents are still usable.
+            price_txt = "price withheld: approximate, not a factory figure"
             lines.append(f"  - {p.get('code') or '?'}  {p.get('name') or ''}  ({price_txt})")
             if p.get("description"):
                 lines.append(f"      {p['description']}")
-        total = msrp.get("total_msrp")
-        if total is not None:
-            lines.append(
-                f"Approximate total MSRP: {_usd(total)}  (sum of matched "
-                f"package prices only — likely incomplete, not a real OEM MSRP)"
-            )
-        else:
-            lines.append("Approximate total MSRP: unavailable — no package prices matched")
+        lines.append("Total MSRP: unavailable (do not state an MSRP or any package price)")
     else:
         lines.append("=== MSRP / WINDOW STICKER (AutoiPacket) ===")
         if msrp.get("error"):

@@ -148,6 +148,20 @@ PREDICTIVE_STICKER_RULE = (
     "depreciation framing entirely for predictive stickers."
 )
 
+# Paragraph-two rule for aggregate()'s sticker_prices_approximate flag (the only
+# sticker source is ACV Max's options tab: real package names, but approximate,
+# non-OEM prices), shared by all four tier prompts.
+STICKER_PRICES_APPROXIMATE_RULE = (
+    "APPROXIMATE STICKER PRICES RULE: If STICKER_PRICES_APPROXIMATE is true in the "
+    "data package, the equipment list comes from ACV Max's options tab, not the "
+    "manufacturer's window sticker, so no price in it is a factory figure. Do not "
+    "state a package price, an option price, a total MSRP or an original sticker "
+    "price anywhere in the ad, and do not say 'from the original window sticker'. "
+    "You may name packages and describe what they include, as equipment the vehicle "
+    "carries ('equipped with'). Omit MSRP depreciation framing entirely; the MSRP "
+    "DEPRECIATION SENTENCE will show (omit)."
+)
+
 # Paragraph-one recon rule for aggregator.build_recon_sentence()'s
 # RECON_SENTENCE, used by the Hendrick Certified / Affordable / As-Is prompts
 # (the MB CPO prompt carries its own "Sentence 4: RECON SENTENCE" line).

@@ -1510,6 +1510,10 @@ class AutoiPacketScraper(_BrowserSession):
 
             with pdfplumber.open(buf) as pdf:
                 text = "\n".join((p.extract_text() or "") for p in pdf.pages)
+                if _is_cid_junk(text):
+                    decoded = _glyph_name_decoded_text(pdf_bytes)
+                    if decoded:
+                        return decoded
                 blocks = _position_blocks_text(pdf)
                 return f"{text}\n{blocks}" if blocks else text
         except ImportError:
@@ -2613,13 +2617,82 @@ def _fca_position_blocks(page, words: list[dict[str, Any]]) -> str | None:
     return f"{_OPTIONS_COLUMN_MARK}\n{text}"
 
 
-def _position_blocks_text(pdf) -> str:
+# Some Type 3 bitmap-font PDFs (e.g. a 2016 Ford Monroney re-rendered by
+# PDFsharp) carry no ToUnicode map, so pdfplumber returns "(cid:N)" for every
+# character. Each glyph's name in the font's /Differences is its decimal ASCII
+# code ("83" is "S"), which decodes the text exactly, with no OCR. Used only
+# when the junk pattern is detected, and a sticker parsed from it is accepted
+# only if it reconciles with its printed total (see _parse_oem_sticker()).
+_GLYPH_DECODED_MARK = "=== GLYPH-NAME DECODED ==="
+_GLYPH_DECODE_X_TOLERANCE = 2  # these PDFs have no space glyphs; gaps carry the spaces
+
+
+def _is_cid_junk(text: str) -> bool:
+    """True when most of the extracted text is unmapped '(cid:N)' glyphs."""
+    hits = re.findall(r"\(cid:\d+\)", text or "")
+    return len(hits) >= 50 and sum(len(h) for h in hits) >= 0.3 * len(text or "")
+
+
+class _TolPage:
+    """A pdfplumber page whose words/text extraction defaults to a tighter
+    x_tolerance, so the position-block builders (which call these with no
+    arguments) see word gaps in a text layer that has no space characters."""
+
+    def __init__(self, page, x_tolerance: float) -> None:
+        self._p = page
+        self._xt = x_tolerance
+
+    def __getattr__(self, name):
+        return getattr(self._p, name)
+
+    def extract_words(self, **kw):
+        kw.setdefault("x_tolerance", self._xt)
+        return self._p.extract_words(**kw)
+
+    def extract_text(self, **kw):
+        kw.setdefault("x_tolerance", self._xt)
+        return self._p.extract_text(**kw)
+
+    def crop(self, bbox, **kw):
+        return _TolPage(self._p.crop(bbox, **kw), self._xt)
+
+
+def _glyph_name_decoded_text(pdf_bytes: bytes) -> str | None:
+    """Text for a '(cid:N)' junk PDF, decoded from Type 3 glyph names; None
+    when that doesn't clear the junk. Patches pdfminer's glyph-name lookup only
+    for the duration of this call."""
+    import pdfminer.encodingdb as _enc
+    import pdfplumber  # type: ignore
+
+    original = _enc.name2unicode
+
+    def _digit_aware(name):
+        if re.fullmatch(r"\d{2,3}", name or "") and 32 <= int(name) <= 126:
+            return chr(int(name))
+        return original(name)
+
+    _enc.name2unicode = _digit_aware
+    try:
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            pages = [_TolPage(p, _GLYPH_DECODE_X_TOLERANCE) for p in pdf.pages]
+            text = "\n".join((p.extract_text() or "") for p in pages)
+            if _is_cid_junk(text) or not text.strip():
+                return None
+            blocks = _position_blocks_text(pdf, pages=pages)
+            return f"{_GLYPH_DECODED_MARK}\n{text}" + (f"\n{blocks}" if blocks else "")
+    except Exception:  # noqa: BLE001 - a failed decode just leaves the original text
+        return None
+    finally:
+        _enc.name2unicode = original
+
+
+def _position_blocks_text(pdf, pages=None) -> str:
     """Position-cropped blocks for a GM, Ford, Toyota/Lexus or FCA sticker PDF (an
     open pdfplumber document), each after its marker line; "" for any other
     layout. Never raises — a crop failure just means the parsers fall back to
     the plain text."""
     out: list[str] = []
-    for page in pdf.pages:
+    for page in (pages if pages is not None else pdf.pages):
         try:
             words = page.extract_words()
         except Exception:  # noqa: BLE001
@@ -3164,7 +3237,13 @@ def _parse_oem_sticker(url: str, vin: str, make: str | None = None) -> dict[str,
         sticker_url=url,
         source="carfax_sticker_link",
     )
-    return _reconcile_sticker(data, vin)
+    result = _reconcile_sticker(data, vin)
+    if _GLYPH_DECODED_MARK in text and result.get("reconciliation_ok") is not True:
+        raise StickerNotFoundError(
+            f"{vin}: OEM sticker at {url} was decoded from Type 3 glyph names but its "
+            f"parse did not reconcile with the printed total; not trusted."
+        )
+    return result
 
 
 # --------------------------------------------------------------------------- #

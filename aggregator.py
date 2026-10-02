@@ -4194,6 +4194,20 @@ def aggregate(
         and (get_vehicle(vin) or {}).get("window_sticker_source") == PREDICTIVE_STICKER_SOURCE
     )
 
+    # ACV Max options-tab sticker: real package names, approximate non-OEM
+    # prices. Flagged for the prompts, and (like a predictive sticker) no MSRP
+    # depreciation sentence is built from its approximate total. A cache hit's
+    # stored JSON keeps source "acvmax_options_tab", so both are checked.
+    sticker_prices_approximate = bool(
+        (msrp_raw or {}).get("source") == "acvmax_options_tab"
+        or (msrp_data or {}).get("source") == "acvmax_options_tab"
+        or (
+            vin
+            and sticker_status == "cache_hit"
+            and (get_vehicle(vin) or {}).get("window_sticker_source") == "acvmax_options_tab"
+        )
+    )
+
     recon_block = (
         dict(_EMPTY_RECON)
         if skip_recon
@@ -4230,6 +4244,7 @@ def aggregate(
         },
         "msrp_data": msrp_data,
         "sticker_is_predictive": sticker_is_predictive,
+        "sticker_prices_approximate": sticker_prices_approximate,
         "pricing": _pricing(
             pricing_raw.get("pricing_proof_points", []),
             pricing_raw.get("current_internet_price"),
@@ -4255,7 +4270,7 @@ def aggregate(
         ),
         "proof_point_sentence": proof_point_sentence,
         "proof_point_type": proof_point_type,
-        "msrp_sentence": None if sticker_is_predictive else build_msrp_sentence(
+        "msrp_sentence": None if (sticker_is_predictive or sticker_prices_approximate) else build_msrp_sentence(
             (msrp_data or {}).get("total_msrp"),
             _advertised_price(pricing_raw),
             pricing_raw.get("status_code"),
