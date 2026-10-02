@@ -48,7 +48,11 @@ WHAT TO KEEP IDENTICAL
   do not shorten a package explanation, do not reorder the equipment.
 - Never remove an equipment mention from paragraph two. If you are unsure whether
   a sentence is pricing or equipment, treat it as equipment and leave it alone.
-- The rarity-and-combination sentence, if present, stays exactly as written.
+- Never write scarcity, rarity or exclusivity wording of your own. The pipeline
+  removes any such sentence from the paragraph before you see it and adds its own
+  scarcity sentence afterward. Never use the words "rare", "rarely", "rarest",
+  "rarity", "hard to find", "one of the few", "one of the only", "low-volume",
+  "low volume", "limited production" or "in the region".
 - Sentence count and paragraph shape stay close to the original.
 
 FORMATTING RULES
@@ -64,4 +68,28 @@ FORMATTING RULES
 
 If the new pricing data would not change a single dollar figure or proof-point
 reference, return the existing paragraph two unchanged.
+"""
+
+_TIER_NAMES = {11: "Hendrick Certified", 12: "Hendrick Affordable", 13: "As-Is"}
+
+
+def reprice_prompt_for(status_code) -> str:
+    """The reprice system prompt for a vehicle's status. MB CPO (10/16) and any
+    unknown status keep the Mercedes-Benz Certified Pre-Owned prompt above;
+    Hendrick Certified / Affordable / As-Is (11/12/13) get the same prompt with
+    their own tier named and an explicit ban on Mercedes-Benz certification
+    wording, so a reprice can never put CPO language into a non-MB ad."""
+    name = _TIER_NAMES.get(status_code)
+    if not name:
+        return REPRICE_SYSTEM_PROMPT
+    prompt = REPRICE_SYSTEM_PROMPT.replace("Certified Pre-Owned ad", f"{name} ad")
+    return prompt.rstrip("\n") + f"""
+
+TIER RULES
+
+This is a {name} vehicle, not a Mercedes-Benz Certified Pre-Owned vehicle. Do not
+introduce Mercedes-Benz Certified Pre-Owned, CPO or 165-point wording, any
+Mercedes-Benz certification or warranty claim, or any other claim the existing
+paragraph does not already make. Change only dollar figures and proof-point
+language.
 """

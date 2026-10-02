@@ -172,19 +172,21 @@ COLOR_SOURCE_RULE = (
     "the feedback block."
 )
 
-# Scarcity rule for the three non-MB prompts (Hendrick Certified / Affordable /
-# As-Is). Python (aggregator.build_scarcity_sentence) is the only source of
-# scarcity wording there; adwriter.find_banned_scarcity_phrases() enforces it.
-NON_MB_SCARCITY_RULE = (
-    "SCARCITY: Python is the only source of scarcity wording on this program. If the "
+# Scarcity rule for ALL tiers (MB CPO, Hendrick Certified / Affordable / As-Is).
+# Python (aggregator.build_scarcity_sentence) is the only source of scarcity or
+# exclusivity wording; adwriter.find_banned_scarcity_phrases() enforces it.
+SCARCITY_RULE = (
+    "SCARCITY: Python is the only source of scarcity or exclusivity wording. If the "
     "data package has a SCARCITY SENTENCE, use it verbatim as the sentence immediately "
     "after the PROOF POINT SENTENCE. If it shows (omit), write no scarcity language at "
     "all. Never write your own scarcity, rarity or exclusivity wording about how few "
-    "comparable vehicles exist or how hard this one is to find, never derive it from "
-    "market counts or the search radius, and never use the words \"rare\", \"rarely\", "
-    "\"rarest\", \"hard to find\", \"one of the few\", \"one of the only\" or \"in the "
-    "region\" anywhere in the ad."
+    "comparable vehicles exist, how hard this one is to find, or how unusual its "
+    "combination is, never derive it from market counts or the search radius, and never "
+    "use the words \"rare\", \"rarely\", \"rarest\", \"rarity\", \"hard to find\", "
+    "\"one of the few\", \"one of the only\", \"low-volume\", \"low volume\", \"limited "
+    "production\", \"limited-production\" or \"in the region\" anywhere in the ad."
 )
+NON_MB_SCARCITY_RULE = SCARCITY_RULE  # name the three non-MB prompts import
 
 # Paragraph-one recon rule for aggregator.build_recon_sentence()'s
 # RECON_SENTENCE, used by the Hendrick Certified / Affordable / As-Is prompts

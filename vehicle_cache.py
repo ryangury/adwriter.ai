@@ -381,6 +381,27 @@ def save_recon(
         conn.commit()
 
 
+def downgrade_recon(vin: str) -> bool:
+    """Explicitly flip a cached recon row from complete to incomplete (so
+    needs_recon() forces a re-scrape). save_recon() never does this on its own;
+    the only caller is aggregator's recon gate, after Final Quality Control has
+    been seen explicitly not completed on consecutive checks. Returns True if a
+    complete row was downgraded."""
+    now = datetime.now().isoformat()
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT recon_complete FROM vehicle_data WHERE vin = ?", (vin,)
+        ).fetchone()
+        if not row or not row["recon_complete"]:
+            return False
+        conn.execute(
+            "UPDATE vehicle_data SET recon_complete = 0, last_updated = ? WHERE vin = ?",
+            (now, vin),
+        )
+        conn.commit()
+    return True
+
+
 def increment_autoipacket_attempts(vin: str) -> None:
     """Bump the AutoiPacket-failure counter for this VIN — the non-MB
     retry-exhaustion fallback stops retrying and proceeds without MSRP once

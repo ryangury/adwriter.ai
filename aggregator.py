@@ -23,7 +23,9 @@ import gc
 import json
 import re
 import sys
+import time
 from datetime import date, datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from scraper import (
@@ -39,7 +41,9 @@ from scraper import (
     _parse_oem_sticker,
 )
 from vehicle_cache import (
+    downgrade_recon,
     get_vehicle,
+    get_vehicle_by_stock,
     get_window_sticker,
     get_carfax,
     get_recon,
@@ -697,6 +701,7 @@ def _advertised_price(pr: dict[str, Any]) -> float | None:
 # not the vehicle's own status, and came back empty/False whenever a
 # pre-resolved vehicle_id skipped the inventory-row scrape it depended on —
 # which is the common case throughout this file).
+from status_codes import BUILD_STATUS_CODES  # noqa: E402
 from status_codes import CERTIFIED_STATUS_CODES  # noqa: E402
 
 
@@ -2470,7 +2475,6 @@ def build_proof_point_sentence(
     current_price: float | None = None,
     admin_fee: int = DEALER_DOC_FEE,
     search_distance: Any = None,
-    include_scarcity: bool = True,
 ) -> tuple[str | None, str]:
     """Pre-written paragraph-two pricing sentence, plus its proof_point_type
     ("standard" or "velocity_anchor" — see below) so format_data_package()
@@ -2624,8 +2628,10 @@ def build_proof_point_sentence(
         percent_over_market = (current_price - market_price) / market_price
 
     def _with_scarcity(sentence: str) -> str:
-        if not include_scarcity:
-            return sentence  # non-MB tiers get build_scarcity_sentence() instead
+        # Scarcity wording is no longer built here: aggregate() emits exactly one
+        # scarcity sentence per ad via build_scarcity_sentence() (every tier), so
+        # the velocity anchor must not add its own "Fewer than N ..." text.
+        return sentence
         # A thin comp count only means something as a rarity claim when the
         # search actually went nationwide — a thin count from a 500-mile
         # regional search just means the search radius should be widened
@@ -3430,9 +3436,144 @@ def dedupe_equipment_descriptors(
 # --------------------------------------------------------------------------- #
 
 RECON_INCOMPLETE_NOTE = (
-    "ReconVision recon is still in progress: 'Close RO' is incomplete (or, "
-    "with no Close RO step, not every service item is complete). Wait and retry."
+    "ReconVision recon is still in progress: the 'Final Quality Control' task is "
+    "not completed (or, with no Final Quality Control row, 'Close RO' or the "
+    "service items are not all complete). Wait and retry."
 )
+
+# --- recon gate safeguards ------------------------------------------------ #
+# A live scrape that says "incomplete" is double-checked before it is believed
+# when it contradicts the cache, lacks a Final Quality Control row, or returned
+# far fewer rows than the cached scrape (a partially loaded page looks exactly
+# like that). A cached "complete" row is downgraded only after Final Quality
+# Control is seen present-and-not-completed on consecutive gate checks.
+RECON_RETRY_WAIT_SECONDS = 20
+RECON_ROW_DROP_FRACTION = 0.6   # fewer than this share of the cached rows = "dropped sharply"
+RECON_DOWNGRADE_STREAK = 2
+RECON_STREAK_MIN_GAP_SECONDS = 600  # checks closer together than this count once
+RECON_GATE_STATE_PATH = Path(__file__).with_name("recon_gate_state.json")
+
+
+def _recon_cached_info(stock: str) -> dict[str, Any]:
+    """{vin, complete, rows} for the cached recon row of this stock, if any."""
+    row = get_vehicle_by_stock(stock) or {}
+    rows = None
+    try:
+        rows = len((json.loads(row["recon_json"]) or {}).get("line_items") or []) if row.get("recon_json") else None
+    except (ValueError, TypeError):
+        rows = None
+    return {"vin": row.get("vin"), "complete": bool(row.get("recon_complete")), "rows": rows}
+
+
+def _recon_details(items: list[dict[str, Any]]) -> dict[str, Any]:
+    complete, path, fqc = _recon_decision(items)
+    return {
+        "complete": complete,
+        "path": path,
+        "row_count": len(items),
+        "fqc_present": fqc is not None,
+        "fqc_completed": bool(fqc.get("completed")) if fqc is not None else None,
+        "fqc_status": (fqc or {}).get("completion_status"),
+    }
+
+
+def _log_recon_verdict(stock: str, d: dict[str, Any], note: str = "") -> None:
+    fqc = (
+        f"yes ({d['fqc_status'] or 'no status'})" if d["fqc_present"] else "no"
+    )
+    print(
+        f"[recon-gate] {stock}: incomplete - rows={d['row_count']}, FQC row={fqc}, "
+        f"decided by {d['path']}{note}",
+        file=sys.stderr,
+    )
+
+
+def scrape_recon_checked(
+    rv: ReconVisionScraper,
+    stock: str,
+    *,
+    cached: dict[str, Any] | None = None,
+    wait_seconds: float | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Scrape the work order and decide completeness, rescraping ONCE after
+    ~20 s when an incomplete verdict is suspect (cache says complete, no FQC row,
+    or the row count fell sharply against the cached scrape). Returns (raw scrape,
+    details) where details carries complete / path / row_count / fqc_* and
+    `retried`. Every incomplete verdict is logged with its evidence."""
+    cached = cached if cached is not None else _recon_cached_info(stock)
+    raw = rv.scrape_work_order(stock)
+    d = _recon_details(raw.get("line_items", []))
+    d["retried"] = False
+    if not d["complete"]:
+        dropped = bool(
+            cached.get("rows") and d["row_count"] < RECON_ROW_DROP_FRACTION * cached["rows"]
+        )
+        reasons = [
+            r
+            for r, hit in (
+                ("cache says complete", cached.get("complete")),
+                ("no FQC row", not d["fqc_present"]),
+                (f"rows {d['row_count']} vs cached {cached.get('rows')}", dropped),
+            )
+            if hit
+        ]
+        if reasons:
+            print(
+                f"[recon-gate] {stock}: incomplete verdict is suspect ({'; '.join(reasons)}) "
+                f"- rescraping once in {RECON_RETRY_WAIT_SECONDS if wait_seconds is None else wait_seconds:g}s",
+                file=sys.stderr,
+            )
+            time.sleep(RECON_RETRY_WAIT_SECONDS if wait_seconds is None else wait_seconds)
+            raw2 = rv.scrape_work_order(stock)
+            d2 = _recon_details(raw2.get("line_items", []))
+            d2["retried"] = True
+            if d2["complete"]:
+                print(f"[recon-gate] {stock}: rescrape found recon complete (first scrape rows={d['row_count']})", file=sys.stderr)
+            raw, d = raw2, d2
+        if not d["complete"]:
+            _log_recon_verdict(stock, d, ", rescraped" if d["retried"] else "")
+    return raw, d
+
+
+def _track_recon_downgrade(
+    stock: str, vin: str | None, d: dict[str, Any], cached_complete: bool,
+    state_path: Path | None = None, now: float | None = None,
+) -> str | None:
+    """Count consecutive gate checks that saw Final Quality Control present and
+    explicitly not completed; on the second, downgrade a cached "complete" row
+    (vehicle_cache.downgrade_recon) and log it. Any other outcome resets the
+    streak. Returns "downgraded" / "streak N" / None, for logging and tests."""
+    path = state_path or RECON_GATE_STATE_PATH
+    now = time.time() if now is None else now
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        state = {}
+    entry = state.get(stock) or {"streak": 0, "last_ts": 0}
+    explicit = (not d["complete"]) and d["fqc_present"] and not d["fqc_completed"]
+    result = None
+    if explicit:
+        if now - float(entry.get("last_ts") or 0) >= RECON_STREAK_MIN_GAP_SECONDS:
+            entry["streak"] = int(entry.get("streak") or 0) + 1
+        entry["last_ts"] = now
+        result = f"streak {entry['streak']}"
+        if entry["streak"] >= RECON_DOWNGRADE_STREAK and cached_complete and vin:
+            if downgrade_recon(vin):
+                print(
+                    f"[recon-gate] {stock}: DOWNGRADE cached recon complete -> incomplete "
+                    f"(Final Quality Control present and not completed on {entry['streak']} "
+                    f"consecutive checks; rows={d['row_count']}, status={d['fqc_status']})",
+                    file=sys.stderr,
+                )
+                result = "downgraded"
+        state[stock] = entry
+    elif stock in state:
+        state.pop(stock)
+    try:
+        path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+    return result
 
 # --------------------------------------------------------------------------- #
 # MB CPO data-completeness gate
@@ -3616,6 +3757,41 @@ def _carfax_disqualifying_gate(
     }
 
 
+def _recon_decision(
+    line_items: list[dict[str, Any]],
+) -> tuple[bool, str, dict[str, Any] | None]:
+    """(complete, deciding path, the Final Quality Control row or None). The one
+    place the completeness rule lives; _recon_is_complete() is its boolean."""
+    fqc = next(
+        (
+            li
+            for li in line_items
+            if li.get("kind") == "task"
+            and re.sub(r"[^a-z]", "", (li.get("section") or "").lower())
+            == "finalqualitycontrol"
+        ),
+        None,
+    )
+    if fqc is not None:
+        return bool(fqc.get("completed")), "Final Quality Control", fqc
+    close_ro = next(
+        (
+            li
+            for li in line_items
+            if re.sub(r"[^a-z]", "", (li.get("section") or "").lower()) == "closero"
+        ),
+        None,
+    )
+    if close_ro is not None:
+        return bool(close_ro.get("completed")), "Close RO", None
+    service_items = [
+        li for li in line_items if li.get("kind") == "service" and not li.get("rejected")
+    ]
+    if not service_items:
+        return False, "no FQC, no Close RO, no service items", None
+    return all(li.get("completed") for li in service_items), "all service items", None
+
+
 def _recon_is_complete(line_items: list[dict[str, Any]]) -> bool:
     """Recon is complete when the 'Final Quality Control' task is completed —
     its status is authoritative whenever the work order has one. Close RO can
@@ -3684,8 +3860,9 @@ def check_recon(
         rv.__enter__()
     try:
         rv.login(force=fresh_login)
+        cached = _recon_cached_info(stock)
         try:
-            recon_raw = rv.scrape_work_order(stock)
+            recon_raw, details = scrape_recon_checked(rv, stock, cached=cached)
         except WorkOrderLoadError:
             return {
                 "stock_number": stock,
@@ -3695,7 +3872,10 @@ def check_recon(
     finally:
         if owns_session:
             rv.__exit__(None, None, None)
-    complete = _recon_is_complete(recon_raw.get("line_items", []))
+    complete = details["complete"]
+    _track_recon_downgrade(
+        stock, recon_raw.get("vin") or cached.get("vin"), details, cached["complete"]
+    )
     return {
         "stock_number": stock,
         "recon_complete": complete,
@@ -3860,11 +4040,14 @@ def aggregate(
                     file=sys.stderr,
                 )
             else:
+                cached_recon = _recon_cached_info(stock)
                 with ReconVisionScraper(
                     headless=headless, use_saved_session=use_saved
                 ) as rv:
                     rv.login(force=fresh_login)
-                    recon_raw = rv.scrape_work_order(stock)
+                    recon_raw, _recon_details_now = scrape_recon_checked(
+                        rv, stock, cached=cached_recon
+                    )
 
                 # recon_image_bytes is in-process only (see ReconVisionScraper.
                 # scrape_work_order()'s docstring note) — drop it before this
@@ -3875,10 +4058,18 @@ def aggregate(
                 # descriptions, completion status and recon categories — no
                 # vision overlay (see _apply_recon_vision()'s docstring).
                 items = recon_raw.get("line_items", [])
-                recon_complete_now = _recon_is_complete(items)
+                recon_complete_now = _recon_details_now["complete"]
                 recon_status = "scraped" if recon_complete_now else "failed"
 
-                if expected_vin:
+                if expected_vin and not recon_complete_now and cached_recon["complete"]:
+                    # Never replace a cached complete scrape's items with an
+                    # incomplete one: the gate's FQC streak decides any downgrade.
+                    print(
+                        f"[recon-gate] {stock}: keeping the cached complete recon row; "
+                        f"this scrape was incomplete",
+                        file=sys.stderr,
+                    )
+                elif expected_vin:
                     save_recon(
                         expected_vin,
                         stock,
@@ -4309,19 +4500,17 @@ def aggregate(
     provenance_sentence = build_provenance_sentence(
         stock, carfax_raw, pricing_raw.get("status_code")
     )
-    non_cpo = pricing_raw.get("status_code") in NON_CPO_GATE_STATUS_CODES
     proof_point_sentence, proof_point_type = build_proof_point_sentence(
         pricing_raw,
         _advertised_price(pricing_raw),
         current_price=pricing_raw.get("current_internet_price"),
         search_distance=pricing_raw.get("search_distance"),
-        include_scarcity=not non_cpo,
     )
     scarcity_sentence = (
         build_scarcity_sentence(
             pricing_raw.get("matching_count"), pricing_raw.get("search_distance")
         )
-        if non_cpo
+        if pricing_raw.get("status_code") in BUILD_STATUS_CODES
         else None
     )
 

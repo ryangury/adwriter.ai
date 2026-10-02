@@ -42,7 +42,7 @@ from feature_cache import (
     save_trim_knowledge,
 )
 from recon_update_prompt import RECON_UPDATE_SYSTEM_PROMPT
-from reprice_prompt import REPRICE_SYSTEM_PROMPT
+from reprice_prompt import reprice_prompt_for
 from scraper import ReconVisionScraper, ScraperError
 from shared_prompt_constants import (
     API_FEEDBACK_BLOCK,
@@ -50,6 +50,7 @@ from shared_prompt_constants import (
     PREDICTIVE_STICKER_RULE,
     PROVENANCE_RULE,
     RECON_FALLBACK_RULE,
+    SCARCITY_RULE,
     SELLER_COMMENTS_RULE,
     STICKER_PRICES_APPROXIMATE_RULE,
     COLOR_SOURCE_RULE,
@@ -165,10 +166,11 @@ This is the only paragraph that changes meaningfully from vehicle to vehicle. Bu
 PACKAGE PRICING: State the original price of a named package or option when it was $750 or more at time of sale and the price is present in the OPTION PACKAGES data (not the MSRP APPROXIMATE fallback — see that rule separately). Format: "The [Package Name] adds [contents] at $[price]." Skip stating a price for individual options under $750, but always name the feature regardless of price. This does not override the MSRP DEPRECIATION rule — package prices and the overall MSRP depreciation sentence are separate, both can appear in the same ad.
 
 {PACKAGE_CONTENT_VERIFICATION_RULE}
-3. Rarity or combination story — if this color, trim, and equipment combination is rare in the CPO market, say so using this exact phrase: "buyers who want this specific combination rarely find it in the certified pre-owned market." Never make broader exclusivity claims you cannot support.
-4. Pricing proof point — see PRICING below.
+3. Pricing proof point — see PRICING below.
 
 PRICING: Use the PROOF POINT SENTENCE from the data package verbatim. Do not recalculate or substitute.
+
+{SCARCITY_RULE}
 
 Never list the same feature or package content twice in paragraph two, even if it appears in multiple places in the source data. If an item was already named inside a package description, do not list it again in the additional equipment sentence.
 
@@ -280,7 +282,7 @@ TEMPORARILY DISABLED (2026-09-21) — do not use titled-state/warm-climate frami
 
 MARKET VELOCITY DATA
 
-Velocity and scarcity narrative (comparable units turning over faster than the overall market, or a thin comparable set) is already built into the PROOF POINT SENTENCE when PROOF POINT TYPE is velocity_anchor — see PRICING above. Use it verbatim like any other proof point sentence. Do not construct your own velocity or scarcity sentence from the raw matching_market_days / overall_market_days / matching_count fields, and do not apply your own day-count or scarcity thresholds — those decisions are pre-made by build_proof_point_sentence() in the data pipeline.
+Velocity narrative (comparable units turning over faster than the overall market) is already built into the PROOF POINT SENTENCE when PROOF POINT TYPE is velocity_anchor — see PRICING above. Use it verbatim like any other proof point sentence. Scarcity wording comes only from the SCARCITY SENTENCE (see the SCARCITY rule under PRICING). Do not construct your own velocity or scarcity sentence from the raw matching_market_days / overall_market_days fields, and do not apply your own day-count or scarcity thresholds — those decisions are pre-made by the data pipeline.
 
 market_rank in the bottom half of matching set (e.g. 5 of 8): do not use pricing as the lead story. Lead with equipment and velocity instead.
 
@@ -370,7 +372,7 @@ INPUT: 2024 GLE 350 4MATIC, PM stock, one owner, off-lease, personal use, Twilig
 OUTPUT:
 Mercedes-Benz Certified Pre-Owned, 2024 GLE 350 4MATIC SUV, 46,471 miles, Twilight Blue Metallic over Bahia Brown and Black interior, VIN 4JGFB4FB4RB182965. One owner, off-lease, personal use history confirmed by Carfax. Spark plugs and air filter replaced to meet Mercedes-Benz Certified Pre-Owned standards.
 
-The GLE 350 is Mercedes-Benz's best-selling SUV and this unit is built around a color and equipment combination that stands apart from the typical inventory in this segment. Twilight Blue Metallic over Bahia Brown and Black interior is a pairing that most GLE buyers never consider and immediately appreciate in person. The AMG Line Exterior Package at $3,150 adds full AMG body styling, AMG-specific exterior treatment, and sport brake system with Mercedes-Benz lettering — giving this GLE a visual presence that the standard model does not have. Buyers who want this specific look rarely find it available in the certified pre-owned market. Additional equipment includes Panorama Sunroof, 21" AMG Multispoke Wheels, Trailer Hitch with Increased Towing Capacity, Surround View Camera, Power Driver and Passenger Seats with Memory, Rear Side Airbags, Brushed Aluminum Trim, Winter Package, Heated Steering Wheel, and Power Folding Mirrors. Original MSRP was $71,550. Current asking price is $47,615 Certified Pre-Owned (includes $899 dealer administrative fee), $3,910 below J.D. Power and $1,075 below typical listing price on comparable units.
+The GLE 350 is Mercedes-Benz's best-selling SUV and this unit is built around a color and equipment combination that stands apart from the typical inventory in this segment. Twilight Blue Metallic over Bahia Brown and Black interior is a pairing that most GLE buyers never consider and immediately appreciate in person. The AMG Line Exterior Package at $3,150 adds full AMG body styling, AMG-specific exterior treatment, and sport brake system with Mercedes-Benz lettering — giving this GLE a visual presence that the standard model does not have. Additional equipment includes Panorama Sunroof, 21" AMG Multispoke Wheels, Trailer Hitch with Increased Towing Capacity, Surround View Camera, Power Driver and Passenger Seats with Memory, Rear Side Airbags, Brushed Aluminum Trim, Winter Package, Heated Steering Wheel, and Power Folding Mirrors. Original MSRP was $71,550. Current asking price is $47,615 Certified Pre-Owned (includes $899 dealer administrative fee), $3,910 below J.D. Power and $1,075 below typical listing price on comparable units.
 
 Every Mercedes-Benz Certified Pre-Owned vehicle passes a rigorous 165-point inspection before certification. No salvage titles, no flood damage, no frame damage, no exceptions. Tires and brakes must be above half-life, and all repairs are performed using genuine Mercedes-Benz parts and manufacturer-recommended tires. This vehicle carries the remainder of its original 4-year/50,000-mile factory warranty plus an additional 1 year of unlimited-mile Certified Pre-Owned coverage. Zero deductible, fully transferable, honored at any of 380+ authorized Mercedes-Benz dealers nationwide. If this vehicle is within 6 months or 5,000 miles of its next scheduled service at the time of sale, Mercedes-Benz of Durham completes that service before delivery at no cost to the buyer. Additional coverage includes 24/7 roadside assistance, trip interruption protection up to $300 per day for 3 days if you break down more than 100 miles from home, and a 7-day/500-mile exchange privilege.
 
@@ -1386,13 +1388,12 @@ def format_data_package(pkg: dict) -> tuple[str, list[dict]]:
         + ("velocity_anchor — turn/scarcity signal, not a $1,000+ book/market gap"
            if pkg.get("proof_point_type") == "velocity_anchor" else "standard")
     )
-    if (pkg.get("vehicle") or {}).get("status_code") in NON_CPO_STATUS_CODES:
-        lines.append("")
-        lines.append(
-            "SCARCITY SENTENCE (use verbatim immediately after the PROOF POINT SENTENCE; "
-            "if (omit), write no scarcity language):"
-        )
-        lines.append(pkg.get("scarcity_sentence") or "(omit)")
+    lines.append("")
+    lines.append(
+        "SCARCITY SENTENCE (use verbatim immediately after the PROOF POINT SENTENCE; "
+        "if (omit), write no scarcity language):"
+    )
+    lines.append(pkg.get("scarcity_sentence") or "(omit)")
 
     lines.append("")
     lines.append("MSRP DEPRECIATION SENTENCE (include in paragraph two when present, omit if null):")
@@ -1486,11 +1487,6 @@ def format_data_package(pkg: dict) -> tuple[str, list[dict]]:
         if isinstance(gap, (int, float)) and gap > 0:
             lines.append(
                 f"Velocity signal: This config sells {gap} days faster than market average"
-            )
-        if (pkg.get("vehicle") or {}).get("status_code") not in NON_CPO_STATUS_CODES:
-            lines.append(
-                f"Matching units in market: {mv.get('matching_count', 'n/a')} "
-                f"(within {mv.get('search_distance', 'n/a')} miles)"
             )
         lines.append(f"Market rank: {mv.get('market_rank', 'n/a')} of {mv.get('market_rank_of', 'n/a')}")
 
@@ -1622,7 +1618,8 @@ def source_status(pkg: dict) -> dict[str, tuple[str, str]]:
 # only wording Claude added can trip it. Word-bounded: "regional market listings"
 # is fine, "in the region" is not.
 _BANNED_SCARCITY_RE = re.compile(
-    r"\b(?:rare|rarely|rarest|hard to find|one of the few|one of the only|in the region)\b",
+    r"\b(?:rare|rarely|rarest|rarity|hard to find|one of the few|one of the only"
+    r"|low[- ]volume|limited[- ]production|in the region)\b",
     re.IGNORECASE,
 )
 
@@ -1635,17 +1632,49 @@ def find_banned_scarcity_phrases(ad_text: str, scarcity_sentence: str | None = N
 
 
 class BannedScarcityPhraseError(RuntimeError):
-    """The non-MB ad still contained banned scarcity wording after one retry."""
+    """The ad still contained banned scarcity wording after one retry."""
+
+
+# Sentences that must not survive in paragraph two: any with a banned word, plus
+# the pre-count-backed velocity text ("Fewer than N comparable examples ...").
+_LEGACY_SCARCITY_RE = re.compile(r"\bFewer than \d+ comparable examples are actively listed\b", re.I)
+
+
+def _split_sentences(text: str) -> list[str]:
+    protected = (text or "").replace("J.D.", "J\u2024D\u2024")
+    parts = re.split(r'(?<=[.!?])\s+(?=[A-Z0-9"\u201c(])', protected.strip())
+    return [p.replace("J\u2024D\u2024", "J.D.") for p in parts if p]
+
+
+def strip_banned_sentences(text: str) -> tuple[str, list[str]]:
+    """(text without every sentence that contains a banned scarcity word or the
+    legacy "Fewer than N ..." velocity text, the removed sentences)."""
+    kept: list[str] = []
+    removed: list[str] = []
+    for s in _split_sentences(text):
+        (removed if (_BANNED_SCARCITY_RE.search(s) or _LEGACY_SCARCITY_RE.search(s)) else kept).append(s)
+    return " ".join(kept), removed
+
+
+def insert_scarcity_sentence(paragraph_two: str, sentence: str | None) -> str:
+    """Put Python's scarcity sentence right after the proof-point sentence ("Current
+    asking price is ..."), or at the end when there is none. No sentence, no change."""
+    if not sentence:
+        return paragraph_two
+    parts = _split_sentences(paragraph_two)
+    idx = next((i for i, s in enumerate(parts) if s.startswith("Current asking price is")), None)
+    if idx is None:
+        parts.append(sentence)
+    else:
+        parts.insert(idx + 1, sentence)
+    return " ".join(parts)
 
 
 def _generate_from_package(pkg: dict) -> tuple[str, str | None]:
-    """(ad_copy, feedback_block) for one aggregated package. For the non-MB
-    tiers the ad is checked for banned scarcity wording: one retry, then
+    """(ad_copy, feedback_block) for one aggregated package. Every tier's ad is
+    checked for banned scarcity wording: one retry, then
     BannedScarcityPhraseError (callers log it and skip the vehicle)."""
-    status = (pkg.get("vehicle") or {}).get("status_code")
     ad_copy, feedback = _generate_once(pkg)
-    if status not in NON_CPO_STATUS_CODES:
-        return ad_copy, feedback
     hits = find_banned_scarcity_phrases(ad_copy, pkg.get("scarcity_sentence"))
     if hits:
         print(
@@ -1929,6 +1958,18 @@ def _format_reprice_package(
     return "\n".join(lines)
 
 
+def _snapshot_status(stock: str) -> int | None:
+    """status_code for a stock from last_inventory_snapshot.json, or None."""
+    try:
+        data = json.loads(Path(__file__).with_name("last_inventory_snapshot.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    for v in data.get("vehicles") or []:
+        if str(v.get("stock_number") or "").strip().upper() == stock:
+            return v.get("status_code")
+    return None
+
+
 def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
     """Rewrite paragraph two of an existing ad against fresh pricing data and
     return the reconstructed four-paragraph ad. Updates ad_history.json in place
@@ -1951,23 +1992,45 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
     # from fresh_pricing_data() are already calculated against it.
     current_price = pd.get("current_price")
     advertised_price = pd.get("advertised_price")
+    status = pd.get("status_code")
+    if status is None:
+        status = _snapshot_status(stock)
+    # Python owns scarcity wording: every sentence with a banned word (and any
+    # legacy "Fewer than N ..." text) comes out before Claude sees the paragraph,
+    # and Python's CURRENT scarcity sentence (or none) goes back in afterward.
+    clean_p2, removed = strip_banned_sentences(old_p2)
+    if removed:
+        print(f"[reprice] {stock}: removed {len(removed)} scarcity sentence(s) from paragraph two")
     data_block = _format_reprice_package(
-        old_p2,
+        clean_p2 or old_p2,
         advertised_price,
         pd.get("proof_points_below") or [],
         pd.get("best_proof_point"),
     )
 
     client = anthropic.Anthropic(api_key=API_KEY)
-    resp = client.messages.create(
-        model=MODEL,
-        max_tokens=500,
-        system=REPRICE_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": data_block}],
-    )
-    new_p2 = "".join(b.text for b in resp.content if b.type == "text").strip()
-    if not new_p2:
-        new_p2 = old_p2
+
+    def _rewrite() -> str:
+        resp = client.messages.create(
+            model=MODEL,
+            max_tokens=500,
+            system=reprice_prompt_for(status),
+            messages=[{"role": "user", "content": data_block}],
+        )
+        return "".join(b.text for b in resp.content if b.type == "text").strip() or clean_p2
+
+    new_p2 = _rewrite()
+    hits = find_banned_scarcity_phrases(new_p2)
+    if hits:
+        print(f"[reprice] {stock}: banned scarcity wording {sorted(set(hits))} - retrying once", file=sys.stderr)
+        new_p2 = _rewrite()
+        hits = find_banned_scarcity_phrases(new_p2)
+        if hits:
+            print(f"[reprice] {stock}: banned scarcity wording {sorted(set(hits))} after retry - skipping", file=sys.stderr)
+            raise BannedScarcityPhraseError(
+                f"reprice: banned scarcity wording after retry: {sorted(set(hits))}"
+            )
+    new_p2 = insert_scarcity_sentence(new_p2, pd.get("scarcity_sentence"))
 
     p1 = _paragraph(entry, "paragraph_one")
     p3 = _paragraph(entry, "paragraph_three")
@@ -2011,6 +2074,14 @@ def fresh_pricing_data(stock_number: str, *, headless: bool = True) -> dict:
     shaped = _pricing(pr.get("pricing_proof_points", []), advertised)
     shaped["current_price"] = pr.get("current_internet_price")
     shaped["advertised_price"] = advertised
+    shaped["status_code"] = pr.get("status_code")
+    from aggregator import BUILD_STATUS_CODES, build_scarcity_sentence
+
+    shaped["scarcity_sentence"] = (
+        build_scarcity_sentence(pr.get("matching_count"), pr.get("search_distance"))
+        if pr.get("status_code") in BUILD_STATUS_CODES
+        else None
+    )
     return shaped
 
 
