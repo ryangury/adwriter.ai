@@ -584,6 +584,7 @@ def inventory():
             verdict_state = "unchecked"  # verification hasn't run against this stock yet
 
         identity_confirmed = entry.get("identity_confirmed") if entry else None
+        verification_note = entry.get("verification_note") if entry else None
         # Posted: green only when identity_confirmed is True (our proof-point $
         # or provenance sentence phrase-matched the live page — see verifier.py
         # compare_ad()); red when it's explicitly False (nothing of ours found,
@@ -595,6 +596,11 @@ def inventory():
             posted_state = "red"
         else:
             posted_state = "grey"
+        # Removed sentences still on the live page ("old text still live"): the
+        # listing was never reposted, so it is not a current post even though our
+        # proof-point or provenance text is also there.
+        if verification_note and verdict == "outdated":
+            posted_state = "red"
 
         price_mismatch = entry.get("price_mismatch") if entry else None
         # Price Accurate is only meaningful once Posted is green -- if our copy
@@ -644,6 +650,7 @@ def inventory():
                     v.get("current_price"), entry.get("last_price_at_write") if entry else None
                 ),
                 "price_mismatch": price_mismatch,
+                "verification_note": verification_note,
             }
         )
     return render_template("inventory.html", rows=rows, snapshot_time=_fmt_snapshot_time(stamp))

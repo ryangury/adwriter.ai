@@ -1,5 +1,21 @@
 {% extends "layout.html" %}
 {% block title %}{{ vehicle.stock_number }} — Inventory — Mercedes-Benz of Durham{% endblock %}
+{% block head %}
+<style>
+  .ad-block { position: relative; }
+  .copy-btn {
+    position: absolute;
+    top: 0; right: 0;
+    padding: 5px 12px;
+    font-size: 0.8rem;
+    background: #fff;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    cursor: pointer;
+  }
+</style>
+{% endblock %}
 {% block content %}
 <div class="wrap-wide">
   <div class="detail-head">
@@ -30,6 +46,7 @@
   {% if ad_entry and ad_paras %}
   <div class="ad-block">
     <h2>Cached ad</h2>
+    <button type="button" class="copy-btn" id="copy-ad">Copy</button>
     <div class="ad-meta">
       {{ ad_entry.lifecycle_stage or 'active' }}
       &middot; written {{ ad_entry.last_ad_date or '—' }}
@@ -38,7 +55,9 @@
       {% if ad_entry.verification_verdict %}&middot; site check: {{ ad_entry.verification_verdict }}{% if ad_entry.match_score is not none %} ({{ ad_entry.match_score }}){% endif %}{% endif %}
       &middot; <a href="/?stock={{ vehicle.stock_number }}">Open in Ad Writer</a>
     </div>
-    {% for p in ad_paras %}<p>{{ p }}</p>{% endfor %}
+    <div id="ad-text">{% for p in ad_paras %}<p>{{ p }}</p>
+
+{% endfor %}</div>
   </div>
   {% else %}
   <div class="ad-none">
@@ -52,6 +71,38 @@
 {% endblock %}
 
 {% block scripts %}
+<script>
+// Same paragraph-normalizing copy handler as the Ad Writer page (templates/index.html):
+// collapses any whitespace run to exactly one blank line between paragraphs, so the
+// clipboard text can't drift from what is on screen.
+(function () {
+  "use strict";
+  function textForCopy(el) {
+    return el.textContent
+      .split(/\n\s*\n/)
+      .map(function (p) { return p.trim(); })
+      .filter(Boolean)
+      .join("\n\n");
+  }
+  var copyBtn = document.getElementById("copy-ad");
+  if (!copyBtn) return;
+  copyBtn.addEventListener("click", function () {
+    var t = textForCopy(document.getElementById("ad-text"));
+    var done = function () {
+      copyBtn.textContent = "Copied";
+      setTimeout(function () { copyBtn.textContent = "Copy"; }, 1600);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(t).then(done, done);
+    } else {
+      var ta = document.createElement("textarea");
+      ta.value = t; document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); } catch (e) {}
+      document.body.removeChild(ta); done();
+    }
+  });
+})();
+</script>
 <script>
 (function () {
   "use strict";

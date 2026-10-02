@@ -411,10 +411,29 @@ def expected_advertised_price(entry: dict[str, Any]) -> float | None:
     return None
 
 
+STALE_NOTE = "old text still live"
+_STALE_MIN_CHARS = 25  # a shorter normalized fragment could match by accident
+
+
+def _stale_phrases_found(stale_phrases: list[str] | None, live_norm: str) -> tuple[list[str], list[str]]:
+    """(stale phrases present on the live page, ones that are not). Both sides
+    are compared whitespace/punctuation/case-normalized, like every other phrase
+    check here."""
+    found: list[str] = []
+    gone: list[str] = []
+    for p in stale_phrases or []:
+        n = _normalize(p)
+        if len(n) < _STALE_MIN_CHARS:
+            continue
+        (found if n in live_norm else gone).append(p)
+    return found, gone
+
+
 def compare_ad(
     stored_ad_text: str,
     live_description_text: str | None,
     expected_price: float | None = None,
+    stale_phrases: list[str] | None = None,
 ) -> dict[str, Any]:
     """Fuzzy-compare the stored ad against the live VDP description.
 
@@ -430,6 +449,13 @@ def compare_ad(
     Homenet auto-blurb can echo as plain spec data) doesn't count. This is
     independent of match_score/verdict: a vehicle can be "outdated" on drift
     in other phrases while identity_confirmed is still True.
+
+    Stale phrases: sentences we removed from the stored ad after it was posted
+    (ad_history `stale_phrases`). If any is still on the live page the verdict is
+    "outdated" with note "old text still live" - the listing was never
+    reposted - whatever the phrase score. `stale_found` / `stale_gone` report
+    which phrases were / were not seen, for the caller to prune; neither is
+    reported when the page wasn't read.
 
     Price check: when `expected_price` (the fee-inclusive asking price the
     stored ad states) is given and the live text has a "Current asking price
@@ -476,6 +502,13 @@ def compare_ad(
         "verdict": verdict,
         "identity_confirmed": identity_confirmed,
     }
+    if stale_phrases:
+        stale_found, stale_gone = _stale_phrases_found(stale_phrases, live_norm)
+        result["stale_found"] = stale_found
+        result["stale_gone"] = stale_gone
+        if stale_found:
+            result["verdict"] = "outdated"
+            result["note"] = STALE_NOTE
 
     m = _LIVE_PRICE_RE.search(live)
     if m and expected_price is not None:
@@ -533,6 +566,12 @@ def _verification_due(entry: dict[str, Any], today: date) -> bool:
     # A or B to fire yet — that same-day re-check is the whole point of
     # clearing the verdict, so don't make it wait out the 3-day age gates.
     if entry.get("lifecycle_stage") == "repriced" and entry.get("verification_verdict") is None:
+        return True
+
+    # D: sentences were removed from the stored ad after it was posted and the
+    # verdict was cleared - re-check at once so a listing still carrying the old
+    # text is caught, not left unverified until the 3-day gates fire.
+    if entry.get("stale_phrases") and entry.get("verification_verdict") is None:
         return True
 
     return False
@@ -614,7 +653,10 @@ def run_verification(
 
         live_text = live["description_text"] if live.get("page_found") else None
         cmp = compare_ad(
-            entry.get("current_ad_text", ""), live_text, expected_advertised_price(entry)
+            entry.get("current_ad_text", ""),
+            live_text,
+            expected_advertised_price(entry),
+            stale_phrases=entry.get("stale_phrases"),
         )
         if cmp.get("price_mismatch"):
             print(
@@ -624,6 +666,15 @@ def run_verification(
 
         entry["last_verified"] = today.isoformat()
         entry["verification_verdict"] = cmp["verdict"]
+        entry["verification_note"] = cmp.get("note")
+        if "stale_gone" in cmp:
+            # Page was read: drop the phrases no longer live, keep the ones still live.
+            if cmp.get("stale_found"):
+                entry["stale_phrases"] = cmp["stale_found"]
+                print(f"[verify] {stock}: old text still live ({len(cmp['stale_found'])} removed sentence(s) on the page)")
+            else:
+                entry.pop("stale_phrases", None)
+                print(f"[verify] {stock}: removed text is no longer live - stale_phrases cleared")
         entry["match_score"] = cmp["match_score"]
         entry["identity_confirmed"] = cmp.get("identity_confirmed", False)
         if entry["identity_confirmed"]:

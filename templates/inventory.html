@@ -77,9 +77,10 @@
             {% else %}<span class="has-ad-no">&ndash;</span>{% endif %}
           </td>
           <td class="check-col"
-              title="{% if r.posted_state == 'green' %}Our copy confirmed on the live page (verdict: {{ r.verdict }}){% elif r.posted_state == 'red' %}Nothing of ours found on the live page{% else %}Never verified against the live site{% endif %}">
+              title="{% if r.posted_state == 'green' %}Our copy confirmed on the live page (verdict: {{ r.verdict }}){% elif r.posted_state == 'red' and r.verification_note %}{{ r.verification_note|capitalize }}: sentences we removed are still on the live page{% elif r.posted_state == 'red' %}Nothing of ours found on the live page{% else %}Never verified against the live site{% endif %}">
             {% if r.posted_state == 'green' %}<span class="has-ad-yes">&#10003;</span>
             {% elif r.posted_state == 'red' %}<span class="has-ad-fail">&#10007;</span>
+              {% if r.verification_note %}<div class="mismatch-note">{{ r.verification_note }}</div>{% endif %}
             {% else %}<span class="has-ad-no">&ndash;</span>{% endif %}
           </td>
           <td class="check-col"
