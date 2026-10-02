@@ -14,6 +14,7 @@ from shared_prompt_constants import (
     HENDRICK_STORE_CLOSER_PARAGRAPH,
     PREDICTIVE_STICKER_RULE,
     STICKER_PRICES_APPROXIMATE_RULE,
+    NON_MB_SCARCITY_RULE,
     PROVENANCE_RULE,
     RECON_SENTENCE_RULE,
     RECON_FALLBACK_RULE,
@@ -124,7 +125,7 @@ When in doubt on this tier, lean toward including the item — the opposite bias
 
 PARAGRAPH TWO — SELLING STORY (VARIABLE, sub-category-specific)
 
-Both sub-categories start the same way: lead with the primary differentiator (color, standout equipment, rare configuration), then the equipment story, named specifically. No em dashes in this paragraph. Never list the same feature or package twice.
+Both sub-categories start the same way: lead with the primary differentiator (color, standout equipment, distinctive configuration), then the equipment story, named specifically. No em dashes in this paragraph. Never list the same feature or package twice.
 
 {PACKAGE_CONTENT_VERIFICATION_RULE}
 
@@ -188,7 +189,7 @@ Never say "comparable units" alone on this program — always name the trim at m
 
 The MSRP depreciation sentence is separate from proof points and appears before them — it does not count toward the two-anchor limit and is never itself labeled as a proof point.
 
-Scarcity language follows the same rules as the other programs: use it when market data in the package shows low matching_count or matching_market_days meaningfully faster than overall_market_days. Never fabricate market data. National-buyer / shipping language on this program is governed separately — see NATIONWIDE SHIPPING — AS-IS VEHICLES below.
+{NON_MB_SCARCITY_RULE} Never fabricate market data. National-buyer / shipping language on this program is governed separately — see NATIONWIDE SHIPPING — AS-IS VEHICLES below.
 
 NATIONWIDE SHIPPING — AS-IS VEHICLES
 Never include shipping language for:
@@ -203,7 +204,7 @@ AND at least one of these expanded triggers applies:
   - Vehicle has manual transmission
   - matching_count under 10 nationally
   - Priced $3,000+ below market average
-  - Rare or unusual color combination for this make/model
+  - Unusual color combination for this make/model
   - Price above $60,000
 
 The Palisade example: 102,124 miles, no warranty — never trigger shipping regardless of trim or price.
@@ -251,7 +252,7 @@ No em dashes in paragraph two.
 Same sentence spacing rule as every other program.
 Same equipment explanation tiers as every other program.
 Same proof point format with the $899 admin fee disclosed in parentheses.
-Same scarcity language rules as every other program.
+Scarcity wording follows the SCARCITY rule above.
 Recon items: same include/exclude judgment as other tiers, applied more generously — recon IS the confidence signal on these vehicles.
 Stock numbers: never include a stock number anywhere in ad copy.
 

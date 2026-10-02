@@ -74,6 +74,7 @@ MAX_TOKENS = 2500
 #   1 / None -> certification not yet assigned in the system
 #   not in {1, 10, 11, 12, 13, 16} -> unknown code, needs mapping
 from status_codes import BUILD_STATUS_CODES as POSTABLE_STATUS_CODES  # noqa: E402
+from status_codes import NON_CPO_STATUS_CODES  # noqa: E402
 
 # --------------------------------------------------------------------------- #
 # Ad framework — this is the system prompt. Edit freely to match your house style.
@@ -1187,7 +1188,18 @@ def format_data_package(pkg: dict) -> tuple[str, list[dict]]:
     lines.append(f"Trim / body: {v.get('trim_body', 'n/a')}")
     lines.append(f"Mileage: {(v.get('mileage') or 0):,}")
     lines.append(f"Exterior color: {v.get('exterior_color', 'n/a')}")
-    lines.append(f"Interior color: {v.get('interior_color', 'n/a')}")
+    if v.get("interior_color"):
+        lines.append(f"Interior color: {v.get('interior_color')}")
+    else:
+        material = v.get("interior_seat_material")
+        lines.append(
+            "Interior color: UNAVAILABLE. Name no interior color. "
+            + (
+                f"Describe the seats by material only (sticker lists: {material})."
+                if material
+                else "Do not describe the interior color or seat material."
+            )
+        )
     lines.append(f"Certified: {_yn(v.get('certified'))}")
     lines.append(f"Status code: {v.get('status_code', 'n/a')}")
     lines.append(f"Days on lot: {v.get('days_on_lot', 'n/a')}")
@@ -1371,6 +1383,13 @@ def format_data_package(pkg: dict) -> tuple[str, list[dict]]:
         + ("velocity_anchor — turn/scarcity signal, not a $1,000+ book/market gap"
            if pkg.get("proof_point_type") == "velocity_anchor" else "standard")
     )
+    if (pkg.get("vehicle") or {}).get("status_code") in NON_CPO_STATUS_CODES:
+        lines.append("")
+        lines.append(
+            "SCARCITY SENTENCE (use verbatim immediately after the PROOF POINT SENTENCE; "
+            "if (omit), write no scarcity language):"
+        )
+        lines.append(pkg.get("scarcity_sentence") or "(omit)")
 
     lines.append("")
     lines.append("MSRP DEPRECIATION SENTENCE (include in paragraph two when present, omit if null):")
@@ -1465,10 +1484,11 @@ def format_data_package(pkg: dict) -> tuple[str, list[dict]]:
             lines.append(
                 f"Velocity signal: This config sells {gap} days faster than market average"
             )
-        lines.append(
-            f"Matching units in market: {mv.get('matching_count', 'n/a')} "
-            f"(within {mv.get('search_distance', 'n/a')} miles)"
-        )
+        if (pkg.get("vehicle") or {}).get("status_code") not in NON_CPO_STATUS_CODES:
+            lines.append(
+                f"Matching units in market: {mv.get('matching_count', 'n/a')} "
+                f"(within {mv.get('search_distance', 'n/a')} miles)"
+            )
         lines.append(f"Market rank: {mv.get('market_rank', 'n/a')} of {mv.get('market_rank_of', 'n/a')}")
 
     # --- SCRAPER STATUS: cache_hit / scraped / failed per source, from
@@ -1594,7 +1614,57 @@ def source_status(pkg: dict) -> dict[str, tuple[str, str]]:
 # --------------------------------------------------------------------------- #
 
 
+# Scarcity / exclusivity wording the non-MB tiers must never contain. Python's own
+# scarcity sentence (pkg["scarcity_sentence"]) is removed from the text first, so
+# only wording Claude added can trip it. Word-bounded: "regional market listings"
+# is fine, "in the region" is not.
+_BANNED_SCARCITY_RE = re.compile(
+    r"\b(?:rare|rarely|rarest|hard to find|one of the few|one of the only|in the region)\b",
+    re.IGNORECASE,
+)
+
+
+def find_banned_scarcity_phrases(ad_text: str, scarcity_sentence: str | None = None) -> list[str]:
+    text = ad_text or ""
+    if scarcity_sentence:
+        text = text.replace(scarcity_sentence, " ")
+    return [m.group(0).lower() for m in _BANNED_SCARCITY_RE.finditer(text)]
+
+
+class BannedScarcityPhraseError(RuntimeError):
+    """The non-MB ad still contained banned scarcity wording after one retry."""
+
+
 def _generate_from_package(pkg: dict) -> tuple[str, str | None]:
+    """(ad_copy, feedback_block) for one aggregated package. For the non-MB
+    tiers the ad is checked for banned scarcity wording: one retry, then
+    BannedScarcityPhraseError (callers log it and skip the vehicle)."""
+    status = (pkg.get("vehicle") or {}).get("status_code")
+    ad_copy, feedback = _generate_once(pkg)
+    if status not in NON_CPO_STATUS_CODES:
+        return ad_copy, feedback
+    hits = find_banned_scarcity_phrases(ad_copy, pkg.get("scarcity_sentence"))
+    if hits:
+        print(
+            f"[adwriter] {pkg.get('stock_number')}: banned scarcity wording {sorted(set(hits))} "
+            f"- retrying once",
+            file=sys.stderr,
+        )
+        ad_copy, feedback = _generate_once(pkg)
+        hits = find_banned_scarcity_phrases(ad_copy, pkg.get("scarcity_sentence"))
+        if hits:
+            print(
+                f"[adwriter] {pkg.get('stock_number')}: banned scarcity wording "
+                f"{sorted(set(hits))} after retry - skipping this vehicle",
+                file=sys.stderr,
+            )
+            raise BannedScarcityPhraseError(
+                f"banned scarcity wording after retry: {sorted(set(hits))}"
+            )
+    return ad_copy, feedback
+
+
+def _generate_once(pkg: dict) -> tuple[str, str | None]:
     """(ad_copy, feedback_block) for one aggregated package."""
     formatted, needs_lookup = format_data_package(pkg)
     v = pkg.get("vehicle") or {}

@@ -14,6 +14,7 @@ from shared_prompt_constants import (
     HENDRICK_STORE_CLOSER_PARAGRAPH,
     PREDICTIVE_STICKER_RULE,
     STICKER_PRICES_APPROXIMATE_RULE,
+    NON_MB_SCARCITY_RULE,
     PROVENANCE_RULE,
     RECON_SENTENCE_RULE,
     RECON_FALLBACK_RULE,
@@ -86,14 +87,14 @@ PARAGRAPH TWO — THE SELLING STORY (VARIABLE)
 
 This is the only paragraph that changes meaningfully from vehicle to vehicle. Build the selling story around whatever is most compelling about this specific unit. Priority order for what to lead with:
 
-1. Primary differentiator — color, standout equipment, or a rare configuration for this model.
+1. Primary differentiator — color, standout equipment, or a distinctive configuration for this model.
 2. Package descriptions with prices, named specifically.
 
 {PACKAGE_CONTENT_VERIFICATION_RULE}
 3. MSRP depreciation sentence, if present in the data package (see MSRP DEPRECIATION below).
 4. Pricing proof point with the admin fee disclosure (see PRICING PROOF POINT RULES below).
 5. Warranty context (see HENDRICK CERTIFIED WARRANTY CALCULATION below).
-6. Scarcity or national-buyer language if triggered by market data in the package (low matching_count, fast matching_market_days relative to overall_market_days), or by the expanded triggers in NATIONWIDE SHIPPING below.
+6. The SCARCITY SENTENCE verbatim if present (see SCARCITY), and national-buyer language if triggered by the expanded triggers in NATIONWIDE SHIPPING below.
 
 Never list the same feature or package content twice in paragraph two. If an item was already named inside a package description, do not list it again in an additional-equipment sentence.
 
@@ -116,7 +117,7 @@ Hendrick Certified vehicles are quality-inspected and worth shipping — no mile
 - Vehicle has manual transmission
 - matching_count under 10 nationally
 - Priced $3,000+ below market average
-- Rare or unusual color combination for this make/model
+- Unusual color combination for this make/model
 - Price above $60,000
 
 Never fabricate a trigger — every one above must be traceable to actual data in the package (year_make_model/make, transmission data, market_velocity's matching_count, the pricing proof point gap, exterior/interior color, or advertised_price). When none apply, omit shipping language entirely.
@@ -135,6 +136,8 @@ PROOF POINT DECISION TREE — MAXIMUM TWO ANCHORS
 3. NEVER pair two book values together. Kelley Blue Book + J.D. Power in the same ad is always wrong — redundant, not a legitimate pairing. The only legitimate two-anchor pairings are Kelley Blue Book + market, or J.D. Power + market (only when Kelley Blue Book is unavailable or unfavorable). A single book value alone is correct when market isn't favorable. Market alone (no book value favorable) is the least preferred outcome and is promoted into the primary_proof_point slot when it happens — the ad always leads with whichever single anchor is available.
 
 Use the data package's primary_proof_point / secondary_proof_point fields directly rather than re-deriving this selection yourself. Never list three proof points. Never use a proof point where the current price is above the benchmark. Always state the specific dollar gap, not a percentage.
+
+{NON_MB_SCARCITY_RULE}
 
 TRIM AND DRIVETRAIN SPECIFICITY: Never say "comparable units" alone on this program — always name the trim at minimum. Pull the trim from year_make_model or the sticker data (trim_body). Pull drivetrain only when it explicitly appears in the data package (year_make_model, trim_body, or option data) — never infer or fabricate it from the model name alone. Use the market_velocity data in the package (matching_count and the competitive set filters ACV Max applied — trim, drivetrain, mileage range, certification status) to confirm what the benchmark is actually being compared against before naming it.
 

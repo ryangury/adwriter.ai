@@ -146,7 +146,7 @@ _TIER_SUFFIX: dict[int, str] = {
     16: "to meet Mercedes-Benz Certified Pre-Owned standards",
     11: "prior to delivery",
     12: "before being offered for sale",
-    13: "before being offered for sale. Our team addressed all items identified during inspection",
+    13: "before being offered for sale",
 }
 
 
@@ -722,8 +722,14 @@ def _vehicle(pr: dict[str, Any]) -> dict[str, Any]:
 
 
 def _color(val: Any) -> str | None:
-    """Trim a raw color string; empty / whitespace -> None."""
+    """Trim a raw color string; empty / whitespace -> None. A value that is
+    really label text from a sticker whose color labels sit apart from their
+    values ("Total Price: $92,045.00", "Interior/Seat Color: ...") is not a
+    color: anything with a colon or a dollar sign is treated as missing, so the
+    next color source (ACV Max header, Equipment tab) can fill it."""
     s = str(val).strip() if val is not None else ""
+    if ":" in s or "$" in s:
+        return None
     return s or None
 
 
@@ -770,6 +776,34 @@ def _interior_from_raw_text(raw_text: str | None) -> str | None:
         if cm:
             return cm.group(1).title()
     return None
+
+
+_SEAT_MATERIAL_TERMS = (
+    ("Nappa leather", re.compile(r"\bnappa\s+leather\b", re.I)),
+    ("leather", re.compile(r"\bleather\b(?!ette)", re.I)),
+    ("leatherette", re.compile(r"\bleatherette\b", re.I)),
+    ("MB-Tex", re.compile(r"\bmb-?tex\b", re.I)),
+    ("textile", re.compile(r"\btextile\b", re.I)),
+    ("cloth", re.compile(r"\bcloth\b", re.I)),
+    ("vinyl", re.compile(r"\bvinyl\b", re.I)),
+)
+
+
+def _seat_material_from_sticker(
+    msrp_data: dict[str, Any] | None, sticker_raw: dict[str, Any] | None
+) -> str | None:
+    """Seat material named on the sticker (e.g. "Nappa leather, leatherette,
+    textile"), for an ad whose interior COLOR is unavailable. Only terms that
+    appear in the sticker text next to seat wording are reported; None when the
+    sticker names none."""
+    sr = sticker_raw if isinstance(sticker_raw, dict) else {}
+    text = re.sub(r"\s+", " ", sr.get("raw_text") or "")
+    if not re.search(r"\bseat", text, re.I):
+        return None
+    found = [name for name, rx in _SEAT_MATERIAL_TERMS if rx.search(text)]
+    if "Nappa leather" in found and "leather" in found:
+        found.remove("leather")
+    return ", ".join(found) or None
 
 
 def _resolve_colors(
@@ -2391,12 +2425,38 @@ _VELOCITY_ANCHOR_SCARCITY_THRESHOLD = 15
 _VELOCITY_ANCHOR_MAX_MARKET_PCT = 0.03
 
 
+# Count-backed scarcity wording for the non-MB tiers (Hendrick Certified /
+# Affordable / As-Is). Python is the only source of it; the prompts forbid
+# Claude from writing any. Counts are ACV Max's matching_count for the vehicle's
+# competitive set.
+HARD_TO_FIND_MAX = 5   # at or below this many comparable examples: "Hard to find"
+RARE_MAX = 2           # at or below this: the word "rare" is allowed (here only)
+
+
+def build_scarcity_sentence(matching_count: Any, search_distance: Any = None) -> str | None:
+    """"Hard to find: only N comparable examples are actively listed <scope>."
+    (and "Rare and hard to find: ..." at RARE_MAX or fewer), else None. The
+    count and the geography are both in the sentence, so the claim is exactly
+    what the data says. None for a missing, zero or above-threshold count."""
+    try:
+        n = int(matching_count)
+    except (TypeError, ValueError):
+        return None
+    if n < 1 or n > HARD_TO_FIND_MAX:
+        return None
+    scope = _get_market_scope(search_distance)
+    lead = "Rare and hard to find" if n <= RARE_MAX else "Hard to find"
+    noun = "example is" if n == 1 else "examples are"
+    return f"{lead}: only {n} comparable {noun} actively listed {scope}."
+
+
 def build_proof_point_sentence(
     pricing_data: dict[str, Any] | None,
     advertised_price: float | None,
     current_price: float | None = None,
     admin_fee: int = DEALER_DOC_FEE,
     search_distance: Any = None,
+    include_scarcity: bool = True,
 ) -> tuple[str | None, str]:
     """Pre-written paragraph-two pricing sentence, plus its proof_point_type
     ("standard" or "velocity_anchor" — see below) so format_data_package()
@@ -2550,6 +2610,8 @@ def build_proof_point_sentence(
         percent_over_market = (current_price - market_price) / market_price
 
     def _with_scarcity(sentence: str) -> str:
+        if not include_scarcity:
+            return sentence  # non-MB tiers get build_scarcity_sentence() instead
         # A thin comp count only means something as a rarity claim when the
         # search actually went nationwide — a thin count from a 500-mile
         # regional search just means the search radius should be widened
@@ -2983,15 +3045,23 @@ def build_warranty_sentence(
         )
 
     if status_code == 13:
+        # Same gate and start date as the status-10 path: Carfax must say the
+        # factory warranty is claimable, and the clock starts at Carfax's
+        # in-service date (_warranty_fields() falls back to Jan 1 of the model
+        # year only when Carfax gives no date).
+        wf = _warranty_fields(pr, cf)
+        if not wf.get("warranty_claimable"):
+            return None
         period = _warranty_period_for_make(year_make_model)
         if period is None:
             return None
         make, (years, warranty_miles) = period
 
-        model_year, _ = _ymm_year_model(year_make_model)
-        if not model_year:
+        try:
+            start = date.fromisoformat(wf.get("warranty_start_date") or "")
+        except ValueError:
             return None
-        months_remaining = years * 12 - _months_between(date(model_year, 1, 1), date.today())
+        months_remaining = years * 12 - _months_between(start, date.today())
         if months_remaining <= 0:
             return None
 
@@ -3005,7 +3075,7 @@ def build_warranty_sentence(
             return None
 
         return (
-            f"This vehicle carries {months_remaining} months and "
+            f"This vehicle carries an estimated {months_remaining} months and "
             f"{miles_remaining:,} miles of remaining {make} factory warranty "
             "transferable to the new owner."
         )
@@ -4225,12 +4295,46 @@ def aggregate(
     provenance_sentence = build_provenance_sentence(
         stock, carfax_raw, pricing_raw.get("status_code")
     )
+    non_cpo = pricing_raw.get("status_code") in NON_CPO_GATE_STATUS_CODES
     proof_point_sentence, proof_point_type = build_proof_point_sentence(
         pricing_raw,
         _advertised_price(pricing_raw),
         current_price=pricing_raw.get("current_internet_price"),
         search_distance=pricing_raw.get("search_distance"),
+        include_scarcity=not non_cpo,
     )
+    scarcity_sentence = (
+        build_scarcity_sentence(
+            pricing_raw.get("matching_count"), pricing_raw.get("search_distance")
+        )
+        if non_cpo
+        else None
+    )
+
+    # Colors. When no source has an interior color (sticker, ACV Max header,
+    # option line, sticker text), try ACV Max's Equipment tab for ANY sticker
+    # source, filling only an empty color.
+    colors = _resolve_colors(pricing_raw, msrp_data, msrp_raw)
+    if not colors.get("interior_color"):
+        try:
+            with ACVMaxScraper(headless=headless, use_saved_session=use_saved) as ax3:
+                ax3.login(force=fresh_login)
+                tab = ax3.scrape_options_tab(pricing_raw.get("vehicle_id") or vehicle_id)
+            tab_int = _color((tab or {}).get("interior_color"))
+            if tab_int:
+                colors = {
+                    **colors,
+                    "interior_color": tab_int,
+                    "interior_color_source": "acvmax_equipment_tab",
+                }
+                print(f"[aggregator] interior color from the ACV Max Equipment tab: {tab_int}")
+        except ScraperError as exc:
+            print(f"[aggregator] Equipment-tab interior fallback failed for {vin}: {exc}", file=sys.stderr)
+    if not colors.get("interior_color"):
+        colors = {
+            **colors,
+            "interior_seat_material": _seat_material_from_sticker(msrp_data, msrp_raw),
+        }
     return {
         "recon_complete": True,
         "recon_pending": skip_recon,
@@ -4240,7 +4344,7 @@ def aggregate(
         "is_z_stock": is_z_stock,
         "vehicle": {
             **_vehicle(pricing_raw),
-            **_resolve_colors(pricing_raw, msrp_data, msrp_raw),
+            **colors,
         },
         "msrp_data": msrp_data,
         "sticker_is_predictive": sticker_is_predictive,
@@ -4270,6 +4374,7 @@ def aggregate(
         ),
         "proof_point_sentence": proof_point_sentence,
         "proof_point_type": proof_point_type,
+        "scarcity_sentence": scarcity_sentence,
         "msrp_sentence": None if (sticker_is_predictive or sticker_prices_approximate) else build_msrp_sentence(
             (msrp_data or {}).get("total_msrp"),
             _advertised_price(pricing_raw),

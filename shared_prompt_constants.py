@@ -162,6 +162,20 @@ STICKER_PRICES_APPROXIMATE_RULE = (
     "DEPRECIATION SENTENCE will show (omit)."
 )
 
+# Scarcity rule for the three non-MB prompts (Hendrick Certified / Affordable /
+# As-Is). Python (aggregator.build_scarcity_sentence) is the only source of
+# scarcity wording there; adwriter.find_banned_scarcity_phrases() enforces it.
+NON_MB_SCARCITY_RULE = (
+    "SCARCITY: Python is the only source of scarcity wording on this program. If the "
+    "data package has a SCARCITY SENTENCE, use it verbatim as the sentence immediately "
+    "after the PROOF POINT SENTENCE. If it shows (omit), write no scarcity language at "
+    "all. Never write your own scarcity, rarity or exclusivity wording about how few "
+    "comparable vehicles exist or how hard this one is to find, never derive it from "
+    "market counts or the search radius, and never use the words \"rare\", \"rarely\", "
+    "\"rarest\", \"hard to find\", \"one of the few\", \"one of the only\" or \"in the "
+    "region\" anywhere in the ad."
+)
+
 # Paragraph-one recon rule for aggregator.build_recon_sentence()'s
 # RECON_SENTENCE, used by the Hendrick Certified / Affordable / As-Is prompts
 # (the MB CPO prompt carries its own "Sentence 4: RECON SENTENCE" line).
