@@ -162,6 +162,16 @@ STICKER_PRICES_APPROXIMATE_RULE = (
     "DEPRECIATION SENTENCE will show (omit)."
 )
 
+# Exterior / interior color come from the data package only (all four prompts).
+COLOR_SOURCE_RULE = (
+    "COLOR SOURCE RULE: Exterior color and interior color come only from the data "
+    "package fields (Exterior color, Interior color). Never take a color from web "
+    "search, other dealers' listings, press material or your own knowledge of the "
+    "model, and never infer or correct one. If a color field says UNAVAILABLE or is "
+    "missing, omit that color from the ad entirely, and say so in the FLAGS line of "
+    "the feedback block."
+)
+
 # Scarcity rule for the three non-MB prompts (Hendrick Certified / Affordable /
 # As-Is). Python (aggregator.build_scarcity_sentence) is the only source of
 # scarcity wording there; adwriter.find_banned_scarcity_phrases() enforces it.

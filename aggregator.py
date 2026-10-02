@@ -2306,6 +2306,20 @@ def build_recon_sentence(
         desc = items[0].get("description") if items else None
         components.append(_lower_first(desc) if desc else f"spark plugs replaced {suffix}")
 
+    # 4b. BRAKE FLUID FLUSH and FUEL FILTER — status 13 (As-Is) only. _filter_recon()
+    # keeps both for As-Is (recon_reason "brake_fluid_flush"; a fuel filter
+    # arrives as a "meaningful_investment" line) but this builder never phrased
+    # them, so the As-Is sentence silently dropped real confidence signals.
+    # Other tiers' output is deliberately unchanged.
+    if status_code == 13:
+        if by_reason.get("brake_fluid_flush"):
+            components.append(f"brake fluid flushed {suffix}")
+        if any(
+            re.search(r"\bfuel\s*filter\b", (li.get("description") or ""), re.I)
+            for li in by_reason.get("meaningful_investment") or []
+        ):
+            components.append(f"fuel filter replaced {suffix}")
+
     # Same "needs company" rule _filter_recon() enforces on wiper/air-filter/
     # oil-change (see its minor_signals_qualify comment): this is meant to be
     # a redundant belt-and-suspenders check on that already-correct gate, not

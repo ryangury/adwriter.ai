@@ -52,6 +52,7 @@ from shared_prompt_constants import (
     RECON_FALLBACK_RULE,
     SELLER_COMMENTS_RULE,
     STICKER_PRICES_APPROXIMATE_RULE,
+    COLOR_SOURCE_RULE,
     STORE_CLOSER_PARAGRAPH,
 )
 from system_prompt_as_is import AS_IS_PROMPT
@@ -178,6 +179,8 @@ MSRP APPROXIMATE RULE: When msrp_note indicates approximate pricing, mention pac
 {PREDICTIVE_STICKER_RULE}
 
 {STICKER_PRICES_APPROXIMATE_RULE}
+
+{COLOR_SOURCE_RULE}
 
 MSRP DEPRECIATION: If MSRP DEPRECIATION SENTENCE is present in the data package, include it verbatim in paragraph two immediately before the proof point sentence. If it shows (omit), skip it entirely. Do not apply any threshold or age gate yourself — those decisions are pre-made by the data pipeline.
 
