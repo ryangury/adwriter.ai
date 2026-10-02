@@ -98,7 +98,8 @@ def infer_tier(
     """Best-effort certification tier for a vehicle.
 
     With a status code (the primary store): 10/16 -> mb_cpo, 11 ->
-    hendrick_certified, 12 -> hendrick_affordable, anything else -> unknown.
+    hendrick_certified, 12 -> hendrick_affordable, 13 -> as_is, anything else
+    -> unknown.
 
     Without a status code (benchmark stores): fall back to the certified flag and
     price -> certified & price >= $30k -> mb_cpo; certified & price < $30k ->
@@ -115,6 +116,8 @@ def infer_tier(
             return "hendrick_certified"
         if sc == 12:
             return "hendrick_affordable"
+        if sc == 13:
+            return "as_is"
         return "unknown"
 
     if certified is True:
@@ -140,7 +143,7 @@ def infer_mileage_tier(
 
     1. RETAIL and mileage > 70,000 -> hendrick_affordable, any brand/status.
     2. RETAIL and mileage <= 70,000, not a Mercedes-Benz, status 1 -> as_is.
-    3. Otherwise the status-code mapping (10/16 -> mb_cpo, 11 ->
+    3. Otherwise the status-code mapping (10/16 -> mb_cpo, 13 -> as_is, 11 ->
        hendrick_certified, 12 -> hendrick_affordable); an unmapped or missing
        status stays "unknown" (untiered).
 
