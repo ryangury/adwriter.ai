@@ -3488,6 +3488,23 @@ def _log_recon_verdict(stock: str, d: dict[str, Any], note: str = "") -> None:
     )
 
 
+def cached_recon_still_complete(stock: str, items: list[dict[str, Any]]) -> bool:
+    """Re-run the completeness rule on cached recon items (no scrape). A cached
+    row flagged complete can hold items that say otherwise (the flag is sticky:
+    save_recon() never lowers it). When the rule says incomplete this logs the
+    evidence and returns False; the stored flag is left alone."""
+    d = _recon_details(items)
+    if d["complete"]:
+        return True
+    print(
+        f"[recon-gate] {stock}: cached recon is flagged complete but its stored items are not - "
+        f"treating recon as incomplete for this call (no scrape, flag unchanged)",
+        file=sys.stderr,
+    )
+    _log_recon_verdict(stock, d, ", cache hit")
+    return False
+
+
 def scrape_recon_checked(
     rv: ReconVisionScraper,
     stock: str,
@@ -4034,6 +4051,19 @@ def aggregate(
                 recon_raw = get_recon(expected_vin) or {}
                 items = recon_raw.get("line_items", [])
                 recon_status = "cache_hit"
+                if not cached_recon_still_complete(stock, items):
+                    # The cached flag says complete but the stored items say
+                    # otherwise: treat recon as incomplete for this call (no
+                    # scrape, stored flag untouched - the gate's two-check
+                    # downgrade owns that).
+                    return {
+                        "recon_complete": False,
+                        "stock_number": stock,
+                        "stock_prefix": stock_prefix,
+                        "is_z_stock": is_z_stock,
+                        "work_order_id": recon_raw.get("work_order_id"),
+                        "note": RECON_INCOMPLETE_NOTE,
+                    }
                 print(
                     f"[cache] recon hit for VIN {expected_vin} — recon complete, "
                     f"skipping ReconVision",
