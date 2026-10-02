@@ -585,6 +585,7 @@ def inventory():
 
         identity_confirmed = entry.get("identity_confirmed") if entry else None
         verification_note = entry.get("verification_note") if entry else None
+        generation_flag = entry.get("generation_flag") if entry else None
         # Posted: green only when identity_confirmed is True (our proof-point $
         # or provenance sentence phrase-matched the live page — see verifier.py
         # compare_ad()); red when it's explicitly False (nothing of ours found,
@@ -651,6 +652,7 @@ def inventory():
                 ),
                 "price_mismatch": price_mismatch,
                 "verification_note": verification_note,
+                "generation_flag": generation_flag,
             }
         )
     return render_template("inventory.html", rows=rows, snapshot_time=_fmt_snapshot_time(stamp))

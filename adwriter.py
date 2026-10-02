@@ -1903,6 +1903,7 @@ def record_ad(
     # a regenerated ad starts clean: no removed-sentence tracking, no old note
     entry.pop("stale_phrases", None)
     entry["verification_note"] = None
+    entry.pop("generation_flag", None)
     history[stock] = entry
     return entry
 
@@ -1961,6 +1962,75 @@ def _format_reprice_package(
     return "\n".join(lines)
 
 
+class TruncatedGenerationError(RuntimeError):
+    """A reprice / recon-update response did not finish (stop_reason was not
+    end_turn) even after a retry with double the cap. The old text is kept."""
+
+
+REPRICE_MIN_TOKENS = 1500
+RECON_UPDATE_MIN_TOKENS = 800
+_CAP_EXTRA_TOKENS = 400
+
+
+def _estimate_tokens(client, text: str) -> int:
+    """Token count of `text` for MODEL (free count_tokens endpoint); falls back to
+    a conservative characters-per-token guess if the call fails."""
+    try:
+        return int(client.messages.count_tokens(
+            model=MODEL, messages=[{"role": "user", "content": text or " "}]
+        ).input_tokens)
+    except Exception:  # noqa: BLE001 - a sizing helper must never sink the call
+        return int(len(text or "") / 2.5) + 1
+
+
+def _output_cap(client, size_text: str, floor: int) -> int:
+    """max_tokens for a paragraph rewrite: twice the existing paragraph's tokens
+    plus 400, never below `floor`."""
+    return max(floor, 2 * _estimate_tokens(client, size_text) + _CAP_EXTRA_TOKENS)
+
+
+def flag_generation_problem(stock: str, kind: str, detail: str) -> None:
+    """Record on the ad_history entry that a rewrite failed, so the Inventory
+    page can show it. The ad text itself is left exactly as it was."""
+    history = load_ad_history()
+    entry = history.get(stock)
+    if entry is None:
+        return
+    entry["generation_flag"] = {"kind": kind, "date": date.today().isoformat(), "detail": detail}
+    save_ad_history(history)
+
+
+def _capped_completion(client, *, stock: str, label: str, system: str, user: str, size_text: str, floor: int) -> str:
+    """One paragraph-rewrite call with a size-based cap. A response that did not
+    stop with end_turn (max_tokens, refusal, ...) is retried once with double
+    the cap; if it still did not finish, the vehicle is flagged and
+    TruncatedGenerationError is raised - a truncated paragraph is never returned."""
+    cap = _output_cap(client, size_text, floor)
+    last = None
+    for attempt_cap in (cap, cap * 2):
+        resp = client.messages.create(
+            model=MODEL,
+            max_tokens=attempt_cap,
+            system=system,
+            messages=[{"role": "user", "content": user}],
+        )
+        last = resp.stop_reason
+        if last == "end_turn":
+            text = "".join(b.text for b in resp.content if b.type == "text").strip()
+            if text:
+                return text
+            last = "empty"
+        print(
+            f"[{label}] {stock}: stop_reason={last!r} at max_tokens={attempt_cap}"
+            + (" - retrying with double the cap" if attempt_cap == cap else " - giving up, keeping the old text"),
+            file=sys.stderr,
+        )
+    flag_generation_problem(stock, f"{label}_incomplete", f"stop_reason {last!r} at max_tokens {cap * 2}")
+    raise TruncatedGenerationError(
+        f"{label}: response did not finish (stop_reason {last!r}) even at max_tokens {cap * 2}; old text kept, vehicle flagged"
+    )
+
+
 def _snapshot_status(stock: str) -> int | None:
     """status_code for a stock from last_inventory_snapshot.json, or None."""
     try:
@@ -2014,13 +2084,10 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
     client = anthropic.Anthropic(api_key=API_KEY)
 
     def _rewrite() -> str:
-        resp = client.messages.create(
-            model=MODEL,
-            max_tokens=500,
-            system=reprice_prompt_for(status),
-            messages=[{"role": "user", "content": data_block}],
+        return _capped_completion(
+            client, stock=stock, label="reprice", system=reprice_prompt_for(status),
+            user=data_block, size_text=clean_p2 or old_p2, floor=REPRICE_MIN_TOKENS,
         )
-        return "".join(b.text for b in resp.content if b.type == "text").strip() or clean_p2
 
     new_p2 = _rewrite()
     hits = find_banned_scarcity_phrases(new_p2)
@@ -2055,6 +2122,7 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
     entry["price_mismatch"] = None
     entry["identity_confirmed"] = None
     entry["verification_note"] = None
+    entry.pop("generation_flag", None)    # a completed rewrite clears an earlier failure flag
     history[stock] = entry
     save_ad_history(history)
     return full
@@ -2241,14 +2309,11 @@ def update_recon(stock_number: str, status_code: int | None = None) -> str:
     clean_p1 = strip_pending_recon_sentence(p1, status_code)
     data_block = _format_recon_update_package(clean_p1, filtered, status_code)
     client = anthropic.Anthropic(api_key=API_KEY)
-    resp = client.messages.create(
-        model=MODEL,
-        max_tokens=300,
-        system=RECON_UPDATE_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": data_block}],
-    )
     new_p1 = strip_pending_recon_sentence(
-        "".join(b.text for b in resp.content if b.type == "text").strip() or clean_p1,
+        _capped_completion(
+            client, stock=stock, label="recon_update", system=RECON_UPDATE_SYSTEM_PROMPT,
+            user=data_block, size_text=clean_p1 or p1, floor=RECON_UPDATE_MIN_TOKENS,
+        ),
         status_code,
     )
 
@@ -2257,6 +2322,7 @@ def update_recon(stock_number: str, status_code: int | None = None) -> str:
     entry["current_ad_text"] = full
     entry["recon_included"] = True
     entry["recon_pending"] = False
+    entry.pop("generation_flag", None)
     entry["lifecycle_stage"] = "recon_updated"
     entry["last_ad_date"] = date.today().isoformat()
     history[stock] = entry
