@@ -37,7 +37,7 @@ import argparse
 import json
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -74,6 +74,60 @@ _PRIORITY_STATUS_CODES = {10, 11, 12, 13, 16}
 # How long to wait for orchestrator.lock before giving up (the verifier holds it
 # for a few minutes every 2 hours).
 LOCK_WAIT_SECONDS = 20 * 60
+
+# Per-VIN failure cap. A warmup AutoiPacket pull that is really attempted and
+# comes back unusable still uses one of the day's limited non-MB slots, so a
+# VIN iPacket can't cover would otherwise burn a slot every day. After
+# FAILURE_CAP failed pulls it is tried only once every RETRY_AFTER_DAYS days.
+# State is {vin: {"count": n, "last_attempt": "YYYY-MM-DD"}}; a success clears
+# the VIN. Rate-limit refusals and a failed iPacket login are not failures.
+FAILURES_PATH = Path(__file__).with_name("sticker_warmup_failures.json")
+FAILURE_CAP = 3
+RETRY_AFTER_DAYS = 7
+
+
+def _load_failures() -> dict[str, dict[str, Any]]:
+    try:
+        data = json.loads(FAILURES_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_failures(state: dict[str, dict[str, Any]]) -> None:
+    tmp = FAILURES_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+    tmp.replace(FAILURES_PATH)
+
+
+def _record_failure(vin: str, today: date | None = None) -> int:
+    """Count one failed pull for `vin` (stamped today); returns the new count."""
+    state = _load_failures()
+    entry = state.get(vin) or {}
+    entry["count"] = int(entry.get("count") or 0) + 1
+    entry["last_attempt"] = (today or date.today()).isoformat()
+    state[vin] = entry
+    _save_failures(state)
+    return entry["count"]
+
+
+def _clear_failures(vin: str) -> None:
+    state = _load_failures()
+    if state.pop(vin, None) is not None:
+        _save_failures(state)
+
+
+def _retry_cap_next_try(entry: dict[str, Any] | None, today: date) -> date | None:
+    """The date a capped VIN may be tried again, or None when it is eligible
+    today (fewer than FAILURE_CAP failures, or the weekly retry is due)."""
+    if not entry or int(entry.get("count") or 0) < FAILURE_CAP:
+        return None
+    try:
+        last = date.fromisoformat(entry["last_attempt"])
+    except (KeyError, TypeError, ValueError):
+        return None  # unreadable stamp: don't lock a VIN out on bad data
+    nxt = last + timedelta(days=RETRY_AFTER_DAYS)
+    return nxt if today < nxt else None
 
 
 def _load_retail_vehicles() -> list[dict[str, Any]]:
@@ -151,10 +205,19 @@ def _summary(sticker: dict[str, Any]) -> str:
 
 
 def _select(
-    vehicles: list[dict[str, Any]], only_vins: list[str], skip_predictive: bool = False
+    vehicles: list[dict[str, Any]],
+    only_vins: list[str],
+    skip_predictive: bool = False,
+    today: date | None = None,
 ) -> tuple[list[tuple[dict[str, Any], dict[str, Any] | None, str]], dict[str, int]]:
-    """(targets as (snapshot vehicle, cached row, make), skip counts)."""
-    skips = {"real_sticker": 0, "mercedes": 0, "not_in_snapshot": 0, "unknown_make": 0, "predictive": 0}
+    """(targets as (snapshot vehicle, cached row, make), skip counts). VINs
+    named on the command line bypass the failure cap."""
+    today = today or date.today()
+    failures = _load_failures()
+    skips = {
+        "real_sticker": 0, "mercedes": 0, "not_in_snapshot": 0, "unknown_make": 0,
+        "predictive": 0, "retry_capped": 0,
+    }
     by_vin = {(v.get("vin") or "").strip().upper(): v for v in vehicles if v.get("vin")}
     if only_vins:
         wanted = [x.strip().upper() for x in only_vins]
@@ -190,6 +253,16 @@ def _select(
             print(
                 f"[sticker_warmup] {stock} {ymm} ({vin}) — current: {PREDICTIVE_SOURCE} "
                 f"(skipped — use without --skip-predictive to retry)"
+            )
+            continue
+        entry = failures.get(vin)
+        next_try = None if only_vins else _retry_cap_next_try(entry, today)
+        if next_try is not None:
+            skips["retry_capped"] += 1
+            print(
+                f"[sticker_warmup] {stock} {ymm} ({vin}) — retry cap reached "
+                f"({entry['count']} failed pulls, last {entry['last_attempt']}), "
+                f"next try {next_try.isoformat()}"
             )
             continue
         targets.append((v, row, make))
@@ -251,6 +324,8 @@ def warmup(
         print(f"  Predictive (skipped, --skip-predictive): {skips['predictive']}")
     if skips["unknown_make"]:
         print(f"  Make unknown (skipped):                {skips['unknown_make']}")
+    if skips["retry_capped"]:
+        print(f"  Retry cap reached (skipped):           {skips['retry_capped']}")
     print(f"  Targets:                               {total}")
     print(f"  Upgraded from ACV Max:                 {counts['upgraded']}")
     print(f"  Newly fetched:                         {counts['new']}")
@@ -268,6 +343,7 @@ def _run(
 ) -> None:
     total = len(targets)
     ipacket: AutoiPacketScraper | None = None
+    ipacket_ready = False  # set once the iPacket session is open and logged in
     try:
         for i, (v, row, make) in enumerate(targets, 1):
             vin = v["vin"].strip().upper()
@@ -294,11 +370,13 @@ def _run(
                 print(f"{tag} — no Carfax sticker link on record")
 
             # 2. AutoiPacket (rate limits enforced)
+            pull_failed = False  # a real iPacket pull was attempted and came back unusable
             if sticker is None:
                 try:
                     if ipacket is None:
                         ipacket = AutoiPacketScraper(headless=headless, use_saved_session=True).__enter__()
                         ipacket.login()
+                        ipacket_ready = True
                     data = ipacket.pull_sticker(vin, bypass_rate_limits=False, non_mb=True)
                     wait = _spacing_wait_seconds(data)
                     if wait is not None:
@@ -309,6 +387,7 @@ def _run(
                         data = ipacket.pull_sticker(vin, bypass_rate_limits=False, non_mb=True)
                 except Exception as exc:  # noqa: BLE001
                     print(f"{tag} — iPacket failed: {exc}")
+                    pull_failed = ipacket_ready  # a login/setup failure isn't this VIN's fault
                 else:
                     if _usable(data):
                         sticker = data
@@ -317,13 +396,25 @@ def _run(
                         print(f"{tag} — iPacket held back by rate limit: {data.get('error')}")
                     elif data and data.get("reconciliation_ok") is False:
                         print(f"{tag} — iPacket {_rejection(data)}")
+                        pull_failed = True
                     else:
                         print(f"{tag} — iPacket returned nothing usable")
+                        pull_failed = True
 
             # 3. Both failed: leave the row untouched
             if sticker is None:
                 counts["failed"] += 1
-                print(f"{tag} — FAILED both paths, cached data left untouched ({prior or 'no sticker'})")
+                if pull_failed:
+                    n = _record_failure(vin)
+                    capped = (
+                        f"; retry cap reached, next try "
+                        f"{(date.today() + timedelta(days=RETRY_AFTER_DAYS)).isoformat()}"
+                        if n >= FAILURE_CAP
+                        else f"; failed pull {n} of {FAILURE_CAP} before the weekly cap"
+                    )
+                else:
+                    capped = ""
+                print(f"{tag} — FAILED both paths, cached data left untouched ({prior or 'no sticker'}){capped}")
                 continue
 
             save_window_sticker(
@@ -331,6 +422,7 @@ def _run(
                 image_path=sticker.get("sticker_image_path"),
             )
             _reset_attempts(vin)
+            _clear_failures(vin)
             counts["upgraded" if prior == "acvmax_options_tab" else "new"] += 1
             if source == PREDICTIVE_SOURCE:
                 counts["predictive"] += 1
