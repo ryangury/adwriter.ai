@@ -873,6 +873,21 @@ def _flag_absent(crawled: list[dict[str, Any]]) -> None:
         print(f"[ad-history] absent-flagging failed — {exc}", file=sys.stderr)
 
 
+def _stamp_eligible(crawled: list[dict[str, Any]] | None) -> None:
+    """Time-to-post clock on the verifier's own crawl, same stamp the
+    orchestrator makes after its crawl: first_eligible_date/_at for vehicles
+    first seen at a build-eligible status (status 1 is skipped by the stamp
+    itself; existing stamps are never changed). Never fatal."""
+    try:
+        from ad_timeline import stamp_eligible
+
+        new = stamp_eligible(crawled or [], date.today().isoformat())
+        if new:
+            print(f"[timeline] first_eligible_date stamped for {len(new)} vehicle(s): {', '.join(new)}")
+    except Exception as exc:  # noqa: BLE001 - instrumentation must never block verification
+        print(f"[timeline] eligibility stamping failed — {exc}", file=sys.stderr)
+
+
 def _main_locked(
     args: argparse.Namespace, parser: argparse.ArgumentParser, headless: bool
 ) -> int:
@@ -885,6 +900,7 @@ def _main_locked(
             n = len(result) if result else 0
             print(f"[verifier] inventory crawl complete — {n} vehicles in snapshot")
             _flag_absent(result)
+            _stamp_eligible(result)
         except Exception as exc:  # noqa: BLE001 - the crawl must never block verification
             print(f"[verifier] inventory crawl failed — using existing snapshot: {exc}")
         current, needs_posting, needs_update = run_verification(headless=headless)
