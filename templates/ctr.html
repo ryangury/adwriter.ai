@@ -113,7 +113,7 @@
 
   <section class="ctr-section">
     <details class="ctr-secondary">
-      <summary>Hendrick Certified &amp; Hendrick Affordable</summary>
+      <summary>Hendrick Certified, Affordable &amp; As-Is</summary>
       <p class="ctr-note" style="margin-top: 10px">
         Directional only &mdash; brand and trim mix varies a lot from store to store in these tiers, so these
         are not a clean like-for-like comparison.
@@ -122,6 +122,15 @@
       {{ breakdown_table(certified) }}
       <h3 style="font-size:0.95rem; margin: 18px 0 6px">Hendrick Affordable</h3>
       {{ breakdown_table(affordable) }}
+      <h3 style="font-size:0.95rem; margin: 18px 0 6px">Hendrick As-Is</h3>
+      {{ breakdown_table(as_is) }}
+      {% if untiered %}
+      <p class="ctr-note" style="margin-top: 14px">
+        Not tiered (no usable status or mileage, so in none of the tables above):
+        {% for s in stores %}{{ s }} <strong>{{ untiered.get(s, 0) }}</strong>{% if not loop.last %} &middot; {% endif %}{% endfor %}
+        vehicles on each store's latest scrape day. A tier appears for a store only with {{ min_vehicles }}+ vehicles.
+      </p>
+      {% endif %}
     </details>
   </section>
   {% endif %}

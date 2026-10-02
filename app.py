@@ -993,10 +993,13 @@ def ctr():
         mb = ctr_report.model_breakdown("mb_cpo")
         certified = ctr_report.model_breakdown("hendrick_certified")
         affordable = ctr_report.model_breakdown("hendrick_affordable")
+        as_is = ctr_report.model_breakdown("as_is")
+        untiered = ctr_report.untiered_counts()
         before_after = ctr_report.before_after()
         error = None
     except Exception as exc:  # noqa: BLE001 - the page should explain, not 500
-        mb = certified = affordable = {"as_of": {}, "models": []}
+        mb = certified = affordable = as_is = {"as_of": {}, "models": []}
+        untiered = {}
         before_after, error = None, str(exc)
 
     def chart(data, metric, title):
@@ -1013,6 +1016,8 @@ def ctr():
         mb_at=chart(mb, "at", "AutoTrader CTR"),
         certified=certified,
         affordable=affordable,
+        as_is=as_is,
+        untiered=untiered,
         before_after=before_after,
     )
 

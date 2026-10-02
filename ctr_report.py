@@ -97,7 +97,8 @@ def _avg(values: list[float]) -> float | None:
 
 def model_breakdown(tier: str) -> dict[str, Any]:
     """Current CarGurus / AutoTrader CTR by model and store for one
-    certification tier ('mb_cpo', 'hendrick_certified', 'hendrick_affordable').
+    certification tier ('mb_cpo', 'hendrick_certified', 'hendrick_affordable',
+    'as_is').
 
     Returns {"as_of": {store: date}, "models": [{"model", "cells": {store:
     {"n", "at", "cg", "at_n", "cg_n"} | None}}]}. A cell is None when the store
@@ -126,6 +127,18 @@ def model_breakdown(tier: str) -> dict[str, Any]:
         if any(cells.values()):
             models.append({"model": model, "cells": cells})
     return {"as_of": as_of, "models": models}
+
+
+def untiered_counts() -> dict[str, int]:
+    """Per store, how many vehicles on its current (latest full) scrape day have
+    no usable tier ('unknown' or unset) and so appear in no tier section."""
+    rows = _load_rows()
+    as_of = _snapshot_dates(rows)
+    counts = {s: 0 for s in STORES}
+    for r in rows:
+        if as_of.get(r["store"]) == r["date"] and (r["certification_tier"] or "unknown") == "unknown":
+            counts[r["store"]] += 1
+    return counts
 
 
 def before_after() -> dict[str, Any]:

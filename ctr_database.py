@@ -21,8 +21,9 @@ from typing import Any
 
 DB_PATH = Path(__file__).with_name("ctr_history.db")
 
-CHARLOTTE_DEALERSHIP = "Hendrick Motors of Charlotte"
-CHARLOTTE_AFFORDABLE_MIN_MILES = 70_000
+# Benchmark-store tier rule threshold (see infer_mileage_tier): a RETAIL unit
+# over this many miles is Hendrick Affordable, whatever its brand or status.
+AFFORDABLE_MIN_MILES = 70_000
 
 BENCHMARK_DEALERSHIPS = (
     "Mercedes-Benz of Northlake",
@@ -50,7 +51,9 @@ CREATE TABLE IF NOT EXISTS ctr_history (
     dealership_name   TEXT DEFAULT 'Mercedes-Benz of Durham',
     dealership_role   TEXT DEFAULT 'primary',
     certification_tier TEXT,
-    status_code       INTEGER
+    status_code       INTEGER,
+    mileage           INTEGER,
+    objective         TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_ctr_history_stock_date
     ON ctr_history (stock_number, date);
@@ -70,6 +73,8 @@ _MIGRATIONS = {
     ),
     "certification_tier": "ALTER TABLE ctr_history ADD COLUMN certification_tier TEXT",
     "status_code": "ALTER TABLE ctr_history ADD COLUMN status_code INTEGER",
+    "mileage": "ALTER TABLE ctr_history ADD COLUMN mileage INTEGER",
+    "objective": "ALTER TABLE ctr_history ADD COLUMN objective TEXT",
 }
 
 
@@ -125,13 +130,13 @@ def infer_tier(
     return "unknown"
 
 
-def infer_charlotte_tier(
+def infer_mileage_tier(
     status_code: int | str | None,
     objective: str | None,
     mileage: int | float | None,
     year_make_model: str | None,
 ) -> str:
-    """Tier for a Charlotte (Hendrick Motors of Charlotte) row, in priority order:
+    """Tier for a benchmark-store row (Northlake and Charlotte), in priority order:
 
     1. RETAIL and mileage > 70,000 -> hendrick_affordable, any brand/status.
     2. RETAIL and mileage <= 70,000, not a Mercedes-Benz, status 1 -> as_is.
@@ -150,7 +155,7 @@ def infer_charlotte_tier(
     except (TypeError, ValueError):
         sc = None
     if retail and miles is not None:
-        if miles > CHARLOTTE_AFFORDABLE_MIN_MILES:
+        if miles > AFFORDABLE_MIN_MILES:
             return "hendrick_affordable"
         if sc == 1 and "MERCEDES" not in (year_make_model or "").upper():
             return "as_is"
@@ -167,6 +172,8 @@ def record_ctr(
     dealership_role: str = "primary",
     certification_tier: str | None = None,
     status_code: int | None = None,
+    mileage: int | float | None = None,
+    objective: str | None = None,
 ) -> int:
     """Insert one CTR snapshot row. Returns the new row id.
 
@@ -179,13 +186,20 @@ def record_ctr(
     dealership_name / dealership_role / certification_tier / status_code are all
     optional. When status_code is not passed it falls back to
     vehicle_data["status_code"]; when certification_tier is not passed it is
-    inferred with infer_tier(). Existing 4-arg calls keep working unchanged.
+    inferred with infer_tier(). mileage / objective likewise fall back to
+    vehicle_data["mileage"] / ["objective"]; they are stored as-is for every
+    store so a tier can be re-derived later. Existing 4-arg calls keep working
+    unchanged.
     """
     v = vehicle_data or {}
     c = ctr_data or {}
 
     if status_code is None:
         status_code = v.get("status_code")
+    if mileage is None:
+        mileage = v.get("mileage")
+    if objective is None:
+        objective = v.get("objective")
     if certification_tier is None:
         certification_tier = infer_tier(
             status_code=status_code,
@@ -210,6 +224,8 @@ def record_ctr(
         dealership_role,
         certification_tier,
         status_code,
+        mileage,
+        objective,
     )
     with _connect() as conn:
         cur = conn.execute(
@@ -217,8 +233,8 @@ def record_ctr(
             "date, stock_number, vin, year_make_model, current_price, "
             "days_on_lot, autotrader_ctr, cargurus_ctr, average_ctr, ad_written, "
             "ad_written_date, scraped_at, dealership_name, dealership_role, "
-            "certification_tier, status_code"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "certification_tier, status_code, mileage, objective"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             row,
         )
         conn.commit()
