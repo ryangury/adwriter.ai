@@ -1354,10 +1354,11 @@ def generate():
         result["error"] = pkg.get("note") or "Recon is not complete for this vehicle."
         return jsonify(result), 200
 
-    # The snapshot check above only catches a status-1 vehicle the last crawl
-    # still lists — the orchestrator drops status 1 from the snapshot it saves,
-    # so those vehicles reach aggregate() with no snapshot status and get their
-    # real one read live. Refuse here, before any ad is generated.
+    # The snapshot check above catches a status-1 vehicle the last crawl
+    # listed (every job now saves status 1 in the snapshot). This second guard
+    # covers a vehicle that went to status 1 since that crawl, or one missing
+    # from the snapshot, whose real status is read live. Refuse here, before
+    # any ad is generated.
     if (pkg.get("vehicle") or {}).get("status_code") == 1:
         result["error"] = _STATUS_1_MESSAGE
         return jsonify(result), 400

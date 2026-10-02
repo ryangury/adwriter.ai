@@ -66,6 +66,15 @@ TARGET_SOURCES = {
 }
 PREDICTIVE_SOURCE = "autoipacket_predictive"
 
+# Targets are worked in this order so the day's limited non-MB pulls (a pull
+# that fails still uses its slot) go to vehicles that can get an ad first.
+# Status 1 (needs certification) and any unmapped status come last.
+_PRIORITY_STATUS_CODES = {10, 11, 12, 13, 16}
+
+# How long to wait for orchestrator.lock before giving up (the verifier holds it
+# for a few minutes every 2 hours).
+LOCK_WAIT_SECONDS = 20 * 60
+
 
 def _load_retail_vehicles() -> list[dict[str, Any]]:
     if not SNAPSHOT_PATH.exists():
@@ -184,6 +193,9 @@ def _select(
             )
             continue
         targets.append((v, row, make))
+    # Stable sort: build-eligible statuses first, status 1 / unmapped last, the
+    # snapshot's own order kept within each group.
+    targets.sort(key=lambda t: 0 if t[0].get("status_code") in _PRIORITY_STATUS_CODES else 1)
     return targets, skips
 
 
@@ -202,15 +214,27 @@ def warmup(
             source = (row or {}).get("window_sticker_source") if (row or {}).get("window_sticker_json") else None
             print(
                 f"[sticker_warmup] {i} of {total} — {v.get('stock_number')} "
-                f"{v.get('year_make_model')} ({v['vin']}) — current: {source or 'none'} — "
+                f"{v.get('year_make_model')} ({v['vin']}) — status {v.get('status_code')} — "
+                f"current: {source or 'none'} — "
                 f"would try: {'Carfax link, then ' if cf.get('window_sticker_url') else ''}iPacket"
             )
     elif targets:
+        lock_started = time.monotonic()
         try:
-            acquire_scraper_lock(ORCHESTRATOR_LOCK_PATH, wait_seconds=0)
+            acquire_scraper_lock(ORCHESTRATOR_LOCK_PATH, wait_seconds=LOCK_WAIT_SECONDS)
         except ScraperBusyError as exc:
-            print(f"[sticker_warmup] orchestrator/verifier run in progress — {exc}", file=sys.stderr)
+            print(
+                f"[sticker_warmup] gave up: orchestrator.lock still held after "
+                f"{LOCK_WAIT_SECONDS / 60:g} min — {exc}",
+                file=sys.stderr,
+            )
             return 1
+        waited = time.monotonic() - lock_started
+        print(
+            "[sticker_warmup] acquired orchestrator.lock immediately"
+            if waited < 3
+            else f"[sticker_warmup] acquired orchestrator.lock after waiting {waited / 60:.1f} min"
+        )
         try:
             _run(targets, counts, headless=headless)
         finally:

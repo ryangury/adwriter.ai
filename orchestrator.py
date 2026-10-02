@@ -326,6 +326,17 @@ def _run_inner(
             print(f"[ad-history] {s}: absent from inventory ({absent_history[s]['absent_reason']}) — flagged, verification stops")
         for s in back_in_stock:
             print(f"[ad-history] {s}: back in inventory — absent flag cleared")
+    # Save the full crawl, status-1 units included, as the snapshot: the same
+    # definition the verifier's and the standalone crawler's saves use, so the
+    # file never changes shape depending on which job wrote it last. It is the
+    # ground truth behind Flask's vehicle_id / status_code lookups, the
+    # Inventory page, the verifier's in-inventory check and the warmups, and
+    # must never shrink just because --status/--limit (or the status-1
+    # exclusion below) scoped this particular run's ad-generation work to a
+    # subset of vehicles. (Reprice detection is unaffected either way: it
+    # compares against ad_history.)
+    save_snapshot(retail)
+    # Status 1 is dropped only from this run's own queue-building from here on.
     excluded_not_certified = [v for v in retail if v.get("status_code") == 1]
     retail = [v for v in retail if v.get("status_code") != 1]
     if excluded_not_certified:
@@ -333,12 +344,6 @@ def _run_inner(
             f"[orchestrator] excluding {len(excluded_not_certified)} vehicle(s) "
             f"at status 1 (in stock, not yet certified) — never run by design"
         )
-    # Save the full, unfiltered (minus status-1) inventory as the snapshot. It is
-    # the ground truth behind Flask's vehicle_id / status_code lookups and the
-    # Inventory page, and must never shrink just because --status/--limit scoped
-    # this particular run's ad-generation work to a subset of vehicles. (Reprice
-    # detection is unaffected either way: it compares against ad_history.)
-    save_snapshot(retail)
     # Time-to-post clock: first sighting of each vehicle at a build-eligible status.
     try:
         newly_eligible = stamp_eligible(retail, today)
