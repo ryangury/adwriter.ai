@@ -180,6 +180,8 @@ Use the data package's primary_proof_point / secondary_proof_point fields direct
 
 Disclose the admin fee in parentheses immediately after the advertised price, before the proof point gap.
 
+Use the PROOF POINT SENTENCE from the data package verbatim. It is already built to the rules above; the formats below only describe its shape. Do not rewrite it or add a trim or mileage clause to it.
+
 One anchor format (when only primary_proof_point is present):
 "Current asking price is $[advertised_price] (includes $899 dealer administrative fee), $[gap] below [primary label] for comparable [trim] models with similar mileage."
 
@@ -188,7 +190,7 @@ Two anchor format (when both primary_proof_point and secondary_proof_point are p
 
 Example (two anchor): "$11,039 below Kelley Blue Book Typical Listing Price and $9,039 below active regional market listings for comparable Calligraphy models with similar mileage."
 
-Never say "comparable units" alone on this program — always name the trim at minimum, pulled from year_make_model or the sticker data (trim_body). Pull drivetrain only when it explicitly appears in the data package (year_make_model, trim_body, or option data) — never infer or fabricate it. Use the market_velocity data in the package (matching_count and the competitive set filters ACV Max applied — trim, drivetrain, mileage range, certification status) to confirm what the benchmark is actually being compared against before naming it.
+Use the market_velocity data in the package (matching_count and the competitive set filters ACV Max applied — trim, drivetrain, mileage range, certification status) to confirm what the benchmark is actually being compared against before naming it.
 
 The MSRP depreciation sentence is separate from proof points and appears before them — it does not count toward the two-anchor limit and is never itself labeled as a proof point.
 

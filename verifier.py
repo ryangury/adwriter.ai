@@ -412,6 +412,7 @@ def expected_advertised_price(entry: dict[str, Any]) -> float | None:
 
 
 STALE_NOTE = "old text still live"
+PRICE_MISSING_NOTE = "price missing live"
 _STALE_MIN_CHARS = 25  # a shorter normalized fragment could match by accident
 
 
@@ -456,6 +457,10 @@ def compare_ad(
     reposted - whatever the phrase score. `stale_found` / `stale_gone` report
     which phrases were / were not seen, for the caller to prune; neither is
     reported when the page wasn't read.
+
+    Missing price: when the stored ad has a "Current asking price is $X"
+    sentence and the live text has none, the verdict is "outdated" with note
+    "price missing live" (appended to any stale-phrase note).
 
     Price check: when `expected_price` (the fee-inclusive asking price the
     stored ad states) is given and the live text has a "Current asking price
@@ -511,6 +516,11 @@ def compare_ad(
             result["note"] = STALE_NOTE
 
     m = _LIVE_PRICE_RE.search(live)
+    if m is None and _LIVE_PRICE_RE.search(stored_ad_text or ""):
+        # Our ad states a price but the live copy has none (cut off, or an
+        # older version without it): not a skipped check - the page is outdated.
+        result["verdict"] = "outdated"
+        result["note"] = "; ".join(n for n in (result.get("note"), PRICE_MISSING_NOTE) if n)
     if m and expected_price is not None:
         live_price = int(m.group(1).replace(",", ""))
         expected = int(round(expected_price))

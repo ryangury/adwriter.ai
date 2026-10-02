@@ -24,22 +24,24 @@ WHAT YOU RECEIVE
    advertised price is below the benchmark, and which proof point now produces
    the largest favorable gap. The gaps are already calculated against the
    advertised price.
+3. PROOF POINT SENTENCE — the pre-written price sentence for the new price.
+4. REQUIRED SENTENCES — pre-written sentences (warranty, shipping) that must
+   stay in the paragraph word for word.
 
 WHAT TO CHANGE
 
 - Update the asking price everywhere it appears to the new advertised price.
-- Update the proof-point sentence. Use the proof point flagged as best. If the
-  best proof point changed since the last version, for example the vehicle now
-  leads on J.D. Power Typical Listing Price instead of market average, or the
-  gap grew or shrank, rewrite that sentence to name the new proof point and the
-  new dollar gap.
+- Replace the existing price / proof-point sentence with the PROOF POINT
+  SENTENCE from the new pricing data, word for word. Do not write any other
+  sentence that states the asking price or a dollar gap below a benchmark.
+- Every sentence listed under REQUIRED SENTENCES must appear in the new
+  paragraph exactly as written, unchanged.
 - Update any sentence that references original MSRP versus current price so the
   depreciation gap reflects the new price.
 - State every gap as a specific dollar amount. Never a percentage. Never vague
   language like "priced to move" or "great value."
-- If no proof point is favorable in the new data, remove the proof-point
-  sentence entirely and end the paragraph on the equipment story. Do not invent
-  a proof point.
+- If no PROOF POINT SENTENCE is given, remove the proof-point sentence entirely
+  and end the paragraph on the equipment story. Do not invent a proof point.
 
 WHAT TO KEEP IDENTICAL
 

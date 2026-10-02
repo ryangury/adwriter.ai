@@ -1670,29 +1670,170 @@ def insert_scarcity_sentence(paragraph_two: str, sentence: str | None) -> str:
     return " ".join(parts)
 
 
+# --------------------------------------------------------------------------- #
+# Required-sentence guard: every Python-built sentence must reach the ad verbatim
+# --------------------------------------------------------------------------- #
+
+# pkg keys of the sentences the pipeline writes itself. Paragraph one carries the
+# provenance sentence (sentence two); paragraph two carries the rest.
+REQUIRED_SENTENCE_KEYS = (
+    "provenance_sentence",
+    "proof_point_sentence",
+    "scarcity_sentence",
+    "warranty_sentence",
+    "shipping_sentence",
+)
+
+# A price claim of the model's own: anything stating the asking price, or a dollar
+# gap below a pricing benchmark. Dropped when Python's proof-point sentence has to
+# be inserted, so the ad never carries two competing price statements.
+_PRICE_CLAIM_RE = re.compile(
+    r"\basking price\b|\$[\d,]+[^.]*?\bbelow\b.*?(?:Typical Listing Price|J\.?D\.? Power"
+    r"|Kelley Blue Book|benchmark|active listings|market average)",
+    re.IGNORECASE,
+)
+_DEPRECIATION_RE = re.compile(r"\bOriginal MSRP was\b|\bin depreciation\b", re.IGNORECASE)
+_WARRANTY_START_RE = re.compile(
+    r"^(?:This vehicle carries an? .*warranty|The powertrain warranty runs through)", re.IGNORECASE
+)
+
+
+def _ws(text: str | None) -> str:
+    return re.sub(r"\s+", " ", text or "").strip()
+
+
+def required_sentences_from(pkg: dict) -> dict[str, str]:
+    """{key: sentence} for every Python-built sentence the package carries."""
+    return {k: pkg[k].strip() for k in REQUIRED_SENTENCE_KEYS if (pkg.get(k) or "").strip()}
+
+
+def missing_required_sentences(ad_text: str, required: dict[str, str]) -> list[str]:
+    """Keys of the required sentences not in `ad_text` verbatim (whitespace-normalized)."""
+    text = _ws(ad_text)
+    return [k for k, s in required.items() if _ws(s) not in text]
+
+
+def _units(paragraph: str, keep: list[str]) -> list[str]:
+    """Sentences of `paragraph`, with each string in `keep` that is present kept
+    whole as one unit (the shipping and velocity sentences span two sentences)."""
+    spans = []
+    for s in keep:
+        m = re.search(r"\s+".join(map(re.escape, s.split())), paragraph)
+        if m:
+            spans.append((m.start(), m.end()))
+    units: list[str] = []
+    pos = 0
+    for a, b in sorted(spans):
+        if a < pos:
+            continue
+        units += _split_sentences(paragraph[pos:a])
+        units.append(paragraph[a:b])
+        pos = b
+    units += _split_sentences(paragraph[pos:])
+    return [u.strip() for u in units if u.strip()]
+
+
+def insert_required_sentences(
+    ad_text: str, required: dict[str, str], missing: list[str], *, status_code=None, stock: str = ""
+) -> str:
+    """Put each missing required sentence at its normal position, leaving the
+    sentences already present where they are:
+      provenance  -> paragraph one, sentence two
+      proof point -> paragraph two, in place of the model's own price claim if it
+                     wrote one (removed), else after the MSRP depreciation
+                     sentence, else before the warranty / shipping sentences
+      scarcity    -> right after the proof-point sentence
+      warranty    -> before the shipping sentence (As-Is: before the depreciation
+                     / proof-point sentences)
+      shipping    -> last sentence of paragraph two
+    Logs each insertion and each removed price claim."""
+    paras = split_ad_paragraphs(ad_text)
+    tag = f"[required] {stock}:" if stock else "[required]"
+
+    if "provenance_sentence" in missing:
+        units = _units(paras["paragraph_one"], [])
+        units.insert(min(1, len(units)), required["provenance_sentence"])
+        paras["paragraph_one"] = " ".join(units)
+        print(f"{tag} inserted provenance sentence into paragraph one", file=sys.stderr)
+
+    p2_keys = [k for k in ("proof_point_sentence", "scarcity_sentence", "warranty_sentence", "shipping_sentence") if k in missing]
+    if p2_keys:
+        present = [s for k, s in required.items() if k not in missing and k != "provenance_sentence"]
+        units = _units(paras["paragraph_two"], present)
+        is_req = lambda u: _ws(u) in {_ws(s) for s in required.values()}  # noqa: E731
+        find = lambda key: next((i for i, u in enumerate(units) if key in required and _ws(u) == _ws(required[key])), None)  # noqa: E731
+
+        if "proof_point_sentence" in p2_keys:
+            claims = [i for i, u in enumerate(units) if not is_req(u) and _PRICE_CLAIM_RE.search(u)]
+            for i in claims:
+                print(f"{tag} removed the model's own price claim: {units[i]!r}", file=sys.stderr)
+            at = claims[0] if claims else None
+            units = [u for i, u in enumerate(units) if i not in claims]
+            if at is None:
+                dep = [i for i, u in enumerate(units) if _DEPRECIATION_RE.search(u)]
+                tail = [i for i in (find("scarcity_sentence"), find("warranty_sentence"), find("shipping_sentence")) if i is not None]
+                if dep:
+                    at = dep[-1] + 1
+                elif tail:
+                    at = min(tail)
+                else:
+                    at = len(units)
+            units.insert(min(at, len(units)), required["proof_point_sentence"])
+        if "scarcity_sentence" in p2_keys:
+            pp = find("proof_point_sentence")
+            units.insert(len(units) if pp is None else pp + 1, required["scarcity_sentence"])
+        if "warranty_sentence" in p2_keys:
+            if status_code == 13:
+                anchors = [i for i, u in enumerate(units) if _DEPRECIATION_RE.search(u)]
+                pp = find("proof_point_sentence")
+                at = anchors[0] if anchors else pp
+            else:
+                at = find("shipping_sentence")
+            units.insert(len(units) if at is None else at, required["warranty_sentence"])
+        if "shipping_sentence" in p2_keys:
+            units.append(required["shipping_sentence"])
+        paras["paragraph_two"] = " ".join(units)
+        for k in p2_keys:
+            print(f"{tag} inserted {k.replace('_', ' ')} into paragraph two", file=sys.stderr)
+
+    return "\n\n".join(p for p in paras.values() if p)
+
+
 def _generate_from_package(pkg: dict) -> tuple[str, str | None]:
     """(ad_copy, feedback_block) for one aggregated package. Every tier's ad is
-    checked for banned scarcity wording: one retry, then
-    BannedScarcityPhraseError (callers log it and skip the vehicle)."""
-    ad_copy, feedback = _generate_once(pkg)
-    hits = find_banned_scarcity_phrases(ad_copy, pkg.get("scarcity_sentence"))
-    if hits:
-        print(
-            f"[adwriter] {pkg.get('stock_number')}: banned scarcity wording {sorted(set(hits))} "
-            f"- retrying once",
-            file=sys.stderr,
-        )
+    checked for banned scarcity wording and for each Python-built sentence
+    (REQUIRED_SENTENCE_KEYS) verbatim. Either problem gets one retry; banned
+    wording after the retry raises BannedScarcityPhraseError (callers log it and
+    skip the vehicle), a required sentence still missing is inserted at its
+    normal position and logged."""
+    stock = pkg.get("stock_number")
+    required = required_sentences_from(pkg)
+    for attempt in (1, 2):
         ad_copy, feedback = _generate_once(pkg)
         hits = find_banned_scarcity_phrases(ad_copy, pkg.get("scarcity_sentence"))
+        missing = missing_required_sentences(ad_copy, required)
+        if not hits and not missing:
+            return ad_copy, feedback
+        problems = ([f"banned scarcity wording {sorted(set(hits))}"] if hits else []) + (
+            [f"missing required sentence(s) {missing}"] if missing else []
+        )
+        if attempt == 1:
+            print(f"[adwriter] {stock}: {'; '.join(problems)} - retrying once", file=sys.stderr)
+            continue
         if hits:
             print(
-                f"[adwriter] {pkg.get('stock_number')}: banned scarcity wording "
+                f"[adwriter] {stock}: banned scarcity wording "
                 f"{sorted(set(hits))} after retry - skipping this vehicle",
                 file=sys.stderr,
             )
             raise BannedScarcityPhraseError(
                 f"banned scarcity wording after retry: {sorted(set(hits))}"
             )
+        print(f"[adwriter] {stock}: required sentence(s) {missing} still missing after retry - inserting", file=sys.stderr)
+        ad_copy = insert_required_sentences(
+            ad_copy, required, missing,
+            status_code=(pkg.get("vehicle") or {}).get("status_code"), stock=stock or "",
+        )
     return ad_copy, feedback
 
 
@@ -1923,7 +2064,12 @@ def _paragraph(entry: dict, key: str) -> str:
 
 
 def _format_reprice_package(
-    paragraph_two: str, advertised_price, proof_points_below: list, best_proof_point
+    paragraph_two: str,
+    advertised_price,
+    proof_points_below: list,
+    best_proof_point,
+    proof_point_sentence: str | None = None,
+    required_sentences: list[str] | None = None,
 ) -> str:
     lines = [
         "EXISTING PARAGRAPH TWO:",
@@ -1953,6 +2099,16 @@ def _format_reprice_package(
             f"Best proof point now: {bp.get('label', bp.get('key'))} — "
             f"{_usd(bp.get('gap'))} below benchmark {_usd(bp.get('benchmark_price'))}",
         ]
+    if proof_point_sentence:
+        lines += [
+            "",
+            "PROOF POINT SENTENCE (use verbatim in place of the existing price / "
+            "proof-point sentence; do not write a price or benchmark claim of your own):",
+            proof_point_sentence,
+        ]
+    if required_sentences:
+        lines += ["", "REQUIRED SENTENCES (each must appear in the new paragraph two exactly as written):"]
+        lines += [f"  - {r}" for r in required_sentences]
     lines += [
         "",
         "Rewrite paragraph two only. Keep all equipment and equipment "
@@ -2074,11 +2230,29 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
     clean_p2, removed = strip_banned_sentences(old_p2)
     if removed:
         print(f"[reprice] {stock}: removed {len(removed)} scarcity sentence(s) from paragraph two")
+    # Python-built sentences the new paragraph must carry verbatim: the fresh
+    # proof-point sentence, plus the warranty and shipping sentences the old
+    # paragraph already had (a reprice does not rebuild those). Scarcity is
+    # inserted by Python below, never written by the model.
+    from aggregator import SHIPPING_SENTENCE  # local: avoid widening the module surface
+
+    required: dict[str, str] = {}
+    if pd.get("proof_point_sentence"):
+        required["proof_point_sentence"] = pd["proof_point_sentence"]
+    warranty = next(
+        (u for u in _units(clean_p2 or old_p2, [SHIPPING_SENTENCE]) if _WARRANTY_START_RE.match(u)), None
+    )
+    if warranty:
+        required["warranty_sentence"] = warranty
+    if _ws(SHIPPING_SENTENCE) in _ws(old_p2):
+        required["shipping_sentence"] = SHIPPING_SENTENCE
     data_block = _format_reprice_package(
         clean_p2 or old_p2,
         advertised_price,
         pd.get("proof_points_below") or [],
         pd.get("best_proof_point"),
+        proof_point_sentence=required.get("proof_point_sentence"),
+        required_sentences=[v for k, v in required.items() if k != "proof_point_sentence"],
     )
 
     client = anthropic.Anthropic(api_key=API_KEY)
@@ -2089,17 +2263,28 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
             user=data_block, size_text=clean_p2 or old_p2, floor=REPRICE_MIN_TOKENS,
         )
 
-    new_p2 = _rewrite()
-    hits = find_banned_scarcity_phrases(new_p2)
-    if hits:
-        print(f"[reprice] {stock}: banned scarcity wording {sorted(set(hits))} - retrying once", file=sys.stderr)
+    for attempt in (1, 2):
         new_p2 = _rewrite()
         hits = find_banned_scarcity_phrases(new_p2)
+        missing = missing_required_sentences(new_p2, required)
+        if not hits and not missing:
+            break
+        problems = ([f"banned scarcity wording {sorted(set(hits))}"] if hits else []) + (
+            [f"missing required sentence(s) {missing}"] if missing else []
+        )
+        if attempt == 1:
+            print(f"[reprice] {stock}: {'; '.join(problems)} - retrying once", file=sys.stderr)
+            continue
         if hits:
             print(f"[reprice] {stock}: banned scarcity wording {sorted(set(hits))} after retry - skipping", file=sys.stderr)
             raise BannedScarcityPhraseError(
                 f"reprice: banned scarcity wording after retry: {sorted(set(hits))}"
             )
+        print(f"[reprice] {stock}: required sentence(s) {missing} still missing after retry - inserting", file=sys.stderr)
+        # the inserter works on a whole ad; give it paragraph two in the second slot
+        new_p2 = split_ad_paragraphs(
+            insert_required_sentences("-\n\n" + new_p2, required, missing, status_code=status, stock=stock)
+        )["paragraph_two"]
     new_p2 = insert_scarcity_sentence(new_p2, pd.get("scarcity_sentence"))
 
     p1 = _paragraph(entry, "paragraph_one")
@@ -2131,7 +2316,8 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
 def fresh_pricing_data(stock_number: str, *, headless: bool = True) -> dict:
     """Scrape just the ACV MAX pricing screen for one stock number and shape it
     into the minimal package reprice_ad() expects:
-    {current_price, advertised_price, proof_points_below, best_proof_point}.
+    {current_price, advertised_price, proof_points_below, best_proof_point,
+    scarcity_sentence, proof_point_sentence}.
 
     current_price is the raw ACV Max price (for last_price_at_write / reprice
     detection); advertised_price is current_price + DEALER_DOC_FEE, and the
@@ -2153,6 +2339,14 @@ def fresh_pricing_data(stock_number: str, *, headless: bool = True) -> dict:
         build_scarcity_sentence(pr.get("matching_count"), pr.get("search_distance"))
         if pr.get("status_code") in BUILD_STATUS_CODES
         else None
+    )
+    from aggregator import build_proof_point_sentence
+
+    shaped["proof_point_sentence"], _ = build_proof_point_sentence(
+        pr,
+        advertised,
+        current_price=pr.get("current_internet_price"),
+        search_distance=pr.get("search_distance"),
     )
     return shaped
 

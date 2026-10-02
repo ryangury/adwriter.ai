@@ -597,9 +597,10 @@ def inventory():
             posted_state = "red"
         else:
             posted_state = "grey"
-        # Removed sentences still on the live page ("old text still live"): the
-        # listing was never reposted, so it is not a current post even though our
-        # proof-point or provenance text is also there.
+        # A verifier note ("old text still live": removed sentences still on the
+        # page; "price missing live": our price sentence isn't): the listing was
+        # never reposted correctly, so it is not a current post even though our
+        # proof-point or provenance text may also be there.
         if verification_note and verdict == "outdated":
             posted_state = "red"
 
