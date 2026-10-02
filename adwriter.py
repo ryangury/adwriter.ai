@@ -1943,7 +1943,9 @@ def fresh_pricing_data(stock_number: str, *, headless: bool = True) -> dict:
 # --------------------------------------------------------------------------- #
 
 
-def _format_recon_update_package(paragraph_one: str, filtered_recon: dict) -> str:
+def _format_recon_update_package(
+    paragraph_one: str, filtered_recon: dict, status_code: int | None = None
+) -> str:
     lines = [
         "EXISTING PARAGRAPH ONE:",
         (paragraph_one or "").strip() or "(none on record)",
@@ -1962,6 +1964,16 @@ def _format_recon_update_package(paragraph_one: str, filtered_recon: dict) -> st
             )
     else:
         lines.append("Included line items: none")
+    tier = _TIER_RECON_WORDING.get(status_code)
+    if tier:
+        lines += [
+            "",
+            f"TIER OVERRIDE: this is a {tier} vehicle, not a Mercedes-Benz Certified "
+            f"Pre-Owned vehicle. Wherever the instructions say \"Mercedes-Benz "
+            f"Certified Pre-Owned standards\" or \"scheduled Mercedes-Benz service\", "
+            f"say \"{tier} standards\" or \"scheduled service\" instead. Never write "
+            f"\"Certified Pre-Owned\" or \"Mercedes-Benz\" in the sentences you add.",
+        ]
     lines += [
         "",
         "Add one or two sentences to the END of paragraph one describing this "
@@ -1982,6 +1994,34 @@ def swap_pending_recon_sentence(text: str, status_code: int | None) -> str | Non
     if not pending or not done or pending not in (text or ""):
         return None
     return text.replace(pending, done, 1)
+
+
+def strip_pending_recon_sentence(text: str, status_code: int | None = None) -> str:
+    """Remove the "currently undergoing ..." recon-pending sentence (and one
+    adjoining space) from `text`. With a known status_code only that tier's
+    sentence is removed; with None every tier's pending sentence is tried (each
+    is unique to its tier). Text without the sentence is returned unchanged."""
+    code = 10 if status_code == 16 else status_code
+    if code is None:
+        candidates = list(_RECON_PENDING_FALLBACK.values())
+    else:
+        candidates = [_RECON_PENDING_FALLBACK.get(code)]
+    out = text or ""
+    for pending in candidates:
+        if not pending or pending not in out:
+            continue
+        if f" {pending}" in out:
+            out = out.replace(f" {pending}", "", 1)
+        else:
+            out = out.replace(pending, "", 1).lstrip(" ")
+    return out
+
+
+_TIER_RECON_WORDING = {
+    11: "Hendrick Certified",
+    12: "Hendrick Affordable",
+    13: "Hendrick",
+}
 
 
 def update_recon(stock_number: str, status_code: int | None = None) -> str:
@@ -2012,7 +2052,15 @@ def update_recon(stock_number: str, status_code: int | None = None) -> str:
         rv.login()
         recon_raw = rv.scrape_work_order(stock)
     recon_raw.pop("recon_image_bytes", None)
-    filtered = _filter_recon(recon_raw.get("line_items", []))
+    if status_code is None:
+        print(
+            f"[update_recon] {stock}: no status_code supplied — filtering with "
+            f"the status-10 (MB CPO) rules"
+        )
+    filtered = _filter_recon(
+        recon_raw.get("line_items", []),
+        status_code if status_code is not None else 10,
+    )
 
     if not _recon_has_includeable(filtered):
         new_p1 = swap_pending_recon_sentence(p1, status_code)
@@ -2036,7 +2084,11 @@ def update_recon(stock_number: str, status_code: int | None = None) -> str:
             x for x in (p1, p2, p3, p4) if x
         )
 
-    data_block = _format_recon_update_package(p1, filtered)
+    # The pending sentence is removed here, in Python, before Claude sees the
+    # paragraph and again on its output, so it can never survive a top-up that
+    # adds real recon copy.
+    clean_p1 = strip_pending_recon_sentence(p1, status_code)
+    data_block = _format_recon_update_package(clean_p1, filtered, status_code)
     client = anthropic.Anthropic(api_key=API_KEY)
     resp = client.messages.create(
         model=MODEL,
@@ -2044,7 +2096,10 @@ def update_recon(stock_number: str, status_code: int | None = None) -> str:
         system=RECON_UPDATE_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": data_block}],
     )
-    new_p1 = "".join(b.text for b in resp.content if b.type == "text").strip() or p1
+    new_p1 = strip_pending_recon_sentence(
+        "".join(b.text for b in resp.content if b.type == "text").strip() or clean_p1,
+        status_code,
+    )
 
     full = "\n\n".join(x for x in (new_p1, p2, p3, p4) if x)
     entry["paragraph_one"] = new_p1
