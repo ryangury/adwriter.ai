@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 import anthropic
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from ad_timeline import stamp_eligible
@@ -70,6 +71,11 @@ from status_codes import BUILD_STATUS_CODES  # noqa: E402
 # reprices — see _load_reprice_queue() / _save_reprice_queue().
 REPRICE_QUEUE_PATH = Path(__file__).with_name("reprice_queue.json")
 MAX_REPRICES_PER_RUN = 15
+
+# Recon gate (step 3): pause before retrying a failed ReconVision login, and
+# stop the gate for the rest of the run after this many failures in a row.
+RECON_LOGIN_RETRY_WAIT_S = 30
+RECON_MAX_LOGIN_FAILURES = 3
 
 
 def _load_reprice_queue() -> list[dict[str, Any]]:
@@ -507,6 +513,79 @@ def _run_inner(
     reprice_queue: list[dict[str, Any]] = []
 
     rv: ReconVisionScraper | None = None
+    # ReconVision login is retried per vehicle: a failed login logs one error
+    # for that vehicle and puts it in waiting_recon; the next vehicle that needs
+    # ReconVision waits RECON_LOGIN_RETRY_WAIT_S and tries a fresh session.
+    # RECON_MAX_LOGIN_FAILURES failures in a row stop the recon gate for the
+    # rest of the run (one "ReconVision unreachable" alert); every remaining
+    # vehicle that needed a recon check goes to waiting_recon with the reason.
+    rv_login_failures = 0
+    rv_last_error = ""
+    recon_gate_stopped = False
+
+    def _recon_session() -> tuple[ReconVisionScraper | None, bool]:
+        """(logged-in ReconVision session or None, whether a login was tried
+        for this vehicle and failed). Opens a session if none is open; returns
+        (None, False) without trying once the recon gate has been stopped."""
+        nonlocal rv, rv_login_failures, rv_last_error, recon_gate_stopped
+        if rv is not None:
+            return rv, False
+        if recon_gate_stopped:
+            return None, False
+        if rv_login_failures:
+            print(f"[gate] ReconVision: waiting {RECON_LOGIN_RETRY_WAIT_S}s before retrying the login")
+            time.sleep(RECON_LOGIN_RETRY_WAIT_S)
+        session = ReconVisionScraper(headless=True, use_saved_session=True)
+        entered = False
+        try:
+            session.__enter__()
+            entered = True
+            session.login()
+        except (PlaywrightTimeoutError, PlaywrightError, ScraperError) as exc:
+            if entered:
+                try:
+                    session.__exit__(None, None, None)
+                except Exception:  # noqa: BLE001 - closing a broken session must not mask the error
+                    pass
+            rv_login_failures += 1
+            rv_last_error = f"{type(exc).__name__}: {str(exc).splitlines()[0] if str(exc) else ''}"
+            print(
+                f"[gate] ReconVision login failed ({rv_login_failures} in a row) — {rv_last_error}",
+                file=sys.stderr,
+            )
+            if rv_login_failures >= RECON_MAX_LOGIN_FAILURES:
+                recon_gate_stopped = True
+                msg = (
+                    f"recon gate stopped for the rest of the run after "
+                    f"{rv_login_failures} failed ReconVision logins in a row — {rv_last_error}"
+                )
+                errors.append({"stock": "-", "phase": "recon", "error": msg})
+                print(f"[gate] {msg}", file=sys.stderr)
+                _safe_send(
+                    "ReconVision unreachable",
+                    f"ReconVision unreachable: {msg}\n\n"
+                    f"Vehicles that needed a recon check are listed under WAITING ON "
+                    f"RECON in today's Action Required email.\n",
+                )
+            return None, True
+        rv_login_failures = 0
+        rv = session
+        return rv, False
+
+    def _recon_unavailable(v: dict[str, Any], login_failed: bool) -> None:
+        """No ReconVision for this vehicle: into waiting_recon with the reason.
+        A vehicle whose own login attempt failed logs one error; one skipped
+        because the gate is already stopped doesn't (the stop logged one error
+        and sent one alert for the whole run)."""
+        stock = v.get("stock_number")
+        if login_failed:
+            note = f"ReconVision unreachable — recon not checked ({rv_last_error})"
+            errors.append({"stock": stock, "phase": "recon", "error": note})
+        else:
+            note = "ReconVision unreachable — recon gate stopped for this run; recon not checked"
+        waiting_recon.append({**v, "note": note})
+        print(f"[gate] {stock}: {note} -> waiting")
+
     if reprice_only:
         # Reprices only: no ReconVision session, no build / pre-recon /
         # recon-update queues — just the vehicles whose live ad needs its
@@ -542,12 +621,12 @@ def _run_inner(
 
             if entry:
                 if entry.get("recon_pending"):
-                    if rv is None:
-                        rv = ReconVisionScraper(headless=True, use_saved_session=True)
-                        rv.__enter__()
-                        rv.login()
+                    session, login_failed = _recon_session()
+                    if session is None:
+                        _recon_unavailable(v, login_failed)
+                        continue
                     try:
-                        rc = check_recon(stock, rv=rv)
+                        rc = check_recon(stock, rv=session)
                     except PlaywrightTimeoutError as exc:
                         print(f"[orchestrator] ReconVision timeout on {stock} — skipping to next vehicle")
                         errors.append(
@@ -575,12 +654,12 @@ def _run_inner(
                 continue
 
             # No ad on record yet — decide full vs pre-recon on the recon gate.
-            if rv is None:
-                rv = ReconVisionScraper(headless=True, use_saved_session=True)
-                rv.__enter__()
-                rv.login()
+            session, login_failed = _recon_session()
+            if session is None:
+                _recon_unavailable(v, login_failed)
+                continue
             try:
-                rc = check_recon(stock, rv=rv)
+                rc = check_recon(stock, rv=session)
             except PlaywrightTimeoutError as exc:
                 print(f"[orchestrator] ReconVision timeout on {stock} — skipping to next vehicle")
                 errors.append(
