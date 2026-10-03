@@ -52,7 +52,7 @@ from inventory_crawler import (
     prune_sticker_cache,
     save_snapshot,
 )
-from scraper import ACVMaxScraper, ReconVisionScraper
+from scraper import AcvMaxRunAbort, ACVMaxScraper, ReconVisionScraper
 from run_lock import (
     ORCHESTRATOR_LOCK_PATH,
     ScraperBusyError,
@@ -252,6 +252,26 @@ def _format_action_email(
 # --------------------------------------------------------------------------- #
 
 
+def _send_scraping_alert(reason: str, *, send_email: bool) -> None:
+    """Email "ACV Max scraping broken: <reason>". Never raises."""
+    subject = f"ACV Max scraping broken: {reason}"
+    if len(subject) > 160:
+        subject = subject[:157] + "..."
+    body = (
+        f"ACV Max scraping broken: {reason}\n\n"
+        f"Time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"See the newest orchestrator_logs/ file and scraper_debug/ for details.\n"
+    )
+    if not send_email:
+        print(f"[email] (--no-email) would send: {subject}")
+        return
+    try:
+        _send_gmail(subject, body)
+        print(f"[email] sent: {subject}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[email] FAILED to send '{subject}': {exc}", file=sys.stderr)
+
+
 def run(
     *,
     limit: int | None = None,
@@ -271,6 +291,12 @@ def run(
                 limit=limit, send_email=send_email, status=status,
                 skip_benchmark=skip_benchmark, reprice_only=reprice_only,
             )
+        except AcvMaxRunAbort as exc:
+            # Completed vehicles are already saved (ad_history is persisted per
+            # vehicle); stop here rather than fail everything that's left.
+            print(f"[orchestrator] RUN ABORTED - ACV Max scraping broken: {exc}", file=sys.stderr)
+            _send_scraping_alert(str(exc), send_email=send_email)
+            return 1
         finally:
             if release_lock_if_owned(ORCHESTRATOR_LOCK_PATH):
                 print(f"[orchestrator] released {ORCHESTRATOR_LOCK_PATH.name}")
@@ -642,6 +668,8 @@ def _run_inner(
         # Per-vehicle boundary: one vehicle's failure must never kill the queue.
         try:
             _build_one(v, skip_recon=skip_recon)
+        except AcvMaxRunAbort:
+            raise  # ACV MAX itself is unusable - stop the run (see run())
         except Exception as exc:  # noqa: BLE001
             import traceback
 

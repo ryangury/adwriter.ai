@@ -125,6 +125,25 @@ ACVMAX_DEALER_INDEX_URL = "https://max.firstlook.biz/fl-ims/secured/index"
 ACVMAX_INVENTORY_URL = "https://my.max.auto/inventory"
 ACVMAX_DEALERSHIP = "Mercedes-Benz of Durham"
 ACVMAX_PRICING_FRAME_HINT = "merchandising/PricingAnalysis"
+# The merchandising iframes (pricing, CTR, options, equipment) sign in through
+# CAS on auth.firstlook.biz, whose ticket-granting cookie (TGC) lasts about two
+# weeks and is NOT renewed by use. The my.max.auto shell has its own, separate
+# token, so a saved session can still load the shell (and crawl inventory)
+# after the TGC lapses, while every pricing frame shows the CAS login form
+# instead (10/3/2026: TGC expired 4:00 AM, the 5:00 AM run failed 83 frames).
+# A saved session whose TGC is missing or has less than this left is not
+# reused: login() signs in fresh, so the TGC cannot lapse mid-run.
+ACVMAX_TGC_MIN_REMAINING_S = 6 * 3600
+# The store name in the my.max.auto header's "Dealership" picker, or null.
+_ACVMAX_DEALERSHIP_JS = """() => {
+    for (const lab of document.querySelectorAll('label.v-field-label')) {
+        if (lab.textContent.trim() !== 'Dealership') continue;
+        const field = lab.closest('.v-field');
+        const sel = field && field.querySelector('.v-autocomplete__selection-text');
+        if (sel && sel.textContent.trim()) return sel.textContent.trim();
+    }
+    return null;
+}"""
 # Confirmed from live debug dumps (scraper_debug/*-acvmax-pricing-frame-*.html
 # and the *-acvmax-no-options-*/-no-equipment-* failures that motivated this
 # fix): the Options and Equipment tabs render inside their own merchandising
@@ -395,6 +414,25 @@ class CarfaxError(ScraperError):
     """The Carfax report link could not be opened or read."""
 
 
+class AcvMaxSessionExpiredError(LoginError):
+    """An ACV MAX merchandising iframe loaded the CAS login form instead of its
+    page: the auth.firstlook.biz sign-in has lapsed even though the my.max.auto
+    shell around it is still signed in."""
+
+
+class AcvMaxRunAbort(Exception):
+    """ACV MAX is unusable for the rest of this run (still signed out after a
+    fresh login, or not on Mercedes-Benz of Durham). Deliberately NOT a
+    ScraperError: per-vehicle `except ScraperError` handlers let it through,
+    and per-vehicle `except Exception` handlers must re-raise it, so the run
+    stops and alerts instead of failing every remaining vehicle one at a time."""
+
+
+class WrongDealershipError(AcvMaxRunAbort):
+    """The my.max.auto header shows a store other than Mercedes-Benz of Durham
+    (or none), so anything crawled or scraped would be another store's data."""
+
+
 class OptionsTabError(ScraperError):
     """The ACV Max Options tab never rendered a Selected Packages section, or
     none could be parsed — the MB CPO fallback when AutoiPacket can't produce
@@ -504,6 +542,21 @@ def _exists(ctx: Page | Frame, key: str, timeout_ms: int) -> bool:
         _first_visible(ctx, key, timeout_ms)
         return True
     except ScraperError:
+        return False
+
+
+def _is_cas_login_frame(frame: Frame | None) -> bool:
+    """True if a merchandising iframe landed on the CAS login form instead of
+    its page (confirmed live 10/3/2026: the pricing iframe's URL was
+    auth.firstlook.biz/cas/login?service=...PricingAnalysis..., with a password
+    input)."""
+    if frame is None:
+        return False
+    if "auth.firstlook.biz" in (frame.url or ""):
+        return True
+    try:
+        return frame.locator("input[type=password]").count() > 0
+    except Exception:  # noqa: BLE001 - a detached frame is just "not a login form"
         return False
 
 
@@ -3381,6 +3434,9 @@ class ACVMaxScraper(_BrowserSession):
         # that persists across calls would otherwise let one vehicle's status
         # code ride along onto the next vehicle in a reused session.
         self._last_status_vehicle_id: str | None = None
+        # Set by is_ready() when the saved session's CAS sign-in (TGC) is
+        # missing or about to lapse; login() then signs in from scratch.
+        self._cas_stale = False
 
     def _status_code_for(self, vehicle_id: str) -> int | None:
         """The status code find_vehicle() read for THIS vehicle, else None.
@@ -3401,9 +3457,68 @@ class ACVMaxScraper(_BrowserSession):
 
     # -- auth ------------------------------------------------------------- #
 
-    def is_ready(self) -> bool:
-        """True if the saved session lands on the MB-of-Durham inventory SPA."""
+    def _tgc_problem(self) -> str | None:
+        """Why this context's CAS sign-in cookie (auth.firstlook.biz TGC) can't
+        carry a run, or None if it can. The browser drops an expired cookie when
+        a saved session loads, so an expired TGC shows up here as missing."""
+        assert self._context is not None
+        tgc = next(
+            (
+                c for c in self._context.cookies()
+                if c.get("name") == "TGC" and "auth.firstlook.biz" in (c.get("domain") or "")
+            ),
+            None,
+        )
+        if tgc is None:
+            return "no CAS sign-in cookie (TGC) - expired or never saved"
+        expires = tgc.get("expires") or -1
+        if expires <= 0:
+            return None  # browser-session cookie: lives as long as this context
+        if expires - time.time() < ACVMAX_TGC_MIN_REMAINING_S:
+            return (
+                f"CAS sign-in cookie (TGC) expires "
+                f"{datetime.fromtimestamp(expires):%Y-%m-%d %H:%M}, under "
+                f"{ACVMAX_TGC_MIN_REMAINING_S // 3600}h away"
+            )
+        return None
+
+    def current_dealership(self) -> str | None:
+        """The store named in the my.max.auto header's Dealership picker, read
+        from the page (None when the header isn't there, e.g. off my.max.auto)."""
         assert self.page is not None
+        try:
+            return self.page.evaluate(_ACVMAX_DEALERSHIP_JS)
+        except Exception:  # noqa: BLE001 - a navigation mid-evaluate reads as "unknown"
+            return None
+
+    def require_durham(self, context: str) -> None:
+        """Raise WrongDealershipError unless the header shows Mercedes-Benz of
+        Durham. `context` says which step was checking, for the alert."""
+        assert self.page is not None
+        if "my.max.auto" not in self.page.url:
+            self.page.goto(ACVMAX_INVENTORY_URL, wait_until="domcontentloaded")
+        shown = None
+        for _ in range(10):  # the Vuetify header renders a moment after load
+            shown = self.current_dealership()
+            if shown:
+                break
+            self.page.wait_for_timeout(1_000)
+        if shown != ACVMAX_DEALERSHIP:
+            self._dump_debug(f"acvmax-wrong-store-{_slug(context)}")
+            raise WrongDealershipError(
+                f"{context}: ACV MAX shows dealership {shown!r}, not "
+                f"{ACVMAX_DEALERSHIP!r}"
+            )
+
+    def is_ready(self) -> bool:
+        """True if the saved session lands on the MB-of-Durham inventory SPA
+        AND its CAS sign-in (which the pricing frames need) will last the run."""
+        assert self.page is not None
+        problem = self._tgc_problem()
+        if problem:
+            print(f"[scraper] ACV MAX saved session not reusable: {problem}")
+            self._cas_stale = True
+            return False
         self.page.goto(ACVMAX_INVENTORY_URL, wait_until="domcontentloaded")
         # my.max.auto polls analytics forever and rarely reaches networkidle —
         # never let that block the readiness check.
@@ -3427,10 +3542,32 @@ class ACVMaxScraper(_BrowserSession):
             print("[scraper] reusing saved ACV MAX session")
             return
 
+        if self._cas_stale and not force:
+            # _cas_login(force=False)'s "already authenticated?" probe can pass
+            # on the max.firstlook.biz cookies alone while the TGC is about to
+            # lapse, and would then re-save the same short-lived session. Start
+            # from no cookies so the CAS form always shows and a new TGC is set.
+            print("[scraper] ACV MAX: signing in fresh to renew the CAS sign-in")
+            assert self._context is not None
+            self._context.clear_cookies()
+            force = True
         self._cas_login(force=force)
         self._select_dealership()
+        self._cas_stale = False
         self._save_session()
         print("[scraper] ACV MAX session ready, saved")
+
+    def _relogin(self) -> None:
+        """Sign in from scratch mid-session (cookies cleared, fresh CAS login,
+        Durham selected and confirmed) and re-save the session file."""
+        assert self._context is not None and self.page is not None
+        self._context.clear_cookies()
+        self._cas_login(force=True)
+        self._select_dealership()
+        self.require_durham("re-login")
+        self._cas_stale = False
+        self._save_session()
+        print("[scraper] ACV MAX re-login complete, session saved")
 
     def _cas_login(self, *, force: bool) -> None:
         assert self.page is not None
@@ -3621,6 +3758,11 @@ class ACVMaxScraper(_BrowserSession):
             )
         if frame is None or hint not in (frame.url or ""):
             self._dump_debug(no_frame_tag)
+            if _is_cas_login_frame(frame):
+                raise AcvMaxSessionExpiredError(
+                    f"Merchandising iframe ({hint}) for {vehicle_id} shows the "
+                    f"ACV MAX (CAS) login form - the sign-in has expired."
+                )
             raise error_cls(
                 f"Merchandising iframe ({hint}) for {vehicle_id} never "
                 f"attached with a usable URL."
@@ -3634,6 +3776,32 @@ class ACVMaxScraper(_BrowserSession):
     # -- pricing ---------------------------------------------------- #
 
     def open_pricing(self, vehicle_id: str) -> tuple[Frame, str]:
+        """Open /inventory/{vehicle_id}/pricing and return its pricing frame.
+
+        If the frame shows the CAS login form, sign in again once (fresh
+        cookies, Durham confirmed, session re-saved) and retry. A login form
+        on the retry, or a failed re-login, raises AcvMaxRunAbort: a fresh
+        login that doesn't fix it means every later vehicle would fail too."""
+        try:
+            return self._open_pricing_once(vehicle_id)
+        except AcvMaxSessionExpiredError as exc:
+            print(f"[scraper] {exc} Signing in again and retrying once.")
+            try:
+                self._relogin()
+            except ScraperError as login_exc:
+                raise AcvMaxRunAbort(
+                    f"pricing frame showed the login form and the re-login "
+                    f"failed: {login_exc}"
+                ) from login_exc
+        try:
+            return self._open_pricing_once(vehicle_id)
+        except AcvMaxSessionExpiredError as exc:
+            raise AcvMaxRunAbort(
+                f"pricing frame still shows the login form after a fresh "
+                f"login: {exc}"
+            ) from exc
+
+    def _open_pricing_once(self, vehicle_id: str) -> tuple[Frame, str]:
         assert self.page is not None
         url = f"{ACVMAX_INVENTORY_URL}/{vehicle_id}/pricing"
 

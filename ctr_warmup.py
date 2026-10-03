@@ -37,7 +37,7 @@ from ctr_database import (
     infer_mileage_tier,
     record_ctr,
 )
-from scraper import ACVMaxScraper, ScraperError
+from scraper import AcvMaxRunAbort, ACVMaxScraper, ScraperError
 
 SNAPSHOT_PATH = Path(__file__).with_name("last_inventory_snapshot.json")
 
@@ -85,6 +85,8 @@ def capture_durham_ctr(
             try:
                 pr = acv.scrape_pricing(stock)
                 ctr_data = acv.scrape_ctr(pr.get("vehicle_id"))
+            except AcvMaxRunAbort:
+                raise  # ACV MAX itself is unusable - stop, don't fail every vehicle
             except Exception as exc:  # noqa: BLE001 - one vehicle must never kill the run
                 counts["failed"] += 1
                 errors.append({"stock": stock, "phase": "ctr", "error": str(exc)})
@@ -144,6 +146,8 @@ def capture_benchmark_ctr(
         short = dealership_name.split()[-1]
         try:
             vehicles, failed = bx.scrape_benchmark_inventory(dealership_name)
+        except AcvMaxRunAbort:
+            raise
         except Exception as exc:  # noqa: BLE001 - one store must not stop the other
             errors.append(
                 {"stock": "-", "phase": "benchmark", "error": f"{dealership_name}: {exc}"}

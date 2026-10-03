@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from aggregator import _apply_carfax_vision
-from scraper import ACVMaxScraper, ScraperError, VehicleIdentityError
+from scraper import AcvMaxRunAbort, ACVMaxScraper, ScraperError, VehicleIdentityError
 from vehicle_cache import needs_carfax, save_carfax
 
 SNAPSHOT_PATH = Path(__file__).with_name("last_inventory_snapshot.json")
@@ -157,6 +157,8 @@ def warmup(*, limit: int | None = None, headless: bool = True) -> int:
                         file=sys.stderr,
                     )
                 continue
+            except AcvMaxRunAbort:
+                raise  # signed out even after a fresh login - stop, don't fail every vehicle
             except Exception as exc:  # noqa: BLE001 - one vehicle must never kill the run
                 counts["failed"] += 1
                 print(
