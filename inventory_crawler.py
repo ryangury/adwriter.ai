@@ -22,6 +22,7 @@ from scraper import (
     ACVMAX_DEALERSHIP,
     ACVMAX_INVENTORY_URL,
     STICKER_CACHE_DIR,
+    AcvMaxRunAbort,
     ACVMaxScraper,
     ScraperError,
 )
@@ -40,14 +41,21 @@ _PAGE_SAFETY_LIMIT = 100
 LAST_CRAWL_NONRETAIL: dict[str, str] = {}
 
 # Rows collected (ALL rows, wholesale included — not just the retail list
-# crawl_inventory returns) vs the page's own reported total, for the most
-# recent crawl_inventory(). Read by _crawl_healthy().
-LAST_CRAWL_HEALTH: dict[str, int | None] = {}
+# crawl_inventory returns) vs the page's own reported total, plus the store name
+# read off the page, for the most recent crawl_inventory(). Read by
+# _crawl_healthy() and save_snapshot().
+LAST_CRAWL_HEALTH: dict[str, Any] = {}
 
 # A crawl is healthy only if it collected at least this share of the rows the
 # page says exist. Leaves room for the odd row that fails to render without
 # accepting a genuinely partial crawl.
 MIN_CRAWL_COMPLETENESS = 0.9
+
+# ...and only if at least this share of the PREVIOUS snapshot's stock numbers
+# are in it. A complete crawl of the wrong store, or of a page that rendered
+# someone else's list, passes the completeness check but shares almost no stock
+# numbers with yesterday; real day-to-day turnover is a handful of units.
+MIN_STOCK_OVERLAP = 0.6
 
 
 # --------------------------------------------------------------------------- #
@@ -222,6 +230,7 @@ def crawl_inventory(
     """Crawl every page of the ACV MAX inventory list, keep the mapped-status
     retail vehicles, and (optionally) write last_inventory_snapshot.json."""
     raw_rows: list[dict[str, Any]] = []
+    LAST_CRAWL_HEALTH.clear()
     with ACVMaxScraper(
         headless=headless, use_saved_session=not fresh_login
     ) as ax:
@@ -230,12 +239,10 @@ def crawl_inventory(
         page.goto(ACVMAX_INVENTORY_URL, wait_until="domcontentloaded")
         _wait_for_rows(page)
 
-        if not page.get_by_text(ACVMAX_DEALERSHIP, exact=False).count():
-            print(
-                f"[crawler] warning: '{ACVMAX_DEALERSHIP}' not shown on the inventory "
-                f"page — the dealership selector may not have applied.",
-                file=sys.stderr,
-            )
+        # The store named in the header, read off the page. Anything but Durham
+        # raises WrongDealershipError: nothing below (snapshot, absent flags,
+        # sticker pruning, ad building) may run on another store's inventory.
+        dealership = ax.require_durham("inventory crawl")
 
         total = _total_count(page)
         seen: set[str] = set()
@@ -260,7 +267,7 @@ def crawl_inventory(
         # but is on screen by the last page ("81-97 of 97"), so try again.
         total = total or _total_count(page)
 
-    LAST_CRAWL_HEALTH.update(collected=len(raw_rows), total=total)
+    LAST_CRAWL_HEALTH.update(collected=len(raw_rows), total=total, dealership=dealership)
 
     vehicles =[_normalize_row(r) for r in raw_rows]
     retail = [v for v in vehicles if _is_retail(v)]
@@ -304,9 +311,18 @@ def crawl_inventory(
 
 
 def save_snapshot(vehicles: list[dict[str, Any]]) -> None:
+    """Write `vehicles` (the most recent crawl's retail list) as the snapshot,
+    stamped with the dealership read off the page by that crawl. Refuses to
+    write without one, so the file never claims a store nobody checked."""
+    dealership = LAST_CRAWL_HEALTH.get("dealership")
+    if not dealership:
+        raise ScraperError(
+            "save_snapshot: no page-read dealership from crawl_inventory() - "
+            "refusing to write the snapshot"
+        )
     payload = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "dealership": ACVMAX_DEALERSHIP,
+        "dealership": dealership,
         "count": len(vehicles),
         "vehicles": vehicles,
     }
@@ -319,8 +335,23 @@ def _active_vins(vehicles: list[dict[str, Any]]) -> set[str]:
     return {(v.get("vin") or "").strip().upper() for v in vehicles if v.get("vin")}
 
 
+def snapshot_stocks(snapshot: dict[str, Any] | None) -> set[str] | None:
+    """Stock numbers (upper-cased) in a snapshot from load_previous_snapshot(),
+    or None when there is no snapshot or it lists no stock numbers. Load it
+    BEFORE the new crawl's snapshot overwrites the file."""
+    stocks = {
+        str(v.get("stock_number")).strip().upper()
+        for v in (snapshot or {}).get("vehicles") or []
+        if v.get("stock_number")
+    }
+    return stocks or None
+
+
 def _crawl_healthy(
-    vehicles: list[dict[str, Any]], health: dict[str, int | None] | None = None
+    vehicles: list[dict[str, Any]],
+    health: dict[str, Any] | None = None,
+    *,
+    previous_stocks: set[str] | None,
 ) -> bool:
     """The crawl-health guard shared by prune_sticker_cache and
     flag_absent_ad_history: destructive follow-ups (deleting cached stickers,
@@ -329,9 +360,12 @@ def _crawl_healthy(
 
     Healthy means: the crawl has at least one VIN, AND it collected at least
     MIN_CRAWL_COMPLETENESS of the total the inventory page itself reports
-    (`health`, default LAST_CRAWL_HEALTH). An unreadable page total fails
-    closed — the guard can't vouch for the crawl, so nothing destructive runs
-    until a crawl that can be checked."""
+    (`health`, default LAST_CRAWL_HEALTH), AND at least MIN_STOCK_OVERLAP of
+    `previous_stocks` (the previous snapshot's stock numbers, see
+    snapshot_stocks()) are in it. An unreadable page total fails closed — the
+    guard can't vouch for the crawl, so nothing destructive runs until a crawl
+    that can be checked. previous_stocks=None (no previous snapshot) skips only
+    the overlap check; it is keyword-only and required so every caller decides."""
     if not _active_vins(vehicles):
         print("[crawl-health] WARNING: no VINs in this crawl — treating as unhealthy")
         return False
@@ -350,6 +384,18 @@ def _crawl_healthy(
             f"treating as unhealthy"
         )
         return False
+    if previous_stocks:
+        present = {
+            str(v.get("stock_number")).strip().upper() for v in vehicles if v.get("stock_number")
+        }
+        overlap = len(previous_stocks & present) / len(previous_stocks)
+        if overlap < MIN_STOCK_OVERLAP:
+            print(
+                f"[crawl-health] WARNING: only {overlap:.0%} of the previous snapshot's "
+                f"{len(previous_stocks)} stock numbers are in this crawl "
+                f"(< {MIN_STOCK_OVERLAP:.0%}) — treating as unhealthy"
+            )
+            return False
     return True
 
 
@@ -358,7 +404,9 @@ def flag_absent_ad_history(
     vehicles: list[dict[str, Any]],
     today: str,
     nonretail: dict[str, str] | None = None,
-    health: dict[str, int | None] | None = None,
+    health: dict[str, Any] | None = None,
+    *,
+    previous_stocks: set[str] | None,
 ) -> tuple[list[str], list[str]]:
     """Keep ad_history's absent_since / absent_reason in step with a crawl.
 
@@ -372,8 +420,10 @@ def flag_absent_ad_history(
 
     Same health guard as prune_sticker_cache (_crawl_healthy): an unhealthy
     crawl — no VINs, or well short of the page's reported total — flags and
-    clears nothing."""
-    if not _crawl_healthy(vehicles, health):
+    clears nothing; so does one sharing under MIN_STOCK_OVERLAP of
+    `previous_stocks` (the previous snapshot's, loaded before it was
+    overwritten — see snapshot_stocks())."""
+    if not _crawl_healthy(vehicles, health, previous_stocks=previous_stocks):
         print("[ad-history] unhealthy crawl, skipping absent-flagging")
         return [], []
     nonretail = LAST_CRAWL_NONRETAIL if nonretail is None else nonretail
@@ -396,14 +446,17 @@ def flag_absent_ad_history(
     return flagged, cleared
 
 
-def prune_sticker_cache(vehicles: list[dict[str, Any]]) -> int:
+def prune_sticker_cache(
+    vehicles: list[dict[str, Any]], *, previous_stocks: set[str] | None
+) -> int:
     """Delete sticker_cache/<VIN>.pdf and <VIN>_sticker.html for every VIN not
     in `vehicles` (a fresh crawl's active inventory) — sold/transferred units.
     <VIN>.png files are left alone: vision_processor.py manages those. Skipped
-    entirely on an empty crawl so a failed/blank scrape can't wipe the cache.
-    Returns the number of files removed."""
+    entirely on an unhealthy crawl (_crawl_healthy(), including the overlap
+    check against `previous_stocks`) so a failed, blank or wrong-store scrape
+    can't wipe the cache. Returns the number of files removed."""
     active = _active_vins(vehicles)
-    if not _crawl_healthy(vehicles):
+    if not _crawl_healthy(vehicles, previous_stocks=previous_stocks):
         print("[sticker-cache] unhealthy crawl, skipping cleanup")
         return 0
     removed = 0
@@ -555,13 +608,13 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         inventory = crawl_inventory(save=False)
-    except ScraperError as exc:
+    except (ScraperError, AcvMaxRunAbort) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
     changes = detect_price_changes(inventory, previous)
     save_snapshot(inventory)
-    prune_sticker_cache(inventory)
+    prune_sticker_cache(inventory, previous_stocks=snapshot_stocks(previous))
 
     print()
     print("=" * 78)

@@ -3491,9 +3491,10 @@ class ACVMaxScraper(_BrowserSession):
         except Exception:  # noqa: BLE001 - a navigation mid-evaluate reads as "unknown"
             return None
 
-    def require_durham(self, context: str) -> None:
-        """Raise WrongDealershipError unless the header shows Mercedes-Benz of
-        Durham. `context` says which step was checking, for the alert."""
+    def require_durham(self, context: str) -> str:
+        """The page-read store name, which is Mercedes-Benz of Durham; anything
+        else (or no header) raises WrongDealershipError. `context` says which
+        step was checking, for the alert."""
         assert self.page is not None
         if "my.max.auto" not in self.page.url:
             self.page.goto(ACVMAX_INVENTORY_URL, wait_until="domcontentloaded")
@@ -3509,6 +3510,7 @@ class ACVMaxScraper(_BrowserSession):
                 f"{context}: ACV MAX shows dealership {shown!r}, not "
                 f"{ACVMAX_DEALERSHIP!r}"
             )
+        return shown
 
     def is_ready(self) -> bool:
         """True if the saved session lands on the MB-of-Durham inventory SPA

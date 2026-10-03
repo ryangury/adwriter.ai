@@ -50,8 +50,10 @@ from inventory_crawler import (
     crawl_inventory,
     detect_reprices_needed,
     flag_absent_ad_history,
+    load_previous_snapshot,
     prune_sticker_cache,
     save_snapshot,
+    snapshot_stocks,
 )
 from scraper import AcvMaxRunAbort, ACVMaxScraper, ReconVisionScraper
 from run_lock import (
@@ -358,15 +360,22 @@ def _run_inner(
 
     # --- 1. INVENTORY CRAWL ------------------------------------------------ #
     print("\n=== 1. INVENTORY CRAWL ===")
+    # The previous snapshot's stock numbers, read before save_snapshot() below
+    # overwrites it: the crawl-health guard's overlap check compares against them.
+    previous_stocks = snapshot_stocks(load_previous_snapshot())
+    # Raises WrongDealershipError (an AcvMaxRunAbort: run() stops and alerts)
+    # if the page isn't on Mercedes-Benz of Durham.
     retail = crawl_inventory(save=False)
     # Before the status-1 filter below: an uncertified unit is still in
     # inventory, and its cached sticker files are still worth keeping.
-    prune_sticker_cache(retail)
+    prune_sticker_cache(retail, previous_stocks=previous_stocks)
     # Same pre-status-1-filter list, same health guard: flag ad_history entries
     # for vehicles no longer in inventory (stops verification against them) and
     # clear the flag on any that have come back.
     absent_history = load_ad_history()
-    newly_absent, back_in_stock = flag_absent_ad_history(absent_history, retail, today)
+    newly_absent, back_in_stock = flag_absent_ad_history(
+        absent_history, retail, today, previous_stocks=previous_stocks
+    )
     if newly_absent or back_in_stock:
         save_ad_history(absent_history)
         for s in newly_absent:

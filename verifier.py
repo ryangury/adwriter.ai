@@ -29,6 +29,7 @@ from inventory_crawler import (
     crawl_inventory,
     flag_absent_ad_history,
     load_previous_snapshot,
+    snapshot_stocks,
 )
 from run_lock import (
     ORCHESTRATOR_LOCK_PATH,
@@ -848,17 +849,18 @@ def main(argv: list[str] | None = None) -> int:
         release_lock_if_owned(ORCHESTRATOR_LOCK_PATH)
 
 
-def _flag_absent(crawled: list[dict[str, Any]]) -> None:
+def _flag_absent(crawled: list[dict[str, Any]], previous_stocks: set[str] | None) -> None:
     """Same absent-flagging the orchestrator does after its crawl (same
     health-guarded flag_absent_ad_history), run here on the verifier's own
-    crawl so a sold car is flagged within the hour. A no-op when nothing
+    crawl so a sold car is flagged within the hour. `previous_stocks` must be
+    read before the crawl overwrote the snapshot. A no-op when nothing
     changed. Never fatal: verification runs regardless."""
     from adwriter import load_ad_history, save_ad_history
 
     try:
         history = load_ad_history()
         newly_absent, back_in_stock = flag_absent_ad_history(
-            history, crawled, date.today().isoformat()
+            history, crawled, date.today().isoformat(), previous_stocks=previous_stocks
         )
         if newly_absent or back_in_stock:
             save_ad_history(history)
@@ -896,10 +898,13 @@ def _main_locked(
         # prices and the warmups read it). Never fatal: a failed crawl leaves
         # the existing snapshot in place and verification runs regardless.
         try:
+            # crawl_inventory(save=True) overwrites the snapshot, so the overlap
+            # guard's previous stock numbers are read first.
+            previous_stocks = snapshot_stocks(load_previous_snapshot())
             result = crawl_inventory(save=True)
             n = len(result) if result else 0
             print(f"[verifier] inventory crawl complete — {n} vehicles in snapshot")
-            _flag_absent(result)
+            _flag_absent(result, previous_stocks)
             _stamp_eligible(result)
         except Exception as exc:  # noqa: BLE001 - the crawl must never block verification
             print(f"[verifier] inventory crawl failed — using existing snapshot: {exc}")
