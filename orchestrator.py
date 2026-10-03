@@ -358,6 +358,25 @@ def _run_inner(
             alerted.add(key)
             _send_scraping_alert(reason, send_email=send_email)
 
+    # Set when ACV Max becomes unusable mid-run (an AcvMaxRunAbort in steps 4-6:
+    # still signed out after a fresh login, or not back on Durham after the
+    # benchmark). The remaining ACV Max work is skipped, but verification and
+    # every step-8 email still go out, and the run then exits 1. (A step-1
+    # abort - the crawl is on the wrong store - has no inventory to report; it
+    # propagates to run(), which alerts and exits 1.)
+    stopped: list[str] = []
+
+    def _stop_acv(exc: AcvMaxRunAbort, step: str) -> None:
+        reason = str(exc)
+        stopped.append(reason)
+        errors.append({"stock": "-", "phase": "run_stopped", "error": f"{step}: {reason}"})
+        print(
+            f"[orchestrator] STOPPING ACV Max work at {step} - {reason}. "
+            f"Skipping the remaining ACV Max steps; verification and emails still run.",
+            file=sys.stderr,
+        )
+        _alert_once(reason)
+
     # --- 1. INVENTORY CRAWL ------------------------------------------------ #
     print("\n=== 1. INVENTORY CRAWL ===")
     # The previous snapshot's stock numbers, read before save_snapshot() below
@@ -699,7 +718,7 @@ def _run_inner(
         try:
             _build_one(v, skip_recon=skip_recon)
         except AcvMaxRunAbort:
-            raise  # ACV MAX itself is unusable - stop the run (see run())
+            raise  # ACV MAX itself is unusable - the build loop below stops the ACV work
         except Exception as exc:  # noqa: BLE001
             import traceback
 
@@ -719,23 +738,26 @@ def _run_inner(
     # Claude problems, and not ReconVision timeouts, which retry next run);
     # any other outcome resets the streak.
     build_streak = FailureStreak("build")
-    for v, skip_recon in [(v, False) for v in build_queue] + [(v, True) for v in pre_recon_queue]:
-        n_errors = len(errors)
-        _build_and_record(v, skip_recon=skip_recon)
-        failure = _aggregate_failure(errors[n_errors:])
-        if failure is None:
-            build_streak.ok()
-        elif build_streak.fail(failure):
-            print(
-                f"[build] stopping the build loop: the same failure "
-                f"{build_streak.count} times in a row — {build_streak.reason}",
-                file=sys.stderr,
-            )
-            errors.append(
-                {"stock": "-", "phase": "build", "error": f"build loop stopped: {build_streak.reason}"}
-            )
-            _alert_once(build_streak.reason)
-            break
+    try:
+        for v, skip_recon in [(v, False) for v in build_queue] + [(v, True) for v in pre_recon_queue]:
+            n_errors = len(errors)
+            _build_and_record(v, skip_recon=skip_recon)
+            failure = _aggregate_failure(errors[n_errors:])
+            if failure is None:
+                build_streak.ok()
+            elif build_streak.fail(failure):
+                print(
+                    f"[build] stopping the build loop: the same failure "
+                    f"{build_streak.count} times in a row — {build_streak.reason}",
+                    file=sys.stderr,
+                )
+                errors.append(
+                    {"stock": "-", "phase": "build", "error": f"build loop stopped: {build_streak.reason}"}
+                )
+                _alert_once(build_streak.reason)
+                break
+    except AcvMaxRunAbort as exc:
+        _stop_acv(exc, "ad generation")
 
     save_ad_history(ad_history)
 
@@ -779,12 +801,17 @@ def _run_inner(
         )
 
     # reprices — reprice_ad() persists ad_history itself
-    for v in reprice_queue:
+    if stopped and reprice_queue:
+        print(f"[reprice] skipped {len(reprice_queue)} reprice(s) — ACV Max work stopped")
+    for v in [] if stopped else reprice_queue:
         stock = v.get("stock_number")
         print(f"[reprice] {stock}: rewriting paragraph two ...")
         try:
             pricing_data = fresh_pricing_data(stock)
             ad_copy = reprice_ad(stock, pricing_data)
+        except AcvMaxRunAbort as exc:
+            _stop_acv(exc, "reprices")
+            break
         except (anthropic.APIError, RuntimeError, ScraperError, ValueError) as exc:
             errors.append({"stock": stock, "phase": "reprice", "error": str(exc)})
             print(f"[reprice] {stock}: failed — {exc}")
@@ -830,6 +857,8 @@ def _run_inner(
     ctr_records = 0
     if reprice_only:
         print("[ctr] skipped (--reprice-only)")
+    elif stopped:
+        print("[ctr] skipped — ACV Max work stopped")
     else:
         try:
             with ACVMaxScraper(headless=True) as ax:
@@ -845,6 +874,8 @@ def _run_inner(
                         {"stock": "-", "phase": "ctr", "error": f"CTR loop stopped: {durham_counts['aborted']}"}
                     )
                     _alert_once(durham_counts["aborted"])
+        except AcvMaxRunAbort as exc:
+            _stop_acv(exc, "Durham CTR capture")
         except ScraperError as exc:
             errors.append({"stock": "-", "phase": "ctr_login", "error": str(exc)})
             print(f"[ctr] ACV MAX login failed — {exc}", file=sys.stderr)
@@ -858,6 +889,8 @@ def _run_inner(
         # ignores --limit/--status. Skipping it leaves ctr_history.db's benchmark
         # rows for this date unwritten.
         print("[benchmark] skipped (--reprice-only)" if reprice_only else "[benchmark] skipped (--skip-benchmark)")
+    elif stopped:
+        print("[benchmark] skipped — ACV Max work stopped")
     else:
         try:
             with ACVMaxScraper(headless=True) as bx:
@@ -865,8 +898,10 @@ def _run_inner(
                 benchmark_counts = capture_benchmark_ctr(bx, errors=errors)
                 # Northlake/Charlotte switch the account's store; never carry on
                 # unless Durham is back. Raises WrongDealershipError (an
-                # AcvMaxRunAbort): run() stops here and alerts.
+                # AcvMaxRunAbort): the ACV Max work stops here and alerts.
                 bx.require_durham("after the Northlake/Charlotte benchmark")
+        except AcvMaxRunAbort as exc:
+            _stop_acv(exc, "benchmark")
         except ScraperError as exc:
             errors.append({"stock": "-", "phase": "benchmark_login", "error": str(exc)})
             print(f"[benchmark] ACV MAX login failed — {exc}", file=sys.stderr)
@@ -1033,6 +1068,9 @@ def _run_inner(
     )
     print(f"  Errors:                        {len(errors)}")
     print(f"  Total runtime:                 {_fmt_runtime(runtime)}")
+    if stopped:
+        print(f"  RUN STOPPED (ACV Max):         {stopped[0]}")
+        return 1
     return 0
 
 
