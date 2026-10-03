@@ -37,6 +37,7 @@ from ctr_database import (
     infer_mileage_tier,
     record_ctr,
 )
+from failure_streak import FailureStreak
 from scraper import AcvMaxRunAbort, ACVMaxScraper, ScraperError
 
 SNAPSHOT_PATH = Path(__file__).with_name("last_inventory_snapshot.json")
@@ -65,17 +66,22 @@ def capture_durham_ctr(
     aggregated_ctr: dict[str, Any] | None = None,
     dry_run: bool = False,
     errors: list[dict[str, Any]] | None = None,
-) -> dict[str, int]:
+    streak: FailureStreak | None = None,
+) -> dict[str, Any]:
     """Durham retail CTR capture for every vehicle in `retail`. `acv` must
     already be logged in. aggregated_ctr lets a caller that already scraped a
     vehicle's CTR this run (orchestrator.py, during ad generation) skip a
     redundant scrape for it; ctr_warmup.py's own standalone run passes none,
-    so every vehicle gets a fresh scrape."""
+    so every vehicle gets a fresh scrape.
+
+    With a `streak`, the loop stops after that many identical scrape failures
+    in a row and returns the repeated message as counts["aborted"]; the
+    caller alerts. counts["aborted"] is None when the loop ran to the end."""
     ad_history = ad_history or {}
     aggregated_ctr = aggregated_ctr or {}
     if errors is None:
         errors = []
-    counts = {"attempted": 0, "recorded": 0, "failed": 0}
+    counts: dict[str, Any] = {"attempted": 0, "recorded": 0, "failed": 0, "aborted": None}
     total = len(retail)
     for i, v in enumerate(retail, 1):
         stock = v.get("stock_number")
@@ -94,7 +100,17 @@ def capture_durham_ctr(
                     f"[ctr] {i} of {total} — {stock}: scrape failed — {exc}",
                     file=sys.stderr,
                 )
+                if streak is not None and streak.fail(str(exc)):
+                    counts["aborted"] = streak.reason
+                    print(
+                        f"[ctr] stopping the CTR loop: the same failure "
+                        f"{streak.count} times in a row — {streak.reason}",
+                        file=sys.stderr,
+                    )
+                    break
                 continue
+        if streak is not None:
+            streak.ok()
         if dry_run:
             print(
                 f"[ctr] {i} of {total} — {stock}: would record "
@@ -229,6 +245,7 @@ def warmup(*, dry_run: bool = False) -> int:
     with ACVMaxScraper(headless=True) as bx:
         bx.login()  # lands on Mercedes-Benz of Durham
         benchmark_counts = capture_benchmark_ctr(bx, dry_run=dry_run, errors=errors)
+        bx.require_durham("after the Northlake/Charlotte benchmark")
 
     print()
     print("=" * 50)

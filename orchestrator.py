@@ -44,6 +44,7 @@ from adwriter import (
 )
 from aggregator import DEALER_DOC_FEE, ScraperError, aggregate, check_recon
 from ctr_warmup import capture_benchmark_ctr, capture_durham_ctr
+from failure_streak import FailureStreak, failure_key
 from verifier import HendrickCarsScraper, run_verification, send_verification_alert
 from inventory_crawler import (
     crawl_inventory,
@@ -252,6 +253,16 @@ def _format_action_email(
 # --------------------------------------------------------------------------- #
 
 
+def _aggregate_failure(new_errors: list[dict[str, Any]]) -> str | None:
+    """The aggregate (scrape) failure among one vehicle's new error entries,
+    or None. ReconVision timeouts don't count: they retry next run."""
+    for e in new_errors:
+        msg = str(e.get("error", ""))
+        if e.get("phase") == "aggregate" and not msg.startswith("ReconVision timeout"):
+            return msg
+    return None
+
+
 def _send_scraping_alert(reason: str, *, send_email: bool) -> None:
     """Email "ACV Max scraping broken: <reason>". Never raises."""
     subject = f"ACV Max scraping broken: {reason}"
@@ -334,6 +345,16 @@ def _run_inner(
             print(f"[email] sent: {subject}")
         except Exception as exc:  # noqa: BLE001
             print(f"[email] FAILED to send '{subject}': {exc}", file=sys.stderr)
+
+    alerted: set[str] = set()
+
+    def _alert_once(reason: str) -> None:
+        # One "ACV Max scraping broken" email per distinct failure per run: the
+        # build and CTR loops usually stop on the same one.
+        key = failure_key(reason)
+        if key not in alerted:
+            alerted.add(key)
+            _send_scraping_alert(reason, send_email=send_email)
 
     # --- 1. INVENTORY CRAWL ------------------------------------------------ #
     print("\n=== 1. INVENTORY CRAWL ===")
@@ -684,10 +705,28 @@ def _run_inner(
                 file=sys.stderr,
             )
 
-    for v in build_queue:
-        _build_and_record(v, skip_recon=False)
-    for v in pre_recon_queue:
-        _build_and_record(v, skip_recon=True)
+    # Build + pre-recon are one loop for the streak: both go through aggregate()
+    # and its ACV Max scrape. Only aggregate failures count (not sources /
+    # Claude problems, and not ReconVision timeouts, which retry next run);
+    # any other outcome resets the streak.
+    build_streak = FailureStreak("build")
+    for v, skip_recon in [(v, False) for v in build_queue] + [(v, True) for v in pre_recon_queue]:
+        n_errors = len(errors)
+        _build_and_record(v, skip_recon=skip_recon)
+        failure = _aggregate_failure(errors[n_errors:])
+        if failure is None:
+            build_streak.ok()
+        elif build_streak.fail(failure):
+            print(
+                f"[build] stopping the build loop: the same failure "
+                f"{build_streak.count} times in a row — {build_streak.reason}",
+                file=sys.stderr,
+            )
+            errors.append(
+                {"stock": "-", "phase": "build", "error": f"build loop stopped: {build_streak.reason}"}
+            )
+            _alert_once(build_streak.reason)
+            break
 
     save_ad_history(ad_history)
 
@@ -789,8 +828,14 @@ def _run_inner(
                 durham_counts = capture_durham_ctr(
                     ax, retail, ad_history=ad_history,
                     aggregated_ctr=aggregated_ctr, errors=errors,
+                    streak=FailureStreak("ctr"),
                 )
                 ctr_records = durham_counts["recorded"]
+                if durham_counts.get("aborted"):
+                    errors.append(
+                        {"stock": "-", "phase": "ctr", "error": f"CTR loop stopped: {durham_counts['aborted']}"}
+                    )
+                    _alert_once(durham_counts["aborted"])
         except ScraperError as exc:
             errors.append({"stock": "-", "phase": "ctr_login", "error": str(exc)})
             print(f"[ctr] ACV MAX login failed — {exc}", file=sys.stderr)
@@ -809,6 +854,10 @@ def _run_inner(
             with ACVMaxScraper(headless=True) as bx:
                 bx.login()  # lands on Mercedes-Benz of Durham
                 benchmark_counts = capture_benchmark_ctr(bx, errors=errors)
+                # Northlake/Charlotte switch the account's store; never carry on
+                # unless Durham is back. Raises WrongDealershipError (an
+                # AcvMaxRunAbort): run() stops here and alerts.
+                bx.require_durham("after the Northlake/Charlotte benchmark")
         except ScraperError as exc:
             errors.append({"stock": "-", "phase": "benchmark_login", "error": str(exc)})
             print(f"[benchmark] ACV MAX login failed — {exc}", file=sys.stderr)

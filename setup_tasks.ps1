@@ -180,7 +180,8 @@ Register-AdWriterTask -Name "AdWriter-CTR-Capture" `
 Register-AdWriterTask -Name "AdWriter-Orchestrator" `
     -Execute "C:\adwriter\run_orchestrator.bat" `
     -At (Get-Date "05:00") `
-    -Description "Ad build/reprice/CTR orchestrator. Runs DAILY as of 2026-09-27 (previously Friday/Saturday only) -- now the sole daily source of ad building, reprice detection, and CTR capture, which is why AdWriter-Reprice-Daily and AdWriter-CTR-Capture are disabled below."
+    -TimeLimitHours 6 `
+    -Description "Ad build/reprice/CTR orchestrator. Runs DAILY as of 2026-09-27 (previously Friday/Saturday only) -- now the sole daily source of ad building, reprice detection, and CTR capture, which is why AdWriter-Reprice-Daily and AdWriter-CTR-Capture are disabled below. Time limit 6h as of 2026-10-03 (was 4h)."
 
 Register-AdWriterTask -Name "AdWriter-Reprice-Daily" `
     -Execute "C:\adwriter\run_orchestrator.bat" `
