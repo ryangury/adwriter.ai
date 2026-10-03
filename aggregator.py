@@ -2297,7 +2297,12 @@ def build_recon_sentence(
     if tire_items and tire_items[0].get("description"):
         components.append(_lower_first(tire_items[0]["description"]))
     elif recon_data.get("all_tires_replaced"):
-        components.append(f"four new manufacturer-recommended tires installed {suffix}")
+        # Tire noun from _TIRE_TIER_WORDING, as _aggregate_tires() uses:
+        # "manufacturer-recommended" is MB CPO (10/16) only, never Hendrick
+        # Certified/Affordable/As-Is. The tier suffix stays the sentence's own
+        # (stripped and re-added once below), as before.
+        noun = _TIRE_TIER_WORDING.get(status_code, ("tires", ""))[0]
+        components.append(f"four new {noun} installed {suffix}")
 
     # 3. BRAKES — front/rear wording and tier suffix already baked in.
     if recon_data.get("brake_service_done"):

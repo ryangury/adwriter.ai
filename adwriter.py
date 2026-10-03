@@ -31,6 +31,7 @@ from aggregator import (
     DEALER_DOC_FEE,
     _filter_recon,
     aggregate,
+    build_recon_sentence,
     dedupe_equipment_descriptors,
 )
 from feature_cache import (
@@ -41,7 +42,6 @@ from feature_cache import (
     save_towing,
     save_trim_knowledge,
 )
-from recon_update_prompt import RECON_UPDATE_SYSTEM_PROMPT
 from reprice_prompt import reprice_prompt_for
 from scraper import ReconVisionScraper, ScraperError
 from shared_prompt_constants import (
@@ -1830,14 +1830,22 @@ def _generate_from_package(pkg: dict) -> tuple[str, str | None]:
     vehicle), and a required sentence still missing is inserted at its normal
     position and logged."""
     stock = pkg.get("stock_number")
+    vehicle = pkg.get("vehicle") or {}
     required = required_sentences_from(pkg)
+
+    def _done(ad_copy: str, feedback: str | None) -> tuple[str, str | None]:
+        return scrub_non_mb_tire_wording(
+            ad_copy, vehicle.get("status_code"), vehicle.get("year_make_model"),
+            stock=stock or "", label="adwriter",
+        ), feedback
+
     for attempt in (1, 2):
         ad_copy, feedback = _generate_once(pkg)
         leaks = find_tool_output_leaks(ad_copy)
         hits = find_banned_scarcity_phrases(ad_copy, pkg.get("scarcity_sentence"))
         missing = missing_required_sentences(ad_copy, required)
         if not leaks and not hits and not missing:
-            return ad_copy, feedback
+            return _done(ad_copy, feedback)
         problems = (
             ([f"tool output in the ad text {leaks[:2]}"] if leaks else [])
             + ([f"banned scarcity wording {sorted(set(hits))}"] if hits else [])
@@ -1861,9 +1869,9 @@ def _generate_from_package(pkg: dict) -> tuple[str, str | None]:
         print(f"[adwriter] {stock}: required sentence(s) {missing} still missing after retry - inserting", file=sys.stderr)
         ad_copy = insert_required_sentences(
             ad_copy, required, missing,
-            status_code=(pkg.get("vehicle") or {}).get("status_code"), stock=stock or "",
+            status_code=vehicle.get("status_code"), stock=stock or "",
         )
-    return ad_copy, feedback
+    return _done(ad_copy, feedback)
 
 
 def _generate_once(pkg: dict) -> tuple[str, str | None]:
@@ -2148,12 +2156,11 @@ def _format_reprice_package(
 
 
 class TruncatedGenerationError(RuntimeError):
-    """A reprice / recon-update response did not finish (stop_reason was not
-    end_turn) even after a retry with double the cap. The old text is kept."""
+    """A reprice response did not finish (stop_reason was not end_turn) even
+    after a retry with double the cap. The old text is kept."""
 
 
 REPRICE_MIN_TOKENS = 1500
-RECON_UPDATE_MIN_TOKENS = 800
 _CAP_EXTRA_TOKENS = 400
 
 
@@ -2216,16 +2223,63 @@ def _capped_completion(client, *, stock: str, label: str, system: str, user: str
     )
 
 
-def _snapshot_status(stock: str) -> int | None:
-    """status_code for a stock from last_inventory_snapshot.json, or None."""
+def _snapshot_vehicle(stock: str) -> dict:
+    """A stock's row from last_inventory_snapshot.json, or {}."""
     try:
         data = json.loads(Path(__file__).with_name("last_inventory_snapshot.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return None
+        return {}
     for v in data.get("vehicles") or []:
         if str(v.get("stock_number") or "").strip().upper() == stock:
-            return v.get("status_code")
-    return None
+            return v
+    return {}
+
+
+def _snapshot_status(stock: str) -> int | None:
+    """status_code for a stock from last_inventory_snapshot.json, or None."""
+    return _snapshot_vehicle(stock).get("status_code")
+
+
+# "manufacturer-recommended tires" is Mercedes-Benz CPO wording (status 10/16)
+# and must never appear on a Hendrick Certified / Affordable / As-Is ad or on a
+# non-Mercedes vehicle. Python builds tier-correct tire wording already; this
+# catches the model (or an old stored ad) using the MB phrase anyway.
+_MFR_RECOMMENDED_TIRES_RE = re.compile(r"\b(m)anufacturer[- ]recommended\s+(tires?)\b", re.IGNORECASE)
+
+
+def _is_non_mb(status_code: int | None, year_make_model: str | None = None) -> bool:
+    """True for a non-MB tier (11/12/13) or a vehicle whose make isn't Mercedes."""
+    if status_code in NON_CPO_STATUS_CODES:
+        return True
+    m = re.match(r"\s*(?:19|20)\d{2}\s+(\S+)", year_make_model or "")
+    return bool(m) and not m.group(1).lower().startswith("mercedes")
+
+
+def scrub_non_mb_tire_wording(
+    text: str,
+    status_code: int | None,
+    year_make_model: str | None = None,
+    *,
+    stock: str = "",
+    label: str = "adwriter",
+) -> str:
+    """On a non-MB ad, replace "manufacturer-recommended tires" with "tires"
+    (keeping a sentence-initial capital) and log it. Other text is unchanged."""
+    if not text or not _is_non_mb(status_code, year_make_model):
+        return text
+
+    def _sub(m: re.Match) -> str:
+        word = m.group(2)
+        return word[:1].upper() + word[1:] if m.group(1) == "M" else word.lower()
+
+    new, n = _MFR_RECOMMENDED_TIRES_RE.subn(_sub, text)
+    if n:
+        print(
+            f"[{label}] {stock}: replaced 'manufacturer-recommended tires' with "
+            f"'tires' ({n}x) - non-MB ad (status {status_code}, {year_make_model or 'make ?'})",
+            file=sys.stderr,
+        )
+    return new
 
 
 def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
@@ -2316,12 +2370,22 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
         )["paragraph_two"]
     new_p2 = insert_scarcity_sentence(new_p2, pd.get("scarcity_sentence"))
 
-    p1 = _paragraph(entry, "paragraph_one")
-    p3 = _paragraph(entry, "paragraph_three")
-    p4 = _paragraph(entry, "paragraph_four")
+    # Non-MB tire wording is scrubbed from every paragraph, not just the new
+    # one, so a reprice also repairs an older paragraph one.
+    ymm = _snapshot_vehicle(stock).get("year_make_model")
+    p1, new_p2, p3, p4 = (
+        scrub_non_mb_tire_wording(p, status, ymm, stock=stock, label="reprice")
+        for p in (
+            _paragraph(entry, "paragraph_one"), new_p2,
+            _paragraph(entry, "paragraph_three"), _paragraph(entry, "paragraph_four"),
+        )
+    )
     full = "\n\n".join(x for x in (p1, new_p2, p3, p4) if x)
 
+    entry["paragraph_one"] = p1
     entry["paragraph_two"] = new_p2
+    entry["paragraph_three"] = p3
+    entry["paragraph_four"] = p4
     entry["current_ad_text"] = full
     entry["last_price_at_write"] = current_price
     entry["last_advertised_price"] = _advertised_at_write(current_price)
@@ -2385,44 +2449,13 @@ def fresh_pricing_data(stock_number: str, *, headless: bool = True) -> dict:
 # --------------------------------------------------------------------------- #
 
 
-def _format_recon_update_package(
-    paragraph_one: str, filtered_recon: dict, status_code: int | None = None
-) -> str:
-    lines = [
-        "EXISTING PARAGRAPH ONE:",
-        (paragraph_one or "").strip() or "(none on record)",
-        "",
-        "NEW RECON LINE ITEMS (already filtered to includeable positive signals):",
-        f"all_tires_replaced: {_yn(filtered_recon.get('all_tires_replaced'))}",
-        f"scheduled_service_done: {_yn(filtered_recon.get('scheduled_service_done'))}",
-        f"brake_service_done: {_yn(filtered_recon.get('brake_service_done'))}",
-    ]
-    items = filtered_recon.get("line_items") or []
-    if items:
-        lines.append("Included line items:")
-        for li in items:
-            lines.append(
-                f"  - [{li.get('recon_reason', '')}] {li.get('description', '')}"
-            )
-    else:
-        lines.append("Included line items: none")
-    tier = _TIER_RECON_WORDING.get(status_code)
-    if tier:
-        lines += [
-            "",
-            f"TIER OVERRIDE: this is a {tier} vehicle, not a Mercedes-Benz Certified "
-            f"Pre-Owned vehicle. Wherever the instructions say \"Mercedes-Benz "
-            f"Certified Pre-Owned standards\" or \"scheduled Mercedes-Benz service\", "
-            f"say \"{tier} standards\" or \"scheduled service\" instead. Never write "
-            f"\"Certified Pre-Owned\" or \"Mercedes-Benz\" in the sentences you add.",
-        ]
-    lines += [
-        "",
-        "Add one or two sentences to the END of paragraph one describing this "
-        "recon work. Keep every existing sentence unchanged. Return only the "
-        "updated paragraph one text.",
-    ]
-    return "\n".join(lines)
+def append_recon_sentence(paragraph_one: str, recon_sentence: str) -> str:
+    """`recon_sentence` appended to the end of paragraph one, unless it is
+    already there (so a re-run never adds it twice)."""
+    p1 = (paragraph_one or "").rstrip()
+    if _ws(recon_sentence) in _ws(p1):
+        return p1
+    return f"{p1} {recon_sentence}" if p1 else recon_sentence
 
 
 def swap_pending_recon_sentence(text: str, status_code: int | None) -> str | None:
@@ -2459,23 +2492,19 @@ def strip_pending_recon_sentence(text: str, status_code: int | None = None) -> s
     return out
 
 
-_TIER_RECON_WORDING = {
-    11: "Hendrick Certified",
-    12: "Hendrick Affordable",
-    13: "Hendrick",
-}
-
-
 def update_recon(stock_number: str, status_code: int | None = None) -> str:
     """A pre-recon ad's reconditioning is now complete. Re-scrape ReconVision for
     this stock number, filter it, and:
 
-      * no includeable items -> mark recon_pending False, lifecycle_stage
-        "recon_updated", and swap the stale "currently undergoing ..." sentence
-        for the tier's post-recon fallback sentence (text left unchanged and
-        logged if the sentence isn't found or status_code is unknown);
-      * includeable items    -> ask Claude to top up paragraph one, reconstruct
-        the ad, persist it, and return it.
+      * a recon sentence     -> strip the "currently undergoing ..." sentence
+        and append Python's recon sentence (build_recon_sentence(), the same
+        one new builds use, tier wording included) to the end of paragraph one;
+      * no recon sentence    -> (no includeable items, or none that make a
+        sentence) swap the stale "currently undergoing ..." sentence for the
+        tier's post-recon fallback sentence (text left unchanged and logged if
+        the sentence isn't found or status_code is unknown).
+    Either way recon_pending becomes False and lifecycle_stage "recon_updated",
+    and the ad is persisted and returned. No model call.
     """
     stock = normalize_stock(stock_number)
     history = load_ad_history()
@@ -2494,6 +2523,9 @@ def update_recon(stock_number: str, status_code: int | None = None) -> str:
         rv.login()
         recon_raw = rv.scrape_work_order(stock)
     recon_raw.pop("recon_image_bytes", None)
+    snap = _snapshot_vehicle(stock)
+    if status_code is None:
+        status_code = snap.get("status_code")
     if status_code is None:
         print(
             f"[update_recon] {stock}: no status_code supplied — filtering with "
@@ -2503,14 +2535,26 @@ def update_recon(stock_number: str, status_code: int | None = None) -> str:
         recon_raw.get("line_items", []),
         status_code if status_code is not None else 10,
     )
+    recon_sentence = (
+        build_recon_sentence(filtered, status_code, snap.get("mileage"))
+        if _recon_has_includeable(filtered)
+        else None
+    )
+    ymm = snap.get("year_make_model")
 
-    if not _recon_has_includeable(filtered):
+    if not recon_sentence:
+        if _recon_has_includeable(filtered):
+            print(f"[update_recon] {stock}: includeable recon but no recon sentence - using the post-recon fallback")
         new_p1 = swap_pending_recon_sentence(p1, status_code)
         new_full = swap_pending_recon_sentence(entry.get("current_ad_text") or "", status_code)
         if new_p1 is not None:
-            entry["paragraph_one"] = new_p1
+            entry["paragraph_one"] = scrub_non_mb_tire_wording(
+                new_p1, status_code, ymm, stock=stock, label="update_recon"
+            )
         if new_full is not None:
-            entry["current_ad_text"] = new_full
+            entry["current_ad_text"] = scrub_non_mb_tire_wording(
+                new_full, status_code, ymm, stock=stock, label="update_recon"
+            )
         if new_p1 is None and new_full is None:
             print(
                 f"[update_recon] {stock}: no includeable recon, but the pending "
@@ -2526,22 +2570,18 @@ def update_recon(stock_number: str, status_code: int | None = None) -> str:
             x for x in (p1, p2, p3, p4) if x
         )
 
-    # The pending sentence is removed here, in Python, before Claude sees the
-    # paragraph and again on its output, so it can never survive a top-up that
-    # adds real recon copy.
-    clean_p1 = strip_pending_recon_sentence(p1, status_code)
-    data_block = _format_recon_update_package(clean_p1, filtered, status_code)
-    client = anthropic.Anthropic(api_key=API_KEY)
-    new_p1 = strip_pending_recon_sentence(
-        _capped_completion(
-            client, stock=stock, label="recon_update", system=RECON_UPDATE_SYSTEM_PROMPT,
-            user=data_block, size_text=clean_p1 or p1, floor=RECON_UPDATE_MIN_TOKENS,
-        ),
-        status_code,
+    new_p1 = append_recon_sentence(strip_pending_recon_sentence(p1, status_code), recon_sentence)
+    new_p1, p2, p3, p4 = (
+        scrub_non_mb_tire_wording(p, status_code, ymm, stock=stock, label="update_recon")
+        for p in (new_p1, p2, p3, p4)
     )
+    print(f"[update_recon] {stock}: recon sentence appended to paragraph one: {recon_sentence}")
 
     full = "\n\n".join(x for x in (new_p1, p2, p3, p4) if x)
     entry["paragraph_one"] = new_p1
+    entry["paragraph_two"] = p2
+    entry["paragraph_three"] = p3
+    entry["paragraph_four"] = p4
     entry["current_ad_text"] = full
     entry["recon_included"] = True
     entry["recon_pending"] = False
