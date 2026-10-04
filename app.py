@@ -56,6 +56,8 @@ from vehicle_cache import get_carfax, get_carfax_image_path, get_recon, get_reco
 import credentials as _credentials
 from credentials import DEMO_PASSWORD
 from run_lock import ScraperBusyError
+from feature_cache import get_electric_range
+from powertrain import CLASS_LABELS, CLASSES, classify, load_overrides, range_phrase, set_override, split_ymm, texts_from_row
 
 # Simple shared-password gate for the demo — no user accounts. Change this to
 # rotate the password; every existing session is invalidated the next time the
@@ -768,15 +770,29 @@ def _json_or_none(raw: str | None) -> Any:
         return None
 
 
+def _powertrain_view(
+    vin: str | None, ymm: str | None, trim: str | None, cached: dict[str, Any] | None,
+    overrides: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Powertrain class for the Database pages, from cached data only (no
+    lookups): classify() on the cached sticker / recon text plus the
+    override file."""
+    sticker_text, recon_text = texts_from_row(cached or {})
+    return classify(vin, ymm, trim, sticker_text=sticker_text, recon_text=recon_text, overrides=overrides)
+
+
 def _cache_row(
     stock: str | None, ymm: str | None, vin: str | None, status_code: Any,
-    cached: dict[str, Any] | None, *, sold: bool = False,
+    cached: dict[str, Any] | None, *, sold: bool = False, trim: str | None = None,
+    overrides: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """One /cache table row: which of Carfax / window sticker / recon
-    vehicle_cache.db holds for this VIN (ACV Max pricing is never cached)."""
+    vehicle_cache.db holds for this VIN (ACV Max pricing is never cached),
+    and the vehicle's powertrain class."""
     c = cached or {}
     sticker = _json_or_none(c.get("window_sticker_json")) or {}
     ymm = ymm or c.get("year_make_model")
+    pt = _powertrain_view(vin or c.get("vin"), ymm, trim, c, overrides or {})
     return {
         "stock_number": stock or c.get("stock_number"),
         "year_make_model": ymm,
@@ -797,6 +813,10 @@ def _cache_row(
         "autoipacket_attempts": c.get("autoipacket_attempts") or 0,
         "in_cache": bool(cached),
         "sold": sold,
+        "powertrain_class": pt["class"],
+        "powertrain_label": pt["label"],
+        "powertrain_source": pt["source"],
+        "powertrain_flag": pt["flag"],
     }
 
 
@@ -813,6 +833,7 @@ def cache_dashboard():
     if not session.get("authed"):
         return render_template("login.html", error=request.args.get("error"))
     vehicles, stamp = _load_snapshot()
+    overrides = load_overrides()
     rows = []
     in_snapshot: set[str] = set()
     for v in vehicles:
@@ -822,6 +843,7 @@ def cache_dashboard():
         rows.append(_cache_row(
             normalize_stock(v.get("stock_number")), v.get("year_make_model"), vin or None,
             v.get("status_code"), get_vehicle(vin) if vin else None,
+            trim=v.get("trim"), overrides=overrides,
         ))
     # Cached vehicles no longer in the snapshot (sold / moved out of retail),
     # most recently updated first, capped so they don't bury the live list.
@@ -829,7 +851,7 @@ def cache_dashboard():
     for vin in _cached_vins_by_recency():
         if vin in in_snapshot:
             continue
-        sold.append(_cache_row(None, None, vin, None, get_vehicle(vin), sold=True))
+        sold.append(_cache_row(None, None, vin, None, get_vehicle(vin), sold=True, overrides=overrides))
         if len(sold) >= _CACHE_SOLD_LIMIT:
             break
     return render_template(
@@ -856,8 +878,18 @@ def cache_detail(stock_number: str):
     recon = _json_or_none(c.get("recon_json"))
     status_code = (vehicle or {}).get("status_code")
     vin = (vehicle or {}).get("vin") or c.get("vin")
+    ymm_for_pt = (vehicle or {}).get("year_make_model") or c.get("year_make_model")
+    trim = (vehicle or {}).get("trim")
+    powertrain = _powertrain_view(vin, ymm_for_pt, trim, c, load_overrides())
+    year, make, model = split_ymm(ymm_for_pt)
+    range_row = get_electric_range(year, make, model, trim) if year and make and model else None
+    if range_row:
+        range_row = dict(range_row, phrase=range_phrase(range_row.get("range_miles"), range_row.get("source")))
     return render_template(
         "cache_detail.html",
+        powertrain=powertrain,
+        range_row=range_row,
+        pt_classes=[(k, CLASS_LABELS[k]) for k in CLASSES],
         stock=stock,
         vehicle=vehicle,
         in_snapshot=vehicle is not None,
@@ -903,6 +935,27 @@ def cache_save_comments(stock_number: str):
     comments = (request.form.get("comments") or "").strip()
     save_seller_comments(vin, comments, stock_number=stock)
     return jsonify({"saved": True, "comments": comments or None})
+
+
+@app.post("/cache/<stock_number>/powertrain")
+def cache_save_powertrain(stock_number: str):
+    """Set or clear this VIN's powertrain override (powertrain_overrides.json).
+    An override always wins over the sticker / ReconVision / name signals."""
+    if not session.get("authed"):
+        return jsonify({"saved": False, "error": "Not signed in."}), 401
+    stock = normalize_stock(stock_number)
+    vin, _vehicle, _cached = _cache_vehicle_ref(stock)
+    if not vin:
+        return jsonify({"saved": False, "error": f"No VIN on record for {stock}."}), 404
+    cls = (request.form.get("powertrain") or "").strip()
+    if cls and cls not in CLASSES:
+        return jsonify({"saved": False, "error": f"Unknown powertrain class {cls!r}."}), 400
+    entry = set_override(vin, cls or None, request.form.get("note"))
+    return jsonify({
+        "saved": True,
+        "override": bool(entry),
+        "label": CLASS_LABELS[cls] if cls else None,
+    })
 
 
 _MAX_STICKER_UPLOAD_BYTES = 10 * 1024 * 1024

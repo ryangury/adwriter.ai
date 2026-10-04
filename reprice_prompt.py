@@ -67,6 +67,9 @@ FORMATTING RULES
   points. No filler phrases.
 - Do not append drivetrain designations such as 4MATIC, AWD, or xDrive to a
   model name unless they already appear in the existing paragraph.
+- Never add, change or restate an electric range, and never add powertrain-type
+  wording (hybrid, plug-in, electric, gasoline engine). Leave any such wording
+  already in the paragraph exactly as it is.
 
 If the new pricing data would not change a single dollar figure or proof-point
 reference, return the existing paragraph two unchanged.

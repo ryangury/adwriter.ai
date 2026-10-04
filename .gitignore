@@ -8,6 +8,7 @@ reconvision_session.json
 # Databases (large, contain PII)
 *.db
 *.db.bak-*
+*.db.backup-*
 
 # Logs
 *.log
@@ -30,6 +31,9 @@ last_inventory_snapshot.json
 ad_history.json
 ad_history_backup*.json
 ad_history.json.bak-*
+ad_history.json.backup-*
+powertrain_overrides.json
+powertrain_overrides.json.tmp
 ipacket_daily_count.json
 non_mb_sticker_daily_count.json
 vision_processed.json

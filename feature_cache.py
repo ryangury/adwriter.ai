@@ -9,11 +9,17 @@ Three SQLite tables in feature_cache.db:
   towing_capacity  — tow ratings at the model + year + trim level, because the
                      numbers change year to year.
   trim_knowledge   — standard equipment and verified engine description at the
-                     exact year + make + model + trim level (non-Mercedes only).
+                     exact year + make + model + trim + powertrain class level
+                     (non-Mercedes only). The powertrain is part of the key so a
+                     hybrid and a gas car sharing a trim name never share a row.
+  electric_range   — ELECTRIC_RANGE for plug-in hybrid / battery-electric
+                     trims, keyed by year + make + model + trim, with where the
+                     figure came from (see powertrain.py).
 
     from feature_cache import (
         get_feature, save_feature, get_towing, save_towing,
         get_trim_knowledge, save_trim_knowledge,
+        get_electric_range, save_electric_range,
     )
 """
 
@@ -58,19 +64,71 @@ CREATE TABLE IF NOT EXISTS trim_knowledge (
     make                TEXT NOT NULL COLLATE NOCASE,
     model               TEXT NOT NULL COLLATE NOCASE,
     trim                TEXT NOT NULL COLLATE NOCASE,
+    powertrain          TEXT NOT NULL DEFAULT '',
     standard_equipment  TEXT,
     engine_description  TEXT,
     source_url          TEXT,
     cached_date         TEXT,
+    UNIQUE (year, make, model, trim, powertrain)
+);
+
+CREATE TABLE IF NOT EXISTS electric_range (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    year          INTEGER NOT NULL,
+    make          TEXT NOT NULL COLLATE NOCASE,
+    model         TEXT NOT NULL COLLATE NOCASE,
+    trim          TEXT NOT NULL COLLATE NOCASE,
+    powertrain    TEXT,
+    range_miles   INTEGER,
+    source        TEXT,      -- epa | manufacturer | none | conflict
+    matched_trim  TEXT,
+    source_url    TEXT,
+    note          TEXT,
+    cached_date   TEXT,
     UNIQUE (year, make, model, trim)
 );
 """
+
+
+def _migrate_trim_knowledge(conn: sqlite3.Connection) -> None:
+    """Older databases key trim_knowledge on year/make/model/trim only. Rebuild
+    the table with the powertrain column in the key; existing rows keep an
+    empty powertrain, which no lookup with a known class matches."""
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(trim_knowledge)")]
+    if "powertrain" in cols:
+        return
+    conn.executescript(
+        """
+        ALTER TABLE trim_knowledge RENAME TO trim_knowledge_old;
+        CREATE TABLE trim_knowledge (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            year                INTEGER NOT NULL,
+            make                TEXT NOT NULL COLLATE NOCASE,
+            model               TEXT NOT NULL COLLATE NOCASE,
+            trim                TEXT NOT NULL COLLATE NOCASE,
+            powertrain          TEXT NOT NULL DEFAULT '',
+            standard_equipment  TEXT,
+            engine_description  TEXT,
+            source_url          TEXT,
+            cached_date         TEXT,
+            UNIQUE (year, make, model, trim, powertrain)
+        );
+        INSERT INTO trim_knowledge
+            (id, year, make, model, trim, powertrain, standard_equipment,
+             engine_description, source_url, cached_date)
+        SELECT id, year, make, model, trim, '', standard_equipment,
+               engine_description, source_url, cached_date
+        FROM trim_knowledge_old;
+        DROP TABLE trim_knowledge_old;
+        """
+    )
 
 
 def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA)
+    _migrate_trim_knowledge(conn)
     conn.commit()
     return conn
 
@@ -209,16 +267,17 @@ def save_towing(
 
 
 def get_trim_knowledge(
-    year: int, make: str, model: str, trim: str | None
+    year: int, make: str, model: str, trim: str | None, powertrain: str | None
 ) -> dict[str, Any] | None:
     """Look up cached standard-equipment + engine info for this exact
-    year/make/model/trim. Case-insensitive. Returns None if not cached yet."""
+    year/make/model/trim and powertrain class (powertrain.py's class key).
+    Case-insensitive. Returns None if not cached yet."""
     with _connect() as conn:
         row = conn.execute(
             "SELECT * FROM trim_knowledge "
             "WHERE year = ? AND make = ? COLLATE NOCASE AND model = ? COLLATE NOCASE "
-            "AND trim = ? COLLATE NOCASE LIMIT 1",
-            (year, make, model, trim or ""),
+            "AND trim = ? COLLATE NOCASE AND powertrain = ? LIMIT 1",
+            (year, make, model, trim or "", powertrain or ""),
         ).fetchone()
     return dict(row) if row else None
 
@@ -231,8 +290,9 @@ def save_trim_knowledge(
     standard_equipment: str | None,
     engine_description: str | None,
     source_url: str | None,
+    powertrain: str | None,
 ) -> None:
-    """Insert or update trim knowledge (upsert on year/make/model/trim).
+    """Insert or update trim knowledge (upsert on year/make/model/trim/powertrain).
 
     A field passed as None never overwrites a value already stored: a partial
     save (e.g. only an engine description salvaged from prose) must not wipe
@@ -241,10 +301,10 @@ def save_trim_knowledge(
         conn.execute(
             """
             INSERT INTO trim_knowledge
-                (year, make, model, trim, standard_equipment, engine_description,
-                 source_url, cached_date)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(year, make, model, trim) DO UPDATE SET
+                (year, make, model, trim, powertrain, standard_equipment,
+                 engine_description, source_url, cached_date)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(year, make, model, trim, powertrain) DO UPDATE SET
                 standard_equipment = COALESCE(excluded.standard_equipment, standard_equipment),
                 engine_description = COALESCE(excluded.engine_description, engine_description),
                 source_url         = COALESCE(excluded.source_url, source_url),
@@ -255,10 +315,70 @@ def save_trim_knowledge(
                 make,
                 model,
                 trim or "",
+                powertrain or "",
                 standard_equipment,
                 engine_description,
                 source_url,
                 date.today().isoformat(),
+            ),
+        )
+        conn.commit()
+
+
+# --------------------------------------------------------------------------- #
+# electric_range
+# --------------------------------------------------------------------------- #
+
+
+def get_electric_range(
+    year: int, make: str, model: str, trim: str | None
+) -> dict[str, Any] | None:
+    """The cached ELECTRIC_RANGE lookup for this exact year/make/model/trim
+    (case-insensitive), or None if this trim has not been looked up yet."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM electric_range "
+            "WHERE year = ? AND make = ? COLLATE NOCASE AND model = ? COLLATE NOCASE "
+            "AND trim = ? COLLATE NOCASE LIMIT 1",
+            (year, make, model, trim or ""),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def save_electric_range(
+    year: int,
+    make: str,
+    model: str,
+    trim: str | None,
+    *,
+    powertrain: str | None,
+    range_miles: int | None,
+    source: str,
+    matched_trim: str | None,
+    source_url: str | None,
+    note: str | None,
+) -> None:
+    """Upsert one trim's ELECTRIC_RANGE lookup result. `source` is "epa",
+    "manufacturer", "none" (nothing usable found) or "conflict"."""
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO electric_range
+                (year, make, model, trim, powertrain, range_miles, source,
+                 matched_trim, source_url, note, cached_date)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(year, make, model, trim) DO UPDATE SET
+                powertrain   = excluded.powertrain,
+                range_miles  = excluded.range_miles,
+                source       = excluded.source,
+                matched_trim = excluded.matched_trim,
+                source_url   = excluded.source_url,
+                note         = excluded.note,
+                cached_date  = excluded.cached_date
+            """,
+            (
+                year, make, model, trim or "", powertrain, range_miles, source,
+                matched_trim, source_url, note, date.today().isoformat(),
             ),
         )
         conn.commit()

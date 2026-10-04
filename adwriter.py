@@ -42,11 +42,21 @@ from feature_cache import (
     save_towing,
     save_trim_knowledge,
 )
+from powertrain import (
+    CLASS_LABELS,
+    UNKNOWN,
+    check_claims,
+    data_package_lines,
+    flags_block,
+    strip_violations,
+    vehicle_powertrain,
+)
 from reprice_prompt import reprice_prompt_for
 from scraper import ReconVisionScraper, ScraperError
 from shared_prompt_constants import (
     API_FEEDBACK_BLOCK,
     PACKAGE_CONTENT_VERIFICATION_RULE,
+    POWERTRAIN_RULE,
     PREDICTIVE_STICKER_RULE,
     PROVENANCE_RULE,
     RECON_FALLBACK_RULE,
@@ -160,7 +170,7 @@ PARAGRAPH TWO — THE SELLING STORY (VARIABLE)
 
 This is the only paragraph that changes meaningfully from vehicle to vehicle. Build the selling story around whatever is most compelling about this specific unit. Priority order for what to lead with:
 
-1. Powertrain story — if the vehicle is a PHEV (plug-in hybrid) like a GLC 350e or GLE 350e, lead with the electric range and real-world fuel cost benefit. Always state the EPA electric-only range in miles as a specific number.
+1. Powertrain story — if POWERTRAIN_CLASS is plug-in hybrid or battery-electric, lead with the electric drive and its everyday benefit. State the electric range only as ELECTRIC_RANGE gives it (see POWERTRAIN AND ELECTRIC RANGE); when it shows (omit), state no range.
 2. Equipment and packages — if the vehicle is heavily optioned, lead with the most desirable packages. Name them specifically. Reference original MSRP vs current price when the MSRP DEPRECIATION SENTENCE is present in the data package — see MSRP DEPRECIATION below.
 
 PACKAGE PRICING: State the original price of a named package or option when it was $750 or more at time of sale and the price is present in the OPTION PACKAGES data (not the MSRP APPROXIMATE fallback — see that rule separately). Format: "The [Package Name] adds [contents] at $[price]." Skip stating a price for individual options under $750, but always name the feature regardless of price. This does not override the MSRP DEPRECIATION rule — package prices and the overall MSRP depreciation sentence are separate, both can appear in the same ad.
@@ -179,6 +189,8 @@ MSRP UNAVAILABLE RULE: When the data package shows MSRP as unavailable with no p
 MSRP APPROXIMATE RULE: When msrp_note indicates approximate pricing, mention package names and contents but do not state specific dollar amounts for packages — the prices are approximate and may not reflect the original window sticker. State original MSRP is unavailable for this vehicle.
 
 {PREDICTIVE_STICKER_RULE}
+
+{POWERTRAIN_RULE}
 
 {STICKER_PRICES_APPROXIMATE_RULE}
 
@@ -321,7 +333,7 @@ TIER 1 — Always explain. These are non-obvious features where the name alone d
 - Captain Chairs second-row configuration (explain the layout change from bench)
 - MAGIC VISION CONTROL (buyers do not know what this is without explanation)
 - Driver Assistance Package contents (DISTRONIC, active steering — unpack the key features)
-- PHEV electric range (the value proposition requires explanation)
+- Plug-in electric drive (the value proposition requires explanation; any range figure comes only from ELECTRIC_RANGE)
 - Any package where the name does not describe the contents
 
 TIER 2 — Name with brief context. Buyers mostly understand these but a short clause adds meaningful value:
@@ -685,9 +697,15 @@ def _research_instructions(needs_lookup: list[dict]) -> str:
                 f" {n.get('trim') or ''}".strip()
             )
         elif n.get("kind") == "trim_knowledge":
+            label = CLASS_LABELS.get(n.get("powertrain") or UNKNOWN, "unknown")
             items.append(
                 f"STANDARD EQUIPMENT AND ENGINE SPECS for {n.get('year')} "
                 f"{n.get('make')} {n.get('model')} {n.get('trim') or ''}".strip()
+                + (
+                    f" ({label} version — research this powertrain, not another one)"
+                    if label != "unknown"
+                    else " (powertrain not confirmed — describe the engine only if the search pins this exact car's powertrain)"
+                )
             )
         else:
             items.append(n.get("feature_name", ""))
@@ -738,7 +756,7 @@ def _cache_research_findings(block_text: str, needs_lookup: list[dict]) -> None:
             if tk and tk.get("year") and tk.get("make") and tk.get("model"):
                 save_trim_knowledge(
                     tk["year"], tk["make"], tk["model"], tk.get("trim"),
-                    equip, engine_desc, url,
+                    equip, engine_desc, url, tk.get("powertrain"),
                 )
             continue
         if parts[0].upper() == "TOWING":
@@ -840,7 +858,9 @@ def _salvage_findings(
     if trims:
         tk = trims[0]
         if tk.get("year") and tk.get("make") and tk.get("model"):
-            existing = get_trim_knowledge(tk["year"], tk["make"], tk["model"], tk.get("trim"))
+            existing = get_trim_knowledge(
+                tk["year"], tk["make"], tk["model"], tk.get("trim"), tk.get("powertrain")
+            )
             if not (existing and existing.get("engine_description")):
                 me = re.search(
                     r"(\d\.\d)\s*L\s+(?:turbo(?:charged)?\s+)?(?:inline[\s-]?)?"
@@ -861,7 +881,7 @@ def _salvage_findings(
                     )[:300]
                     save_trim_knowledge(
                         tk["year"], tk["make"], tk["model"], tk.get("trim"),
-                        None, engine_desc, url,
+                        None, engine_desc, url, tk.get("powertrain"),
                     )
 
     sentences = re.split(r"(?<=[.!?])\s+", region)
@@ -1211,6 +1231,8 @@ def format_data_package(pkg: dict) -> tuple[str, list[dict]]:
     lines.append(f"ACV Max Price: {_usd(v.get('current_price'))}")
     lines.append(f"Doc Fee: {_usd(DEALER_DOC_FEE)}")
     lines.append(f"Advertised Price: {_usd(v.get('advertised_price'))} (used in ad copy)")
+    pt = pkg.get("powertrain") or powertrain_for_package(pkg)
+    lines.extend(data_package_lines(pt))
 
     lines.append("")
     lines.append(
@@ -1349,7 +1371,7 @@ def format_data_package(pkg: dict) -> tuple[str, list[dict]]:
     # year/make/model/trim, not on sticker data, so it also applies to vehicles
     # whose MSRP came from the ACV Max options tab or is unavailable.
     if make and "mercedes" not in make.lower() and year and make and model:
-        tk = get_trim_knowledge(year, make, model, trim)
+        tk = get_trim_knowledge(year, make, model, trim, pt.get("class"))
         lines.append("")
         lines.append("=== TRIM KNOWLEDGE (pre-researched, use directly, do not search again) ===")
         if tk and tk.get("standard_equipment") and tk.get("engine_description"):
@@ -1359,7 +1381,7 @@ def format_data_package(pkg: dict) -> tuple[str, list[dict]]:
             lines.append("  (none cached yet — search required, see FEATURES REQUIRING RESEARCH below)")
             needs_lookup.append({
                 "kind": "trim_knowledge", "year": year, "make": make,
-                "model": model, "trim": trim,
+                "model": model, "trim": trim, "powertrain": pt.get("class"),
             })
 
     lines.append("")
@@ -1821,6 +1843,63 @@ def insert_required_sentences(
     return "\n\n".join(p for p in paras.values() if p)
 
 
+def powertrain_for(
+    stock: str | None,
+    vin: str | None = None,
+    year_make_model: str | None = None,
+    trim: str | None = None,
+) -> dict:
+    """Powertrain class + ELECTRIC_RANGE for one vehicle (powertrain.py),
+    identified by the inventory snapshot's year/make/model/trim when the stock
+    is in it, so generate, reprice and top-up share one range-cache key. Never
+    raises: a failure gives class "unknown" and a flag."""
+    snap = _snapshot_vehicle(normalize_stock(stock)) if stock else {}
+    try:
+        return vehicle_powertrain(
+            snap.get("vin") or vin,
+            snap.get("year_make_model") or year_make_model,
+            snap.get("trim") or trim,
+            body_style=snap.get("body_style"),
+        )
+    except Exception as exc:  # noqa: BLE001 - classification must never sink a build
+        print(f"[powertrain] {stock}: classification failed — {exc}", file=sys.stderr)
+        return {
+            "class": UNKNOWN, "label": CLASS_LABELS[UNKNOWN], "source": "error",
+            "signals": [], "override": None, "range": {},
+            "flags": [f"powertrain classification failed ({exc}) — class unknown, no range stated"],
+        }
+
+
+def powertrain_for_package(pkg: dict) -> dict:
+    v = pkg.get("vehicle") or {}
+    return powertrain_for(
+        pkg.get("stock_number") or v.get("stock_number"),
+        v.get("vin"), v.get("year_make_model"), v.get("trim_body"),
+    )
+
+
+def strip_powertrain_claims(
+    text: str, pt: dict, *, stock: str, label: str, protected: list[str] | None = None
+) -> tuple[str, list[str]]:
+    """Remove every sentence breaking the powertrain rules (see powertrain.py)
+    and log each one. Returns (text, [notes for the feedback block])."""
+    new, removed = strip_violations(text, pt.get("class") or UNKNOWN, pt.get("range"), protected)
+    notes = []
+    for sentence, problems in removed:
+        print(
+            f"[{label}] {stock}: removed sentence ({'; '.join(problems)}): {' '.join(sentence.split())}",
+            file=sys.stderr,
+        )
+        notes.append(f"removed after retry ({'; '.join(problems)}): {' '.join(sentence.split())}")
+    return new, notes
+
+
+def _with_flags(feedback: str | None, flags: list[str]) -> str | None:
+    if not flags:
+        return feedback
+    return ((feedback or "").rstrip() + "\n" + flags_block(flags)).strip()
+
+
 def _generate_from_package(pkg: dict) -> tuple[str, str | None]:
     """(ad_copy, feedback_block) for one aggregated package. Every tier's ad is
     checked for tool-call markup leaked into the text, banned scarcity wording,
@@ -1832,24 +1911,30 @@ def _generate_from_package(pkg: dict) -> tuple[str, str | None]:
     stock = pkg.get("stock_number")
     vehicle = pkg.get("vehicle") or {}
     required = required_sentences_from(pkg)
+    pt = pkg.get("powertrain") or powertrain_for_package(pkg)
+    pkg["powertrain"] = pt
+    protected = list(required.values())
+    pt_flags = list(pt.get("flags") or [])
 
     def _done(ad_copy: str, feedback: str | None) -> tuple[str, str | None]:
         return scrub_non_mb_tire_wording(
             ad_copy, vehicle.get("status_code"), vehicle.get("year_make_model"),
             stock=stock or "", label="adwriter",
-        ), feedback
+        ), _with_flags(feedback, pt_flags)
 
     for attempt in (1, 2):
         ad_copy, feedback = _generate_once(pkg)
         leaks = find_tool_output_leaks(ad_copy)
         hits = find_banned_scarcity_phrases(ad_copy, pkg.get("scarcity_sentence"))
         missing = missing_required_sentences(ad_copy, required)
-        if not leaks and not hits and not missing:
+        pt_bad = check_claims(ad_copy, pt.get("class") or UNKNOWN, pt.get("range"), protected)
+        if not leaks and not hits and not missing and not pt_bad:
             return _done(ad_copy, feedback)
         problems = (
             ([f"tool output in the ad text {leaks[:2]}"] if leaks else [])
             + ([f"banned scarcity wording {sorted(set(hits))}"] if hits else [])
             + ([f"missing required sentence(s) {missing}"] if missing else [])
+            + [f"powertrain: {'; '.join(p)}" for _, p in pt_bad]
         )
         if attempt == 1:
             print(f"[adwriter] {stock}: {'; '.join(problems)} - retrying once", file=sys.stderr)
@@ -1866,11 +1951,17 @@ def _generate_from_package(pkg: dict) -> tuple[str, str | None]:
             raise BannedScarcityPhraseError(
                 f"banned scarcity wording after retry: {sorted(set(hits))}"
             )
-        print(f"[adwriter] {stock}: required sentence(s) {missing} still missing after retry - inserting", file=sys.stderr)
-        ad_copy = insert_required_sentences(
-            ad_copy, required, missing,
-            status_code=vehicle.get("status_code"), stock=stock or "",
-        )
+        if missing:
+            print(f"[adwriter] {stock}: required sentence(s) {missing} still missing after retry - inserting", file=sys.stderr)
+            ad_copy = insert_required_sentences(
+                ad_copy, required, missing,
+                status_code=vehicle.get("status_code"), stock=stock or "",
+            )
+        if pt_bad:
+            ad_copy, notes = strip_powertrain_claims(
+                ad_copy, pt, stock=stock or "", label="adwriter", protected=protected
+            )
+            pt_flags.extend(notes)
     return _done(ad_copy, feedback)
 
 
@@ -2313,6 +2404,12 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
     clean_p2, removed = strip_banned_sentences(old_p2)
     if removed:
         print(f"[reprice] {stock}: removed {len(removed)} scarcity sentence(s) from paragraph two")
+    # Powertrain claims the paragraph should never have made (a range that is
+    # not ELECTRIC_RANGE, type words that don't fit the class) come out before
+    # Claude sees it: the reprice prompt keeps equipment sentences verbatim,
+    # so a retry could never fix them.
+    pt = powertrain_for(stock)
+    clean_p2, pt_notes = strip_powertrain_claims(clean_p2 or old_p2, pt, stock=stock, label="reprice")
     # Python-built sentences the new paragraph must carry verbatim: the fresh
     # proof-point sentence, plus the warranty and shipping sentences the old
     # paragraph already had (a reprice does not rebuild those). Scarcity is
@@ -2346,15 +2443,17 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
             user=data_block, size_text=clean_p2 or old_p2, floor=REPRICE_MIN_TOKENS,
         )
 
+    protected = list(required.values())
     for attempt in (1, 2):
         new_p2 = _rewrite()
         hits = find_banned_scarcity_phrases(new_p2)
         missing = missing_required_sentences(new_p2, required)
-        if not hits and not missing:
+        pt_bad = check_claims(new_p2, pt.get("class") or UNKNOWN, pt.get("range"), protected)
+        if not hits and not missing and not pt_bad:
             break
         problems = ([f"banned scarcity wording {sorted(set(hits))}"] if hits else []) + (
             [f"missing required sentence(s) {missing}"] if missing else []
-        )
+        ) + [f"powertrain: {'; '.join(p)}" for _, p in pt_bad]
         if attempt == 1:
             print(f"[reprice] {stock}: {'; '.join(problems)} - retrying once", file=sys.stderr)
             continue
@@ -2363,11 +2462,17 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
             raise BannedScarcityPhraseError(
                 f"reprice: banned scarcity wording after retry: {sorted(set(hits))}"
             )
-        print(f"[reprice] {stock}: required sentence(s) {missing} still missing after retry - inserting", file=sys.stderr)
-        # the inserter works on a whole ad; give it paragraph two in the second slot
-        new_p2 = split_ad_paragraphs(
-            insert_required_sentences("-\n\n" + new_p2, required, missing, status_code=status, stock=stock)
-        )["paragraph_two"]
+        if missing:
+            print(f"[reprice] {stock}: required sentence(s) {missing} still missing after retry - inserting", file=sys.stderr)
+            # the inserter works on a whole ad; give it paragraph two in the second slot
+            new_p2 = split_ad_paragraphs(
+                insert_required_sentences("-\n\n" + new_p2, required, missing, status_code=status, stock=stock)
+            )["paragraph_two"]
+        if pt_bad:
+            new_p2, notes = strip_powertrain_claims(
+                new_p2, pt, stock=stock, label="reprice", protected=protected
+            )
+            pt_notes.extend(notes)
     new_p2 = insert_scarcity_sentence(new_p2, pd.get("scarcity_sentence"))
 
     # Non-MB tire wording is scrubbed from every paragraph, not just the new
@@ -2380,6 +2485,16 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
             _paragraph(entry, "paragraph_three"), _paragraph(entry, "paragraph_four"),
         )
     )
+    # The paragraphs a reprice leaves alone get the same powertrain check
+    # (no model call there, so offending sentences are removed and logged).
+    p1, n1 = strip_powertrain_claims(p1, pt, stock=stock, label="reprice")
+    p3, n3 = strip_powertrain_claims(p3, pt, stock=stock, label="reprice")
+    p4, n4 = strip_powertrain_claims(p4, pt, stock=stock, label="reprice")
+    pt_notes.extend(n1 + n3 + n4)
+    if pt_notes or pt.get("flags"):
+        entry["powertrain_flags"] = list(pt.get("flags") or []) + pt_notes
+    else:
+        entry.pop("powertrain_flags", None)
     full = "\n\n".join(x for x in (p1, new_p2, p3, p4) if x)
 
     entry["paragraph_one"] = p1
@@ -2492,6 +2607,23 @@ def strip_pending_recon_sentence(text: str, status_code: int | None = None) -> s
     return out
 
 
+def _topup_powertrain_check(stock: str, entry: dict) -> None:
+    """The recon top-up makes no model call, so the powertrain check here
+    removes (and logs) any offending sentence from the stored paragraphs and
+    the full ad text, and records the flags on the entry."""
+    pt = powertrain_for(stock)
+    notes: list[str] = []
+    for key in ("paragraph_one", "paragraph_two", "paragraph_three", "paragraph_four", "current_ad_text"):
+        if entry.get(key):
+            entry[key], n = strip_powertrain_claims(entry[key], pt, stock=stock, label="update_recon")
+            if key != "current_ad_text":
+                notes.extend(n)
+    if notes or pt.get("flags"):
+        entry["powertrain_flags"] = list(pt.get("flags") or []) + notes
+    else:
+        entry.pop("powertrain_flags", None)
+
+
 def update_recon(stock_number: str, status_code: int | None = None) -> str:
     """A pre-recon ad's reconditioning is now complete. Re-scrape ReconVision for
     this stock number, filter it, and:
@@ -2561,6 +2693,7 @@ def update_recon(stock_number: str, status_code: int | None = None) -> str:
                 f"sentence was not found for status_code={status_code!r} — "
                 f"ad text left unchanged"
             )
+        _topup_powertrain_check(stock, entry)
         entry["recon_pending"] = False
         entry["lifecycle_stage"] = "recon_updated"
         entry["last_ad_date"] = date.today().isoformat()
@@ -2583,6 +2716,7 @@ def update_recon(stock_number: str, status_code: int | None = None) -> str:
     entry["paragraph_three"] = p3
     entry["paragraph_four"] = p4
     entry["current_ad_text"] = full
+    _topup_powertrain_check(stock, entry)
     entry["recon_included"] = True
     entry["recon_pending"] = False
     entry.pop("generation_flag", None)

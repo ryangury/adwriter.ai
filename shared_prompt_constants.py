@@ -69,6 +69,16 @@ Never attribute standard trim-level equipment to a package unless a package is e
 
 The question to answer before writing: "What does this specific trim have that lower trims do not?" That is the selling story. Base equipment that comes on every model is not a differentiator."""
 
+POWERTRAIN_RULE = """\
+POWERTRAIN AND ELECTRIC RANGE
+The data package's POWERTRAIN section gives POWERTRAIN_CLASS and ELECTRIC_RANGE. Describe the powertrain type only with words that fit POWERTRAIN_CLASS:
+- battery-electric: never "hybrid" or "plug-in hybrid", and no combustion or gasoline engine, cylinders, displacement, turbocharging or fuel tank.
+- plug-in hybrid: never "all-electric", "fully electric" or "battery-electric" as a description of the vehicle.
+- standard hybrid or mild hybrid: never "plug-in", and no electric range of any kind.
+- gas: never "hybrid", "plug-in" or "electric" as a description of the powertrain.
+- unknown: name no powertrain type at all.
+State an electric range only when ELECTRIC_RANGE gives one, and only with its phrase exactly as written ("EPA-estimated up to N miles of electric range" or "manufacturer-estimated up to N miles of electric range"). Never state a range from memory, from research, from the window sticker, or from any other field, and never present MPGe or efficiency as a range. When ELECTRIC_RANGE shows (omit), write nothing about electric range."""
+
 WINDOW_STICKER_HEADERS_BLOCK = """\
 WINDOW STICKER SECTION HEADERS
 Non-Mercedes window stickers use ALL CAPS section headers to group standard features — ADVANCED SAFETY TECHNOLOGY, POWERTRAIN TECHNOLOGY, COMFORT & CONVENIENCE, EXTERIOR, etc. These are category labels, not package names. Never treat a section header as a package or attribute standard features to a fabricated package name. The ADDED FEATURES section on a non-MB sticker is the only section containing actual add-on packages with prices."""

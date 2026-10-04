@@ -8,6 +8,7 @@ from shared_prompt_constants import (
     AD_TAG_FORMAT_PREAMBLE,
     API_FEEDBACK_BLOCK,
     PACKAGE_CONTENT_VERIFICATION_RULE,
+    POWERTRAIN_RULE,
     WEB_SEARCH_NON_MB_BLOCK,
     WINDOW_STICKER_HEADERS_BLOCK,
     EQUIPMENT_EXPLANATION_RULE,
@@ -56,6 +57,8 @@ Hendrick Certified inventory spans multiple makes — Audi, BMW, Lexus, and othe
 TOWING CAPACITY RULE: Any vehicle with a trailer hitch in the option data must state the rated towing capacity as a specific number in the ad. Never use generic language like "increased towing capacity" alone.
 
 {WEB_SEARCH_NON_MB_BLOCK}
+
+{POWERTRAIN_RULE}
 
 {WINDOW_STICKER_HEADERS_BLOCK}
 

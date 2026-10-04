@@ -23,6 +23,9 @@
     <td>{% if href %}<a href="{{ href }}">{{ r.stock_number }}</a>{% else %}{{ r.vin or '—' }}{% endif %}</td>
     <td>{{ r.year_make_model or '—' }}</td>
     <td>{% if r.status_code is not none %}<span class="status-pill st-{{ r.status_code }}">{{ r.status_label }}</span>{% else %}<span class="has-ad-no">&ndash;</span>{% endif %}</td>
+    <td title="{{ r.powertrain_flag or ('Set by override' if r.powertrain_source == 'override' else 'From the sticker, ReconVision and model name') }}">
+      {% if r.powertrain_class == 'unknown' %}<span class="has-ad-fail">unknown</span>{% else %}{{ r.powertrain_label }}{% endif %}{% if r.powertrain_source == 'override' %} <span class="src">override</span>{% endif %}
+    </td>
     <td class="check-col" title="{{ ('Carfax cached ' ~ r.carfax_date) if r.carfax_ok else 'No Carfax cached' }}">
       {% if r.carfax_ok %}<span class="has-ad-yes">&#10003;</span>{% else %}<span class="has-ad-no">&ndash;</span>{% endif %}
     </td>
@@ -45,6 +48,7 @@
       <th class="sortable" data-sort="stock" data-type="text">Stock</th>
       <th class="sortable" data-sort="vehicle" data-type="text">Vehicle</th>
       <th class="sortable" data-sort="status" data-type="num">Status</th>
+      <th>Powertrain</th>
       <th class="check-col">Carfax</th>
       <th>MSRP</th>
       <th>Recon</th>
