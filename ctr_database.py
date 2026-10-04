@@ -475,12 +475,87 @@ def format_daily_ctr_email(*, today: date | None = None) -> tuple[str, str]:
     return subject, "\n".join(lines) + "\n"
 
 
-def send_daily_ctr_email(*, send: bool = True, today: date | None = None) -> tuple[str, str]:
+ORCHESTRATOR_WAIT_SECONDS = 90 * 60
+ORCHESTRATOR_POLL_SECONDS = 30
+CTR_EMAIL_LOG = Path(__file__).with_name("ctr_logs") / "ctr_email.log"
+
+
+def _log_ctr_email(msg: str) -> None:
+    """Print and append to ctr_logs/ctr_email.log (the scheduled task runs
+    python directly, so its stdout is not kept anywhere)."""
+    line = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} {msg}"
+    print(line)
+    try:
+        CTR_EMAIL_LOG.parent.mkdir(exist_ok=True)
+        with CTR_EMAIL_LOG.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
+
+
+def _orchestrator_lock_holder() -> int | None:
+    """PID of a live process holding orchestrator.lock, else None. Read-only:
+    never takes, writes or deletes the lock (a dead holder's stale file is
+    left for the next orchestrator run to clean up)."""
+    from run_lock import ORCHESTRATOR_LOCK_PATH, _pid_running
+
+    try:
+        pid = int(ORCHESTRATOR_LOCK_PATH.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+    return pid if _pid_running(pid) else None
+
+
+def wait_for_orchestrator(
+    max_wait: float = ORCHESTRATOR_WAIT_SECONDS, poll: float = ORCHESTRATOR_POLL_SECONDS
+) -> bool:
+    """Wait up to `max_wait` seconds for orchestrator.lock to clear, so the
+    report is built from the finished run's rows. Logs whether it had to wait
+    and how it ended. Returns True when clear, False when it gave up."""
+    import time
+
+    pid = _orchestrator_lock_holder()
+    if pid is None:
+        _log_ctr_email("[ctr-email] orchestrator.lock clear — no wait")
+        return True
+    _log_ctr_email(f"[ctr-email] orchestrator running (PID {pid}) — waiting up to {max_wait / 60:.0f} min")
+    started = time.monotonic()
+    while time.monotonic() - started < max_wait:
+        time.sleep(poll)
+        if _orchestrator_lock_holder() is None:
+            _log_ctr_email(
+                f"[ctr-email] orchestrator.lock cleared after {(time.monotonic() - started) / 60:.1f} min of waiting"
+            )
+            return True
+    _log_ctr_email(
+        f"[ctr-email] gave up after {max_wait / 60:.0f} min — orchestrator still running "
+        f"(PID {_orchestrator_lock_holder()}); sending with an incomplete-data warning"
+    )
+    return False
+
+
+INCOMPLETE_WARNING = (
+    "WARNING: this report may be incomplete — the orchestrator run was still "
+    "going after a {minutes}-minute wait, so some of today's CTR rows may not "
+    "have been recorded yet."
+)
+
+
+def send_daily_ctr_email(
+    *, send: bool = True, today: date | None = None, wait_for_run: bool = False
+) -> tuple[str, str]:
     """Build the daily CTR email and send it. Returns (subject, body) either
-    way, so callers/tests can inspect it without actually sending."""
+    way, so callers/tests can inspect it without actually sending. With
+    wait_for_run, first waits for orchestrator.lock (wait_for_orchestrator());
+    if it gives up, the subject and body say the report may be incomplete."""
     from adwriter import _send_gmail
 
+    complete = wait_for_orchestrator() if wait_for_run else True
     subject, body = format_daily_ctr_email(today=today)
+    if not complete:
+        subject += " (may be incomplete — run still going)"
+        warning = INCOMPLETE_WARNING.format(minutes=ORCHESTRATOR_WAIT_SECONDS // 60)
+        body = f"{warning}\n\n{body}"
     if send:
         _send_gmail(subject, body)
     return subject, body
@@ -505,8 +580,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args[0] == "--daily-scrape":
-        subject, _body = send_daily_ctr_email()
-        print(f"[ctr] daily email sent: {subject}")
+        subject, _body = send_daily_ctr_email(wait_for_run=True)
+        _log_ctr_email(f"[ctr] daily email sent: {subject}")
         return 0
 
     stock = args[0].strip().lstrip("#").upper()
