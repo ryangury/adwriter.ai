@@ -49,6 +49,7 @@ from powertrain import (
     UNKNOWN,
     check_claims,
     data_package_lines,
+    engine_problems,
     flags_block,
     strip_violations,
     vehicle_powertrain,
@@ -707,6 +708,11 @@ def _research_instructions(needs_lookup: list[dict]) -> str:
                     f" ({label} version — research this powertrain, not another one)"
                     if label != "unknown"
                     else " (powertrain not confirmed — describe the engine only if the search pins this exact car's powertrain)"
+                )
+                + (
+                    f" — the window sticker prints the engine as \"{n['sticker_engine']}\"; that is "
+                    "authoritative: the TRIM engine description must be that engine"
+                    if n.get("sticker_engine") else ""
                 )
             )
         else:
@@ -1378,12 +1384,16 @@ def format_data_package(pkg: dict) -> tuple[str, list[dict]]:
         lines.append("=== TRIM KNOWLEDGE (pre-researched, use directly, do not search again) ===")
         if tk and tk.get("standard_equipment") and tk.get("engine_description"):
             lines.append(f"  Standard equipment: {tk['standard_equipment']}")
-            lines.append(f"  Engine: {tk['engine_description']}")
+            if engine_problems(tk["engine_description"], pt.get("engine")):
+                lines.append("  Engine: (cached research contradicts STICKER ENGINE — use the sticker's engine line only)")
+            else:
+                lines.append(f"  Engine: {tk['engine_description']}")
         else:
             lines.append("  (none cached yet — search required, see FEATURES REQUIRING RESEARCH below)")
             needs_lookup.append({
                 "kind": "trim_knowledge", "year": year, "make": make,
                 "model": model, "trim": trim, "powertrain": pt.get("class"),
+                "sticker_engine": (pt.get("engine") or {}).get("text"),
             })
 
     lines.append("")
@@ -1905,7 +1915,7 @@ def strip_powertrain_claims(
     print is kept and flagged rather than deleted."""
     new, removed = strip_violations(
         text, pt.get("class") or UNKNOWN, pt.get("range"), protected,
-        sticker_mild=mild_wording_ok(pt), keep_mild_only=existing,
+        sticker_mild=mild_wording_ok(pt), keep_mild_only=existing, engine=pt.get("engine"),
     )
     notes = []
     for sentence, problems in removed:
@@ -1959,7 +1969,7 @@ def _generate_from_package(pkg: dict) -> tuple[str, str | None]:
         missing = missing_required_sentences(ad_copy, required)
         pt_bad = check_claims(
             ad_copy, pt.get("class") or UNKNOWN, pt.get("range"), protected,
-            sticker_mild=mild_wording_ok(pt),
+            sticker_mild=mild_wording_ok(pt), engine=pt.get("engine"),
         )
         if not leaks and not hits and not missing and not pt_bad:
             return _done(ad_copy, feedback)
@@ -2495,7 +2505,7 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
     kept_existing = [
         s for s, _ in check_claims(
             clean_p2, pt.get("class") or UNKNOWN, pt.get("range"),
-            sticker_mild=mild_wording_ok(pt),
+            sticker_mild=mild_wording_ok(pt), engine=pt.get("engine"),
         )
     ]
     protected = list(required.values()) + kept_existing
@@ -2505,7 +2515,7 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
         missing = missing_required_sentences(new_p2, required)
         pt_bad = check_claims(
             new_p2, pt.get("class") or UNKNOWN, pt.get("range"), protected,
-            sticker_mild=mild_wording_ok(pt),
+            sticker_mild=mild_wording_ok(pt), engine=pt.get("engine"),
         )
         if not hits and not missing and not pt_bad:
             break

@@ -3527,7 +3527,7 @@ def scrape_recon_checked(
     `retried`. Every incomplete verdict is logged with its evidence."""
     cached = cached if cached is not None else _recon_cached_info(stock)
     raw = rv.scrape_work_order(stock)
-    d = _recon_details(raw.get("line_items", []), raw.get("header_status"))
+    d = _recon_details(raw.get("line_items", []), _status_or_last_known(stock, raw))
     d["retried"] = False
     if not d["complete"]:
         dropped = bool(
@@ -3550,7 +3550,7 @@ def scrape_recon_checked(
             )
             time.sleep(RECON_RETRY_WAIT_SECONDS if wait_seconds is None else wait_seconds)
             raw2 = rv.scrape_work_order(stock)
-            d2 = _recon_details(raw2.get("line_items", []), raw2.get("header_status"))
+            d2 = _recon_details(raw2.get("line_items", []), _status_or_last_known(stock, raw2))
             d2["retried"] = True
             if d2["complete"]:
                 print(f"[recon-gate] {stock}: rescrape found recon complete (first scrape rows={d['row_count']})", file=sys.stderr)
@@ -3560,14 +3560,57 @@ def scrape_recon_checked(
     return raw, d
 
 
+def _parsed_status(raw_or_status: Any) -> str | None:
+    """The work-order status as parsed from ReconVision, or None when it is
+    missing or blank (never evidence either way)."""
+    s = raw_or_status.get("header_status") if isinstance(raw_or_status, dict) else raw_or_status
+    s = " ".join((s or "").split())
+    return s or None
+
+
+def last_known_status(stock: str, state_path: Path | None = None) -> dict[str, Any] | None:
+    """{"status", "date"} last parsed for this stock by the gate, or None."""
+    try:
+        state = json.loads((state_path or RECON_GATE_STATE_PATH).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    entry = state.get(stock) or {}
+    return {"status": entry["last_status"], "date": entry.get("last_status_date")} if entry.get("last_status") else None
+
+
+def _status_or_last_known(stock: str, raw: dict[str, Any]) -> str | None:
+    """This scrape's parsed status; when it has none, the last status the gate
+    parsed for this stock (logged), so a missing status never flips a verdict."""
+    status = _parsed_status(raw)
+    if status is not None:
+        raw["header_status_source"] = "live"
+        return status
+    last = last_known_status(stock)
+    if last:
+        print(
+            f"[recon-gate] {stock}: work-order status missing from this scrape - "
+            f"using the last known status {last['status']!r} ({last.get('date')})",
+            file=sys.stderr,
+        )
+        raw["header_status_source"] = "last known"
+        return last["status"]
+    raw["header_status_source"] = None
+    return None
+
+
 def _track_recon_downgrade(
     stock: str, vin: str | None, d: dict[str, Any], cached_complete: bool,
     state_path: Path | None = None, now: float | None = None,
 ) -> str | None:
     """Count consecutive gate checks that saw Final Quality Control present and
-    explicitly not completed; on the second, downgrade a cached "complete" row
-    (vehicle_cache.downgrade_recon) and log it. Any other outcome resets the
-    streak. Returns "downgraded" / "streak N" / None, for logging and tests."""
+    explicitly not completed AND a work-order status that parsed live and
+    reads something other than "Closed/Ready For Sale"; on the second,
+    downgrade a cached "complete" row (vehicle_cache.downgrade_recon) and log
+    it. A missing or unparseable status (or one carried over from the last
+    known status) is never evidence: the streak is left as it is. A complete
+    verdict resets it. The last parsed status is kept per stock
+    (last_status / last_status_date). Returns "downgraded" / "streak N" /
+    "no status" / None, for logging and tests."""
     path = state_path or RECON_GATE_STATE_PATH
     now = time.time() if now is None else now
     try:
@@ -3575,9 +3618,21 @@ def _track_recon_downgrade(
     except (OSError, ValueError):
         state = {}
     entry = state.get(stock) or {"streak": 0, "last_ts": 0}
-    explicit = (not d["complete"]) and d["fqc_present"] and not d["fqc_completed"]
+    live_status = d.get("header_status") if d.get("header_status_source", "live") == "live" else None
+    live_status = _parsed_status(live_status)
+    if live_status is not None:
+        entry["last_status"] = live_status
+        entry["last_status_date"] = date.today().isoformat()
+    explicit = (
+        (not d["complete"]) and d["fqc_present"] and not d["fqc_completed"]
+        and live_status is not None and live_status != RECON_DONE_HEADER_STATUS
+    )
     result = None
-    if explicit:
+    if not d["complete"] and live_status is None:
+        result = "no status"  # never evidence: streak untouched
+        if entry.get("last_status") or entry.get("streak"):
+            state[stock] = entry
+    elif explicit:
         if now - float(entry.get("last_ts") or 0) >= RECON_STREAK_MIN_GAP_SECONDS:
             entry["streak"] = int(entry.get("streak") or 0) + 1
         entry["last_ts"] = now
@@ -3592,8 +3647,12 @@ def _track_recon_downgrade(
                 )
                 result = "downgraded"
         state[stock] = entry
-    elif stock in state:
-        state.pop(stock)
+    else:
+        entry["streak"] = 0
+        if entry.get("last_status"):
+            state[stock] = entry
+        else:
+            state.pop(stock, None)
     try:
         path.write_text(json.dumps(state, indent=2), encoding="utf-8")
     except OSError:
@@ -3888,6 +3947,7 @@ def check_recon(
         if owns_session:
             rv.__exit__(None, None, None)
     complete = details["complete"]
+    details["header_status_source"] = recon_raw.get("header_status_source")
     _track_recon_downgrade(
         stock, recon_raw.get("vin") or cached.get("vin"), details, cached["complete"]
     )
@@ -4049,7 +4109,7 @@ def aggregate(
                 recon_raw = get_recon(expected_vin) or {}
                 items = recon_raw.get("line_items", [])
                 recon_status = "cache_hit"
-                if not cached_recon_still_complete(stock, items, recon_raw.get("header_status")):
+                if not cached_recon_still_complete(stock, items, _status_or_last_known(stock, recon_raw)):
                     # The cached flag says complete but the stored items say
                     # otherwise: treat recon as incomplete for this call (no
                     # scrape, stored flag untouched - the gate's two-check

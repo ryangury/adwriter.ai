@@ -7,6 +7,7 @@ Class (one of CLASSES, or "unknown"):
     bev          battery-electric
     hybrid       standard hybrid
     mild_hybrid  mild hybrid (48-volt / EQ Boost / e-supercharger)
+    diesel       diesel engine (sticker engine line or model name)
     gas          no electrification signal
 
 classify() collects signals in priority order — the window sticker's EPA /
@@ -56,15 +57,17 @@ BEV = "bev"
 HYBRID = "hybrid"
 MILD = "mild_hybrid"
 GAS = "gas"
+DIESEL = "diesel"
 UNKNOWN = "unknown"
 
-CLASSES = (PHEV, BEV, HYBRID, MILD, GAS)
+CLASSES = (PHEV, BEV, HYBRID, MILD, DIESEL, GAS)
 PLUG_IN = frozenset({PHEV, BEV})
 CLASS_LABELS = {
     PHEV: "plug-in hybrid",
     BEV: "battery-electric",
     HYBRID: "standard hybrid",
     MILD: "mild hybrid",
+    DIESEL: "diesel",
     GAS: "gas",
     UNKNOWN: "unknown",
 }
@@ -127,10 +130,101 @@ _PHEV_LABEL_RE = re.compile(
     r"Plug-?In\s*Hybrid\s*Vehicle|Electricity\s*[-+]\s*Gasoline|All\s*Electric\s*range", re.I
 )
 _BEV_LABEL_RE = re.compile(r"(?<!Hybrid )\bElectric\s+Vehicle\b", re.I)
+_GAS_LABEL_RE = re.compile(r"Gasoline\s*Vehicle", re.I)
+_DIESEL_LABEL_RE = re.compile(r"Diesel\s*Vehicle", re.I)
 _EPA_LABEL_RE = re.compile(
-    r"fueleconomy\.gov|Fuel\s*Economy\s*and\s*Environment|The\s*best\s*vehicle\s*rates|Gasoline\s*Vehicle",
+    r"fueleconomy\.gov|Fuel\s*Economy\s*and\s*Environment|The\s*best\s*vehicle\s*rates",
     re.I,
 )
+
+# --- the window sticker's own engine line ---------------------------------- #
+# A displacement ("3.0L") next to an engine word on the sticker. Mercedes-Benz
+# stickers print no engine, so they have none (and nothing is checked).
+_ENGINE_DISP_RE = re.compile(r"(?<![\d.])(\d\.\d)\s*-?\s*L(?:ITER)?\b", re.I)
+_ENGINE_KW_RE = re.compile(
+    r"\bENG(?:INE)?\b|TURBO|DIESEL|\bV-?(?:6|8|10|12)\b|\bI-?[3456]\b|CYL|ECOBOOST|ECOTEC|HEMI"
+    r"|PENTASTAR|DURAMAX|SKYACTIV|INJECT|HYB|\bGDI\b|\bDOHC\b|\bSOHC\b",
+    re.I,
+)
+_DIESEL_WORDS_RE = re.compile(
+    r"\bdiesel\b|\bDuramax\b|\bEcoDiesel\b|\bPower\s?Stroke\b|\bCummins\b|\bTDI\b|\bBlueTEC\b", re.I
+)
+_GASOLINE_WORDS_RE = re.compile(r"\bgasoline\b|\bgas[- ](?:engine|powered)\b|\bunleaded\b|\bpetrol\b", re.I)
+_WORD_NUM = {"three": 3, "four": 4, "five": 5, "six": 6, "eight": 8, "ten": 10, "twelve": 12}
+_CYL_PATTERNS = (
+    (re.compile(r"\bV-?(6|8|10|12)\b", re.I), "V"),
+    (re.compile(r"\b(?:inline|straight)[- ](three|four|five|six|3|4|5|6)\b", re.I), "I"),
+    (re.compile(r"\bI-?([3456])\b"), "I"),
+    (re.compile(r"\bflat[- ](four|six|4|6)\b", re.I), "H"),
+    (re.compile(r"\b(three|four|five|six|eight|ten|twelve|3|4|5|6|8|10|12)[- ]?cyl(?:inder)?s?\b", re.I), None),
+)
+ENGINE_UNPRINTED_LAYOUT = "states a cylinder layout the sticker's engine line does not print"
+
+
+def cylinder_claims(text: str) -> list[tuple[str | None, int]]:
+    """[(layout "V" / "I" / "H" / None, cylinder count)] stated in a text."""
+    out = []
+    for rx, layout in _CYL_PATTERNS:
+        for m in rx.finditer(text or ""):
+            g = m.group(1).lower()
+            out.append((layout, _WORD_NUM.get(g) or int(g)))
+    return out
+
+
+def sticker_engine(sticker_text: str | None) -> dict[str, Any] | None:
+    """The sticker's engine line, or None when it prints none:
+    {"text", "displacements" ["3.0"], "cylinders" [["V", 6]], "fuel"
+    "diesel" | "gasoline"}."""
+    for line in (sticker_text or "").splitlines():
+        for m in _ENGINE_DISP_RE.finditer(line):
+            window = line[max(0, m.start() - 35): m.end() + 40]
+            if not _ENGINE_KW_RE.search(window):
+                continue
+            head = line[max(0, m.start() - 35): m.start()]
+            k = max(head.upper().rfind("ENG:"), head.upper().rfind("ENGINE:"))
+            start = max(0, m.start() - 35) + (k if k >= 0 else max(0, len(head) - 20))
+            tail = re.split(r"\s(?:INTERIOR|EXTERIOR|TRANSMISSION|MPG)\b|\s{2,}|\d,\d{3}\.\d\d", line[m.end():], maxsplit=1)[0]
+            text = " ".join((line[start:m.start()] + m.group(0) + tail[:40]).split()).strip(" -·*")
+            disps = sorted(set(_ENGINE_DISP_RE.findall(text)))
+            return {
+                "text": text,
+                "displacements": disps,
+                "cylinders": [list(c) for c in sorted(set(cylinder_claims(text)), key=str)],
+                "fuel": "diesel" if _DIESEL_WORDS_RE.search(text) else "gasoline",
+            }
+    return None
+
+
+def engine_problems(sentence: str, engine: dict[str, Any] | None) -> list[str]:
+    """Where a sentence's displacement, cylinder layout or fuel disagrees with
+    the sticker's engine line ([] when the sticker prints no engine)."""
+    if not engine:
+        return []
+    problems = []
+    disps = set(engine.get("displacements") or [])
+    stated = set(re.findall(r"(?<![\d.])(\d\.\d)[- ]?(?:liter|litre|L)\b", sentence, re.I))
+    if disps and stated - disps:
+        problems.append(
+            f"displacement {sorted(stated - disps)} contradicts the sticker's engine line ({engine['text']})"
+        )
+    claims = cylinder_claims(sentence)
+    if claims:
+        printed = [tuple(c) for c in engine.get("cylinders") or []]
+        if not printed:
+            problems.append(f"{ENGINE_UNPRINTED_LAYOUT} ({engine['text']})")
+        else:
+            for layout, n in claims:
+                ok = any(pn == n and (layout is None or pl is None or pl == layout) for pl, pn in printed)
+                if not ok:
+                    problems.append(
+                        f"cylinder layout {(layout or '') + str(n)} contradicts the sticker's engine line ({engine['text']})"
+                    )
+                    break
+    if engine.get("fuel") == "diesel" and _GASOLINE_WORDS_RE.search(sentence):
+        problems.append(f"gasoline wording contradicts the sticker's diesel engine ({engine['text']})")
+    if engine.get("fuel") == "gasoline" and _DIESEL_WORDS_RE.search(sentence):
+        problems.append(f"diesel wording contradicts the sticker's engine line ({engine['text']})")
+    return problems
 _HYBRID_TEXT_RE = re.compile(r"(?<!mild )(?<!mild-)\bHYB(?:RID)?\b", re.I)
 _MILD_TEXT_RE = re.compile(r"\bMHEV\b|\bmild[- ]hybrid\b|\b48[- ]?V(?:olt)?\b|\bEQ\s*Boost\b", re.I)
 # Python-built paragraph-two sentence for Mercedes-Benz mild hybrids whose
@@ -162,6 +256,11 @@ _NAME_BEV_RE = re.compile(
     re.I,
 )
 _BEV_MAKES = {"tesla", "rivian", "polestar", "lucid"}
+_NAME_DIESEL_RE = re.compile(
+    r"\bdiesel\b|\bDuramax\b|\bEcoDiesel\b|\bPower\s?Stroke\b|\bCummins\b|\bTDI\b|\bBlueTEC\b"
+    r"|\bxDrive\d{2}d\b|\b\d{3}\s?d\b(?=\s|$)",
+    re.I,
+)
 
 
 def _signal(group: str, name: str, classes: set[str], evidence: str) -> dict[str, Any]:
@@ -190,13 +289,24 @@ def collect_signals(
         m = _BEV_LABEL_RE.search(st)
         if m:
             sigs.append(_signal("sticker EPA label", "electric vehicle label", {BEV}, _snip(st, m)))
+        elif _DIESEL_LABEL_RE.search(st):
+            m = _DIESEL_LABEL_RE.search(st)
+            sigs.append(_signal("sticker EPA label", "diesel vehicle label", {DIESEL}, _snip(st, m)))
+        elif _GAS_LABEL_RE.search(st):
+            m = _GAS_LABEL_RE.search(st)
+            sigs.append(_signal("sticker EPA label", "gasoline vehicle label", {GAS, HYBRID, MILD}, _snip(st, m)))
         else:
             m = _EPA_LABEL_RE.search(st)
             if m:
                 sigs.append(_signal(
-                    "sticker EPA label", "gasoline fuel-economy label",
-                    {GAS, HYBRID, MILD}, _snip(st, m),
+                    "sticker EPA label", "fuel-economy label (no electric headline)",
+                    {GAS, HYBRID, MILD, DIESEL}, _snip(st, m),
                 ))
+    eng = sticker_engine(st)
+    if eng and eng["fuel"] == "diesel":
+        sigs.append(_signal("sticker engine line", "diesel engine", {DIESEL}, eng["text"]))
+    elif eng:
+        sigs.append(_signal("sticker engine line", "combustion engine", {GAS, HYBRID, MILD, PHEV}, eng["text"]))
     m = _HYBRID_TEXT_RE.search(st)
     if m:
         sigs.append(_signal("sticker EPA label", "hybrid powertrain text", {HYBRID, PHEV}, _snip(st, m)))
@@ -238,6 +348,9 @@ def collect_signals(
         m = _NAME_HYBRID_RE.search(name)
         if m:
             sigs.append(_signal("make/model", "hybrid name", {HYBRID}, m.group(0)))
+    m = _NAME_DIESEL_RE.search(name)
+    if m:
+        sigs.append(_signal("make/model", "diesel name", {DIESEL}, m.group(0)))
     return sigs
 
 
@@ -277,20 +390,21 @@ def classify(
     sticker_mild = bool(_STICKER_MILD_TERM_RE.search(sticker_text or ""))
     m48 = _STICKER_48V_RE.search(sticker_text or "")
     sticker_48v = " ".join(m48.group(0).split()) if m48 else None
+    engine = sticker_engine(sticker_text)
     ov = (overrides if overrides is not None else load_overrides()).get((vin or "").strip().upper())
     if ov:
         cls = ov["class"]
         return {
             "class": cls, "label": CLASS_LABELS[cls], "source": "override",
             "signals": signals, "flag": None, "override": ov, "sticker_mild": sticker_mild,
-            "sticker_48v": sticker_48v,
+            "sticker_48v": sticker_48v, "engine": engine,
         }
     cls, flag = resolve(signals)
     return {
         "class": cls, "label": CLASS_LABELS[cls],
         "source": "signals" if signals else "default",
         "signals": signals, "flag": flag, "override": None, "sticker_mild": sticker_mild,
-        "sticker_48v": sticker_48v,
+        "sticker_48v": sticker_48v, "engine": engine,
     }
 
 
@@ -822,6 +936,12 @@ TYPE_RULES: dict[str, list[tuple[str, str]]] = {
         (_BEV_BODY_WORDS, "battery-electric wording on a gas car"),
         (_ANY_HYBRID_WORD, "hybrid wording on a gas car"),
     ],
+    DIESEL: [
+        (_PLUGIN_WORDS, "plug-in wording on a diesel"),
+        (_BEV_BODY_WORDS, "battery-electric wording on a diesel"),
+        (_ANY_HYBRID_WORD, "hybrid wording on a diesel"),
+        (r"\bgasoline\b|\bgas[- ](?:engine|powered)\b|\bunleaded\b", "gasoline wording on a diesel"),
+    ],
     UNKNOWN: [],
 }
 
@@ -844,7 +964,8 @@ def range_claim_numbers(sentence: str) -> list[int]:
 
 
 def sentence_problems(
-    sentence: str, cls: str, rng: dict[str, Any] | None, *, sticker_mild: bool = False
+    sentence: str, cls: str, rng: dict[str, Any] | None, *, sticker_mild: bool = False,
+    engine: dict[str, Any] | None = None,
 ) -> list[str]:
     """Why one sentence breaks the powertrain rules ([] if it doesn't).
     "Mild hybrid" wording passes only on a mild hybrid whose sticker prints
@@ -870,12 +991,13 @@ def sentence_problems(
             "mild-hybrid wording the sticker does not print" if cls in (MILD, GAS, UNKNOWN)
             else f"mild-hybrid wording on a {CLASS_LABELS[cls]} car"
         )
+    problems.extend(engine_problems(sentence, engine))
     return problems
 
 
 def check_claims(
     text: str, cls: str, rng: dict[str, Any] | None, protected: list[str] | None = None,
-    *, sticker_mild: bool = False,
+    *, sticker_mild: bool = False, engine: dict[str, Any] | None = None,
 ) -> list[tuple[str, list[str]]]:
     """[(sentence, [problems])] for every sentence that breaks the rules.
     Sentences in `protected` (pipeline-built, verbatim) are never flagged,
@@ -886,7 +1008,7 @@ def check_claims(
     for s in _sentences(text):
         if _ws(s) in keep:
             continue
-        p = sentence_problems(s, cls, rng, sticker_mild=sticker_mild)
+        p = sentence_problems(s, cls, rng, sticker_mild=sticker_mild, engine=engine)
         if p:
             out.append((s, p))
     return out
@@ -895,9 +1017,17 @@ def check_claims(
 MILD_ONLY_PROBLEMS = {"mild-hybrid wording the sticker does not print"}
 
 
+def _soft(problem: str) -> bool:
+    """Problems existing copy keeps (and flags) instead of deleting the
+    sentence: unprinted mild-hybrid wording, and a cylinder layout the
+    sticker's engine line doesn't print (unsupported, not contradicted)."""
+    return problem in MILD_ONLY_PROBLEMS or problem.startswith(ENGINE_UNPRINTED_LAYOUT)
+
+
 def strip_violations(
     text: str, cls: str, rng: dict[str, Any] | None, protected: list[str] | None = None,
     *, sticker_mild: bool = False, keep_mild_only: bool = False,
+    engine: dict[str, Any] | None = None,
 ) -> tuple[str, list[tuple[str, list[str]]]]:
     """Remove every offending sentence, paragraph by paragraph. Returns
     (new text, [(removed sentence, problems)]). With keep_mild_only (existing
@@ -907,9 +1037,9 @@ def strip_violations(
     removed: list[tuple[str, list[str]]] = []
     paras = []
     for para in re.split(r"\n\s*\n", text or ""):
-        bad = check_claims(para, cls, rng, protected, sticker_mild=sticker_mild)
+        bad = check_claims(para, cls, rng, protected, sticker_mild=sticker_mild, engine=engine)
         if keep_mild_only:
-            kept = [(s, p) for s, p in bad if set(p) <= MILD_ONLY_PROBLEMS]
+            kept = [(s, p) for s, p in bad if all(_soft(x) for x in p)]
             removed.extend((s, ["(kept) " + x for x in p]) for s, p in kept)
             bad = [b for b in bad if b not in kept]
         if bad:
@@ -929,6 +1059,13 @@ def data_package_lines(pt: dict[str, Any]) -> list[str]:
         lines.append("  (set by a manual override)")
     if pt.get("class") == UNKNOWN:
         lines.append("  Signals disagree: name no powertrain type (no hybrid, plug-in, electric or gas wording).")
+    eng = pt.get("engine")
+    if eng:
+        lines.append(f"STICKER ENGINE (authoritative): {eng['text']}")
+        lines.append(
+            "  State only the displacement, cylinder layout and fuel this line prints; never a different "
+            "displacement, a cylinder layout it does not print, or another fuel — whatever any research says."
+        )
     if pt.get("mild_sentence"):
         lines.append(
             "MILD_HYBRID_SENTENCE (use verbatim in paragraph two, right after the engine/powertrain "

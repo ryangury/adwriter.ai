@@ -75,7 +75,9 @@ The data package's POWERTRAIN section gives POWERTRAIN_CLASS and ELECTRIC_RANGE.
 - battery-electric: never "hybrid" or "plug-in hybrid", and no combustion or gasoline engine, cylinders, displacement, turbocharging or fuel tank.
 - plug-in hybrid: never "all-electric", "fully electric" or "battery-electric" as a description of the vehicle.
 - standard hybrid or mild hybrid: never "plug-in", and no electric range of any kind. Call a vehicle a mild hybrid, or present mild-hybrid / 48-volt / MHEV technology as a selling feature, only when the POWERTRAIN section does not tell you otherwise (it does whenever the window sticker itself does not print the term).
+- diesel: never "gasoline", "hybrid", "plug-in" or "electric" as a description of the powertrain.
 - gas: never "hybrid", "plug-in" or "electric" as a description of the powertrain.
+When the POWERTRAIN section shows a STICKER ENGINE line, it is authoritative: state only the displacement, cylinder layout and fuel it prints, whatever trim research or memory says.
 - unknown: name no powertrain type at all.
 State an electric range only when ELECTRIC_RANGE gives one, and only with its phrase exactly as written ("EPA-estimated up to N miles of electric range" or "manufacturer-estimated up to N miles of electric range"). Never state a range from memory, from research, from the window sticker, or from any other field, and never present MPGe or efficiency as a range. When ELECTRIC_RANGE shows (omit), write nothing about electric range."""
 
