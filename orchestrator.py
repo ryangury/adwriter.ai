@@ -178,8 +178,10 @@ def _format_action_email(
     rewritten_stocks: set[str],
     errors: list[dict[str, Any]],
     pre_recon_watching: list[dict[str, Any]] | None = None,
+    new_listings_pricing: list[dict[str, Any]] | None = None,
 ) -> str:
     pre_recon_watching = pre_recon_watching or []
+    new_listings_pricing = new_listings_pricing or []
     out: list[str] = [
         f"MERCEDES-BENZ OF DURHAM — ACTION REQUIRED  {date.today().isoformat()}",
         "",
@@ -245,6 +247,16 @@ def _format_action_email(
         )
     out += ["", ""]
 
+    section("NEW LISTINGS, PRICING NOT READY (will retry tomorrow)", len(new_listings_pricing))
+    if not new_listings_pricing:
+        out.append("(none)")
+    for v in new_listings_pricing:
+        out.append(
+            f"  [{v.get('stock_number')}]  {v.get('year_make_model') or 'unknown'}"
+            f"  —  {_dol(v)}   (ACV Max price still 0)"
+        )
+    out += ["", ""]
+
     section("SCRAPER ERRORS", len(errors))
     if not errors:
         out.append("(none)")
@@ -269,6 +281,24 @@ def _aggregate_failure(new_errors: list[dict[str, Any]]) -> str | None:
         if e.get("phase") == "aggregate" and not msg.startswith("ReconVision timeout"):
             return msg
     return None
+
+
+NEW_LISTING_MAX_DAYS = 3
+
+
+def _pricing_not_ready(pkg: dict[str, Any], v: dict[str, Any]) -> bool:
+    """A data-gate failure that is just ACV Max not having priced a new
+    listing yet: pricing failed with current_internet_price 0 on a unit under
+    NEW_LISTING_MAX_DAYS days on lot (crawl snapshot)."""
+    days = v.get("days_on_lot")
+    price = pkg.get("current_internet_price")
+    return (
+        pkg.get("failed_source") == "acvmax_pricing"
+        and isinstance(price, (int, float))
+        and price == 0
+        and isinstance(days, (int, float))
+        and days < NEW_LISTING_MAX_DAYS
+    )
 
 
 def _send_scraping_alert(reason: str, *, send_email: bool) -> None:
@@ -620,6 +650,12 @@ def _run_inner(
             )
 
             if entry:
+                # A stock flagged absent (sold / wholesale) is out of the gate.
+                # The crawl clears absent_since when a stock is back, so this
+                # only holds one back when the crawl was too unhealthy to clear it.
+                if entry.get("absent_since"):
+                    print(f"[gate] {stock}: absent since {entry['absent_since']} — skip")
+                    continue
                 if entry.get("recon_pending"):
                     session, login_failed = _recon_session()
                     if session is None:
@@ -694,6 +730,7 @@ def _run_inner(
     )
     print(f"\n=== 4. AD GENERATION ({n_queued} vehicle(s)) ===")
     ads_generated: list[dict[str, Any]] = []
+    new_listings_pricing: list[dict[str, Any]] = []
     aggregated_ctr: dict[str, Any] = {}
     price_by_stock = {
         c["stock_number"]: c for c in price_changes if c.get("stock_number")
@@ -734,6 +771,15 @@ def _run_inner(
         # carfax + autoipacket as failed. Report the gate's real reason instead.
         if pkg.get("reason") == "incomplete_data":
             gate_msg = pkg.get("message") or "data gate failed"
+            if _pricing_not_ready(pkg, v):
+                # ACV Max hasn't priced a just-listed unit yet: not a scraper
+                # error. No ad is recorded, so tomorrow's gate queues it again.
+                new_listings_pricing.append(v)
+                print(
+                    f"[{tag}] {stock}: new listing ({v.get('days_on_lot')} days on lot), "
+                    f"ACV Max price is 0 — pricing not ready, will retry tomorrow"
+                )
+                return
             errors.append({"stock": stock, "phase": "sources", "error": gate_msg})
             print(f"[{tag}] {stock}: {gate_msg}")
             return
@@ -820,7 +866,10 @@ def _run_inner(
     try:
         for v, skip_recon in [(v, False) for v in build_queue] + [(v, True) for v in pre_recon_queue]:
             n_errors = len(errors)
+            n_not_ready = len(new_listings_pricing)
             _build_and_record(v, skip_recon=skip_recon)
+            if len(new_listings_pricing) > n_not_ready:
+                continue  # pricing not ready on a new listing: neither a failure nor a reset
             failure = _aggregate_failure(errors[n_errors:])
             if failure is None:
                 build_streak.ok()
@@ -1051,12 +1100,13 @@ def _run_inner(
         print("[email] no ads generated — Ads Ready email not sent")
 
     # Everything still carrying a pre-recon ad (recon_pending), oldest first.
+    # Stocks flagged absent (sold / wholesale) are left out.
     ymm_by_stock = {
         r.get("stock_number"): r.get("year_make_model") for r in retail
     }
     pre_recon_watching: list[dict[str, Any]] = []
     for stock, entry in ad_history.items():
-        if not entry.get("recon_pending"):
+        if not entry.get("recon_pending") or entry.get("absent_since"):
             continue
         first = entry.get("first_ad_date")
         days = None
@@ -1079,7 +1129,7 @@ def _run_inner(
     rewritten = {a["stock"] for a in ads_generated}
     if reprice_only:
         print("[email] --reprice-only — Action Required email not sent")
-    elif waiting_recon or needs_cert or price_changes or errors or pre_recon_watching:
+    elif waiting_recon or needs_cert or price_changes or errors or pre_recon_watching or new_listings_pricing:
         _safe_send(
             f"Mercedes-Benz of Durham — Action Required {today}",
             _format_action_email(
@@ -1089,6 +1139,7 @@ def _run_inner(
                 rewritten,
                 errors,
                 pre_recon_watching,
+                new_listings_pricing,
             ),
         )
     else:
@@ -1145,6 +1196,7 @@ def _run_inner(
         f"  Verification checks run: {verification_checks_run} | "
         f"Not posted: {len(needs_posting)} | Outdated: {len(needs_update)}"
     )
+    print(f"  New listings, pricing not ready: {len(new_listings_pricing)}")
     print(f"  Errors:                        {len(errors)}")
     print(f"  Total runtime:                 {_fmt_runtime(runtime)}")
     if stopped:

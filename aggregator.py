@@ -3690,6 +3690,7 @@ def _mb_cpo_data_gate(
         "stock_number": stock,
         "stock_prefix": stock_prefix,
         "status_code": status_code,
+        "current_internet_price": current_price,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -3733,6 +3734,7 @@ def _non_cpo_data_gate(
         "stock_number": stock,
         "stock_prefix": stock_prefix,
         "status_code": status_code,
+        "current_internet_price": current_price,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
