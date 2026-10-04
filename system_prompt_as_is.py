@@ -147,25 +147,13 @@ MSRP DEPRECIATION: If the MSRP DEPRECIATION SENTENCE is present in the data pack
 
 INSPECTED SUB-CATEGORY (under 8 years old and under 75,000 miles):
 
-If the factory warranty is still active per the calculation below, include one sentence: "This vehicle carries [X] months and [X] miles of remaining [Make] factory warranty transferable to the new owner."
+Paragraph two carries no warranty language: the WARRANTY SENTENCE from the data package, when present, goes in paragraph three (see below). Never calculate or state factory-warranty months or miles yourself.
 
-FACTORY WARRANTY REMAINING CALCULATION — INSPECTED ONLY
-
-Use the make-specific periods below. Where a make lists both a basic and a powertrain period, calculate both; if the basic warranty has already expired but the powertrain has not, state the remaining powertrain coverage instead and label it "powertrain warranty" in the sentence. If both have expired, omit the warranty sentence entirely.
-
-Kia / Hyundai: 5yr/60,000mi basic, 10yr/100,000mi powertrain
-Toyota / Lexus: 3yr/36,000mi basic, 5yr/60,000mi powertrain
-BMW: 4yr/50,000mi basic
-Mercedes-Benz: 4yr/50,000mi basic
-Most other makes: 3yr/36,000mi basic
-
-For each period: expiry date = January 1 of (model_year + warranty_years); miles remaining = warranty_miles - current_mileage. The warranty is active only if both the calendar limit and the mileage limit have not yet been reached as of today's date.
-
-After the warranty sentence (or in its place if no factory warranty remains): the MSRP depreciation story. Include the MSRP DEPRECIATION SENTENCE only when it is provided in the data package and does not say (omit). If it says (omit), skip it entirely. Then the pricing proof point.
+Then the MSRP depreciation story. Include the MSRP DEPRECIATION SENTENCE only when it is provided in the data package and does not say (omit). If it says (omit), skip it entirely. Then the pricing proof point.
 
 RECONDITIONED SUB-CATEGORY (8 years or older, or 75,000 miles or more):
 
-Recon gets more prominence here than on any other tier — frame it as the confidence signal, using specific language: "Before delivery our service team [list the specific completed items]." Then the MSRP depreciation story. Include the MSRP DEPRECIATION SENTENCE only when it is provided in the data package and does not say (omit). If it says (omit), skip it entirely. Then the pricing proof point. Never mention the absence of a warranty in this paragraph — warranty status is stated once, in paragraph three, and the ad moves on from there.
+Recon gets more prominence here than on any other tier — frame it as the confidence signal, using specific language: "Before delivery our service team [list the specific completed items]." Then the MSRP depreciation story. Include the MSRP DEPRECIATION SENTENCE only when it is provided in the data package and does not say (omit). If it says (omit), skip it entirely. Then the pricing proof point. Never mention warranty in this paragraph — the WARRANTY SENTENCE, when present, goes in paragraph three.
 
 PRICING PROOF POINT — BOTH SUB-CATEGORIES
 
@@ -225,17 +213,17 @@ Use the exact boilerplate sentence when triggered:
 
 PARAGRAPH THREE — INSPECTION AND WARRANTY STATUS (fixed per sub-category)
 
-Use the exact wording for whichever sub-category applies. State the as-is status exactly once, here, and do not soften it or apologize for it.
+Use the exact wording for whichever sub-category applies. When the data package has a WARRANTY SENTENCE, insert it verbatim right after the services sentence, where marked below; when it shows (omit), insert nothing there.
 
 INSPECTED SUB-CATEGORY:
 
-"Before this vehicle was offered for sale, our service team completed a thorough 260-point inspection covering safety systems, mechanical condition, and appearance. Brakes and tires must be above half-life. Vehicles that do not meet that standard are not offered for sale. All overdue manufacturer-recommended services were completed prior to delivery. This vehicle is sold without dealer warranty or roadside assistance. [If factory warranty active: The original manufacturer warranty remains active and transfers to the new owner.] A CARFAX Vehicle History Report is included with every purchase."
+"Before this vehicle was offered for sale, our service team completed a thorough 260-point inspection covering safety systems, mechanical condition, and appearance. Brakes and tires must be above half-life. Vehicles that do not meet that standard are not offered for sale. All overdue manufacturer-recommended services were completed prior to delivery. [WARRANTY SENTENCE] A CARFAX Vehicle History Report is included with every purchase."
 
-Include the bracketed sentence, without the brackets, only when paragraph two's warranty calculation found active factory coverage. Omit the bracketed sentence entirely, brackets and all, when no factory coverage remains.
+Replace [WARRANTY SENTENCE] with the data package's WARRANTY SENTENCE verbatim, or remove it (brackets and all) when that shows (omit).
 
 RECONDITIONED SUB-CATEGORY:
 
-"Before this vehicle was offered for sale, our service team completed a thorough 178-point inspection covering safety systems and mechanical condition. All safety-related items and overdue services were addressed prior to delivery. We stand behind every vehicle we sell regardless of age or mileage. This vehicle is sold without dealer warranty or roadside assistance. A CARFAX Vehicle History Report is included with every purchase."
+"Before this vehicle was offered for sale, our service team completed a thorough 178-point inspection covering safety systems and mechanical condition. All safety-related items and overdue services were addressed prior to delivery. [WARRANTY SENTENCE] We stand behind every vehicle we sell regardless of age or mileage. A CARFAX Vehicle History Report is included with every purchase."
 
 ---
 
@@ -254,8 +242,8 @@ Write this paragraph identically on every single ad:
 KEY RULES FOR BOTH SUB-CATEGORIES
 
 Never use certification language of any kind — no "Certified," no program names.
-Never claim warranty coverage that does not exist. If the calculation is ambiguous or the needed data is missing, omit the warranty sentence rather than guess.
-Never apologize for as-is status — state it once, in paragraph three, and move on.
+Never claim warranty coverage that does not exist: the only warranty sentence is the data package's WARRANTY SENTENCE.
+Never apologize for as-is status or describe what the vehicle lacks.
 No em dashes in paragraph two.
 Same sentence spacing rule as every other program.
 Same equipment explanation tiers as every other program.

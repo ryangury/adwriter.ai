@@ -1434,8 +1434,14 @@ def format_data_package(pkg: dict) -> tuple[str, list[dict]]:
     lines.append(pkg.get("msrp_sentence") or "(omit — gap below threshold)")
 
     lines.append("")
-    lines.append("WARRANTY SENTENCE (include in paragraph two when present, omit if null):")
-    lines.append(pkg.get("warranty_sentence") or "(omit — warranty not claimable or not applicable)")
+    if v.get("status_code") == 13:
+        lines.append(
+            "WARRANTY SENTENCE (include verbatim in paragraph three, right after the services "
+            "sentence, when present; omit if null):"
+        )
+    else:
+        lines.append("WARRANTY SENTENCE (include in paragraph two when present, omit if null):")
+    lines.append(pkg.get("warranty_sentence") or "(omit — no remaining factory warranty, or no confirmed terms for this brand)")
 
     lines.append("")
     lines.append("SHIPPING SENTENCE (include as final sentence of paragraph two when present, omit if null):")
@@ -1462,17 +1468,9 @@ def format_data_package(pkg: dict) -> tuple[str, list[dict]]:
             f"No structural damage: {_yn(cf.get('no_structural_damage'))} | "
             f"No total loss: {_yn(cf.get('no_total_loss'))}"
         )
-        lines.append(
-            f"Warranty: {cf.get('warranty_status', 'unknown')} "
-            f"(est. {cf.get('warranty_months_remaining', '?')} months / "
-            f"{(cf.get('warranty_miles_remaining') or 0):,} miles remaining)"
-        )
-        lines.append(
-            f"Warranty claimable: {_yn(cf.get('warranty_claimable'))}  "
-            f"[odometer cross-check: {cf.get('warranty_current', 'unknown')}"
-            + (f"; {cf['warranty_note']}" if cf.get("warranty_note") else "")
-            + "]"
-        )
+        # Carfax's own warranty estimate and odometer cross-check are not shown:
+        # the WARRANTY SENTENCE below is the only factory-warranty language.
+        lines.append("Warranty: see WARRANTY SENTENCE (the only factory-warranty language for this ad)")
         lines.append(f"Titled in: {', '.join(cf.get('titled_states') or []) or 'n/a'}")
 
     lines.append("")
@@ -1736,6 +1734,9 @@ _PRICE_CLAIM_RE = re.compile(
     re.IGNORECASE,
 )
 _DEPRECIATION_RE = re.compile(r"\bOriginal MSRP was\b|\bin depreciation\b", re.IGNORECASE)
+# As-Is paragraph three's services sentence (both sub-categories); the
+# factory-warranty sentence goes right after it.
+_SERVICES_SENTENCE_RE = re.compile(r"\bservices were (?:completed|addressed) prior to delivery\b", re.IGNORECASE)
 _WARRANTY_START_RE = re.compile(
     r"^(?:This vehicle carries an? .*warranty|The powertrain warranty runs through)", re.IGNORECASE
 )
@@ -1821,6 +1822,15 @@ def insert_required_sentences(
         paras["paragraph_one"] = " ".join(units)
         print(f"{tag} inserted provenance sentence into paragraph one", file=sys.stderr)
 
+    # As-Is (status 13): the factory-warranty sentence lives in paragraph
+    # three, right after the services sentence.
+    if status_code == 13 and "warranty_sentence" in missing:
+        units = _units(paras["paragraph_three"], [])
+        svc = next((i for i, u in enumerate(units) if _SERVICES_SENTENCE_RE.search(u)), None)
+        units.insert(len(units) if svc is None else svc + 1, required["warranty_sentence"])
+        paras["paragraph_three"] = " ".join(units)
+        print(f"{tag} inserted warranty sentence into paragraph three", file=sys.stderr)
+        missing = [k for k in missing if k != "warranty_sentence"]
     p2_keys = [k for k in ("proof_point_sentence", "scarcity_sentence", "warranty_sentence", "shipping_sentence", "mild_hybrid_sentence") if k in missing]
     if p2_keys:
         present = [s for k, s in required.items() if k not in missing and k != "provenance_sentence"]

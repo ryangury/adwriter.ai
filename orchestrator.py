@@ -179,9 +179,11 @@ def _format_action_email(
     errors: list[dict[str, Any]],
     pre_recon_watching: list[dict[str, Any]] | None = None,
     new_listings_pricing: list[dict[str, Any]] | None = None,
+    odometer_flags: list[dict[str, Any]] | None = None,
 ) -> str:
     pre_recon_watching = pre_recon_watching or []
     new_listings_pricing = new_listings_pricing or []
+    odometer_flags = odometer_flags or []
     out: list[str] = [
         f"MERCEDES-BENZ OF DURHAM — ACTION REQUIRED  {date.today().isoformat()}",
         "",
@@ -254,6 +256,17 @@ def _format_action_email(
         out.append(
             f"  [{v.get('stock_number')}]  {v.get('year_make_model') or 'unknown'}"
             f"  —  {_dol(v)}   (ACV Max price still 0)"
+        )
+    out += ["", ""]
+
+    section("ODOMETER BELOW CARFAX", len(odometer_flags))
+    if not odometer_flags:
+        out.append("(none)")
+    for o in odometer_flags:
+        out.append(
+            f"  [{o.get('stock_number')}]  {o.get('year_make_model') or 'unknown'}"
+            f"  —  lot odometer {o.get('lot_odometer'):,} vs Carfax {o.get('carfax_odometer'):,}"
+            f" ({o.get('gap'):,} miles below); warranty sentence still built"
         )
     out += ["", ""]
 
@@ -731,6 +744,7 @@ def _run_inner(
     print(f"\n=== 4. AD GENERATION ({n_queued} vehicle(s)) ===")
     ads_generated: list[dict[str, Any]] = []
     new_listings_pricing: list[dict[str, Any]] = []
+    odometer_flags: list[dict[str, Any]] = []
     aggregated_ctr: dict[str, Any] = {}
     price_by_stock = {
         c["stock_number"]: c for c in price_changes if c.get("stock_number")
@@ -760,6 +774,12 @@ def _run_inner(
 
         if isinstance(pkg.get("ctr"), dict):
             aggregated_ctr[stock] = pkg["ctr"]
+        if pkg.get("odometer_below_carfax"):
+            odometer_flags.append({**v, **pkg["odometer_below_carfax"]})
+            print(
+                f"[{tag}] {stock}: lot odometer {pkg['odometer_below_carfax']['lot_odometer']:,} is "
+                f"{pkg['odometer_below_carfax']['gap']:,} miles below Carfax — flagged, sentence still built"
+            )
 
         if pkg.get("recon_complete") is False:
             waiting_recon.append({**v, "note": pkg.get("note")})
@@ -1129,7 +1149,7 @@ def _run_inner(
     rewritten = {a["stock"] for a in ads_generated}
     if reprice_only:
         print("[email] --reprice-only — Action Required email not sent")
-    elif waiting_recon or needs_cert or price_changes or errors or pre_recon_watching or new_listings_pricing:
+    elif waiting_recon or needs_cert or price_changes or errors or pre_recon_watching or new_listings_pricing or odometer_flags:
         _safe_send(
             f"Mercedes-Benz of Durham — Action Required {today}",
             _format_action_email(
@@ -1140,6 +1160,7 @@ def _run_inner(
                 errors,
                 pre_recon_watching,
                 new_listings_pricing,
+                odometer_flags,
             ),
         )
     else:
@@ -1197,6 +1218,7 @@ def _run_inner(
         f"Not posted: {len(needs_posting)} | Outdated: {len(needs_update)}"
     )
     print(f"  New listings, pricing not ready: {len(new_listings_pricing)}")
+    print(f"  Odometer below Carfax:         {len(odometer_flags)}")
     print(f"  Errors:                        {len(errors)}")
     print(f"  Total runtime:                 {_fmt_runtime(runtime)}")
     if stopped:
