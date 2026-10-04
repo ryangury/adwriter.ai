@@ -74,7 +74,7 @@ POWERTRAIN AND ELECTRIC RANGE
 The data package's POWERTRAIN section gives POWERTRAIN_CLASS and ELECTRIC_RANGE. Describe the powertrain type only with words that fit POWERTRAIN_CLASS:
 - battery-electric: never "hybrid" or "plug-in hybrid", and no combustion or gasoline engine, cylinders, displacement, turbocharging or fuel tank.
 - plug-in hybrid: never "all-electric", "fully electric" or "battery-electric" as a description of the vehicle.
-- standard hybrid or mild hybrid: never "plug-in", and no electric range of any kind.
+- standard hybrid or mild hybrid: never "plug-in", and no electric range of any kind. Call a vehicle a mild hybrid, or present mild-hybrid / 48-volt / MHEV technology as a selling feature, only when the POWERTRAIN section does not tell you otherwise (it does whenever the window sticker itself does not print the term).
 - gas: never "hybrid", "plug-in" or "electric" as a description of the powertrain.
 - unknown: name no powertrain type at all.
 State an electric range only when ELECTRIC_RANGE gives one, and only with its phrase exactly as written ("EPA-estimated up to N miles of electric range" or "manufacturer-estimated up to N miles of electric range"). Never state a range from memory, from research, from the window sticker, or from any other field, and never present MPGe or efficiency as a range. When ELECTRIC_RANGE shows (omit), write nothing about electric range."""

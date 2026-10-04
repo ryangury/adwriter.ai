@@ -32,9 +32,11 @@ and flag it. Every result is cached per year / make / model / trim in
 feature_cache.db (electric_range), so each trim is looked up once.
 
 check_claims() / strip_violations() are the post-generation check used by
-generate, reprice and the recon top-up: a stated range must be the
-ELECTRIC_RANGE phrase, powertrain-type words must fit the class, and a car
-with no ELECTRIC_RANGE (standard hybrids included) states no range.
+generate, reprice and the recon top-up: a stated range must be within
+RANGE_TOLERANCE_MILES of ELECTRIC_RANGE (the prompts ask for its exact
+phrase; the check compares the number), powertrain-type words must fit the
+class, and a car with no ELECTRIC_RANGE (standard hybrids included) states
+no range.
 """
 from __future__ import annotations
 
@@ -131,6 +133,7 @@ _EPA_LABEL_RE = re.compile(
 )
 _HYBRID_TEXT_RE = re.compile(r"(?<!mild )(?<!mild-)\bHYB(?:RID)?\b", re.I)
 _MILD_TEXT_RE = re.compile(r"\bMHEV\b|\bmild[- ]hybrid\b|\b48[- ]?V(?:olt)?\b|\bEQ\s*Boost\b", re.I)
+_STICKER_MILD_TERM_RE = re.compile(r"\bmild[- ]hybrid\b|\bMHEV\b", re.I)
 _MB_CODE_RE = re.compile(r"\b(?:19|20)\d\d\s+MERCEDES-BENZ\s+([A-Z0-9]+)\b")
 _MB_BEV_CODE_RE = re.compile(r"^(?:EQ[A-Z]|G580)")
 _MB_PHEV_CODE_RE = re.compile(r"^[A-Z]{1,4}\d{2,3}E[A-Z]?\d?$")
@@ -261,18 +264,21 @@ def classify(
     """{"class", "label", "source" ("override" | "signals" | "default"),
     "signals", "flag", "override"}."""
     signals = collect_signals(year_make_model, trim, sticker_text, recon_text)
+    # "mild hybrid" is a selling term only when the sticker itself prints it
+    # (a "48 Volt System" option line alone classes the car, but doesn't).
+    sticker_mild = bool(_STICKER_MILD_TERM_RE.search(sticker_text or ""))
     ov = (overrides if overrides is not None else load_overrides()).get((vin or "").strip().upper())
     if ov:
         cls = ov["class"]
         return {
             "class": cls, "label": CLASS_LABELS[cls], "source": "override",
-            "signals": signals, "flag": None, "override": ov,
+            "signals": signals, "flag": None, "override": ov, "sticker_mild": sticker_mild,
         }
     cls, flag = resolve(signals)
     return {
         "class": cls, "label": CLASS_LABELS[cls],
         "source": "signals" if signals else "default",
-        "signals": signals, "flag": flag, "override": None,
+        "signals": signals, "flag": flag, "override": None, "sticker_mild": sticker_mild,
     }
 
 
@@ -547,7 +553,7 @@ MANUFACTURER_DOMAINS: dict[str, list[str]] = {
     "mini": ["miniusa.com"],
 }
 
-MANUFACTURER_SEARCH_MODEL = "claude-opus-5-5"
+MANUFACTURER_SEARCH_MODEL = "claude-sonnet-4-6"  # same model as the ad-writing calls
 _MFR_LINE_RE = re.compile(r"^RANGE\s*::\s*(.+?)\s*::\s*(.+?)\s*::\s*(.+?)\s*::\s*(\S+)\s*$", re.M)
 
 
@@ -577,12 +583,9 @@ def manufacturer_search(
     try:
         response = None
         for _ in range(4):
-            response = client.beta.messages.create(
+            response = client.messages.create(
                 model=MANUFACTURER_SEARCH_MODEL,
                 max_tokens=16000,
-                betas=["server-side-fallback-2026-07-01"],
-                fallbacks="default",
-                output_config={"effort": "medium"},
                 tools=[{
                     "type": "web_search_20260209", "name": "web_search",
                     "allowed_domains": domains, "max_uses": 6,
@@ -741,6 +744,7 @@ def vehicle_powertrain(
 # post-generation check
 # --------------------------------------------------------------------------- #
 
+RANGE_TOLERANCE_MILES = 1  # a stated range within this of ELECTRIC_RANGE passes
 _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
 _RANGE_NUM_RE = re.compile(r"(?<![\d,.$])(\d{2,3})(?:\s*|-)(?:miles?|mi\b\.?)", re.I)
 _RANGE_CTX_RE = re.compile(
@@ -761,24 +765,22 @@ _COMBUSTION_WORDS = (
     r"|\b\d\.\d[- ]?(?:liter|litre|L)\b|\bturbocharged\b|\b(?:gas|petrol)\s+engine\b"
 )
 _ANY_HYBRID_WORD = r"(?<!mild )(?<!mild-)(?<!non-)(?<!non )\bhybrid\b"
-_MILD_WORDS = r"\bmild[- ]hybrid\b"
+_MILD_WORDS = r"\bmild[- ]hybrid\b|\bMHEV\b"
 _FULL_HYBRID_WORDS = r"\b(?:standard|conventional|self-charging|full)\s+hybrid\b"
 
 TYPE_RULES: dict[str, list[tuple[str, str]]] = {
     BEV: [
         (_PLUGIN_WORDS, "plug-in wording on a battery-electric car"),
         (_ANY_HYBRID_WORD, "hybrid wording on a battery-electric car"),
-        (_MILD_WORDS, "hybrid wording on a battery-electric car"),
         (_COMBUSTION_WORDS, "combustion-engine wording on a battery-electric car"),
     ],
     PHEV: [
         (_BEV_BODY_WORDS, "battery-electric wording on a plug-in hybrid"),
-        (_FULL_HYBRID_WORDS + "|" + _MILD_WORDS, "non-plug-in hybrid wording on a plug-in hybrid"),
+        (_FULL_HYBRID_WORDS, "non-plug-in hybrid wording on a plug-in hybrid"),
     ],
     HYBRID: [
         (_PLUGIN_WORDS, "plug-in wording on a standard hybrid"),
         (_BEV_BODY_WORDS, "battery-electric wording on a standard hybrid"),
-        (_MILD_WORDS, "mild-hybrid wording on a standard hybrid"),
     ],
     MILD: [
         (_PLUGIN_WORDS, "plug-in wording on a mild hybrid"),
@@ -811,8 +813,12 @@ def range_claim_numbers(sentence: str) -> list[int]:
     return []
 
 
-def sentence_problems(sentence: str, cls: str, rng: dict[str, Any] | None) -> list[str]:
-    """Why one sentence breaks the powertrain rules ([] if it doesn't)."""
+def sentence_problems(
+    sentence: str, cls: str, rng: dict[str, Any] | None, *, sticker_mild: bool = False
+) -> list[str]:
+    """Why one sentence breaks the powertrain rules ([] if it doesn't).
+    "Mild hybrid" wording passes only on a mild hybrid whose sticker prints
+    the term (sticker_mild)."""
     problems: list[str] = []
     rng = rng or {}
     nums = range_claim_numbers(sentence)
@@ -822,16 +828,24 @@ def sentence_problems(sentence: str, cls: str, rng: dict[str, Any] | None) -> li
             problems.append(f"states an electric range on a {CLASS_LABELS[cls]} car")
         elif not phrase:
             problems.append("states an electric range but ELECTRIC_RANGE is omitted")
-        elif _ws(phrase) not in _ws(sentence) or any(n != rng.get("miles") for n in nums):
-            problems.append(f"range must be stated as \"{phrase}\" (found {nums or 'other wording'})")
+        elif any(abs(n - rng["miles"]) > RANGE_TOLERANCE_MILES for n in nums):
+            problems.append(f"stated range {nums} differs from ELECTRIC_RANGE ({rng['miles']} miles) by more than {RANGE_TOLERANCE_MILES} mile")
+        elif rng.get("source") == "manufacturer" and re.search(r"\bEPA\b", sentence):
+            problems.append("calls a manufacturer-estimated range EPA")
     for rx, why in TYPE_RULES.get(cls, []):
         if re.search(rx, sentence, re.I):
             problems.append(why)
+    if re.search(_MILD_WORDS, sentence, re.I) and not (cls == MILD and sticker_mild):
+        problems.append(
+            "mild-hybrid wording the sticker does not print" if cls in (MILD, GAS, UNKNOWN)
+            else f"mild-hybrid wording on a {CLASS_LABELS[cls]} car"
+        )
     return problems
 
 
 def check_claims(
-    text: str, cls: str, rng: dict[str, Any] | None, protected: list[str] | None = None
+    text: str, cls: str, rng: dict[str, Any] | None, protected: list[str] | None = None,
+    *, sticker_mild: bool = False,
 ) -> list[tuple[str, list[str]]]:
     """[(sentence, [problems])] for every sentence that breaks the rules.
     Sentences in `protected` (pipeline-built, verbatim) are never flagged."""
@@ -840,21 +854,32 @@ def check_claims(
     for s in _sentences(text):
         if _ws(s) in keep:
             continue
-        p = sentence_problems(s, cls, rng)
+        p = sentence_problems(s, cls, rng, sticker_mild=sticker_mild)
         if p:
             out.append((s, p))
     return out
 
 
+MILD_ONLY_PROBLEMS = {"mild-hybrid wording the sticker does not print"}
+
+
 def strip_violations(
-    text: str, cls: str, rng: dict[str, Any] | None, protected: list[str] | None = None
+    text: str, cls: str, rng: dict[str, Any] | None, protected: list[str] | None = None,
+    *, sticker_mild: bool = False, keep_mild_only: bool = False,
 ) -> tuple[str, list[tuple[str, list[str]]]]:
     """Remove every offending sentence, paragraph by paragraph. Returns
-    (new text, [(removed sentence, problems)])."""
+    (new text, [(removed sentence, problems)]). With keep_mild_only (existing
+    copy, no model call to rewrite it), a sentence whose only problem is
+    unprinted mild-hybrid wording stays — it is usually a whole equipment list
+    — and is reported with "(kept)" prefixed to its problems."""
     removed: list[tuple[str, list[str]]] = []
     paras = []
     for para in re.split(r"\n\s*\n", text or ""):
-        bad = check_claims(para, cls, rng, protected)
+        bad = check_claims(para, cls, rng, protected, sticker_mild=sticker_mild)
+        if keep_mild_only:
+            kept = [(s, p) for s, p in bad if set(p) <= MILD_ONLY_PROBLEMS]
+            removed.extend((s, ["(kept) " + x for x in p]) for s, p in kept)
+            bad = [b for b in bad if b not in kept]
         if bad:
             drop = {s for s, _ in bad}
             para = " ".join(s for s in _sentences(para) if s not in drop)
@@ -872,6 +897,8 @@ def data_package_lines(pt: dict[str, Any]) -> list[str]:
         lines.append("  (set by a manual override)")
     if pt.get("class") == UNKNOWN:
         lines.append("  Signals disagree: name no powertrain type (no hybrid, plug-in, electric or gas wording).")
+    if not (pt.get("class") == MILD and pt.get("sticker_mild")):
+        lines.append("  Do not call this vehicle a mild hybrid or present mild-hybrid / MHEV technology as a selling feature (the sticker does not print that term).")
     if pt.get("class") in PLUG_IN and rng.get("phrase"):
         lines.append(f"ELECTRIC_RANGE: {rng['phrase']}")
         lines.append("  (state it only with exactly this phrase; never another range figure)")

@@ -1879,18 +1879,28 @@ def powertrain_for_package(pkg: dict) -> dict:
 
 
 def strip_powertrain_claims(
-    text: str, pt: dict, *, stock: str, label: str, protected: list[str] | None = None
+    text: str, pt: dict, *, stock: str, label: str, protected: list[str] | None = None,
+    existing: bool = False,
 ) -> tuple[str, list[str]]:
     """Remove every sentence breaking the powertrain rules (see powertrain.py)
-    and log each one. Returns (text, [notes for the feedback block])."""
-    new, removed = strip_violations(text, pt.get("class") or UNKNOWN, pt.get("range"), protected)
+    and log each one. Returns (text, [notes for the feedback block]).
+    `existing` is copy written before this run (no model call to fix it): a
+    sentence whose only problem is mild-hybrid wording the sticker doesn't
+    print is kept and flagged rather than deleted."""
+    new, removed = strip_violations(
+        text, pt.get("class") or UNKNOWN, pt.get("range"), protected,
+        sticker_mild=bool(pt.get("sticker_mild")), keep_mild_only=existing,
+    )
     notes = []
     for sentence, problems in removed:
+        kept = all(p.startswith("(kept) ") for p in problems)
+        verb = "kept, needs a rewrite" if kept else "removed sentence"
         print(
-            f"[{label}] {stock}: removed sentence ({'; '.join(problems)}): {' '.join(sentence.split())}",
+            f"[{label}] {stock}: {verb} ({'; '.join(problems)}): {' '.join(sentence.split())}",
             file=sys.stderr,
         )
-        notes.append(f"removed after retry ({'; '.join(problems)}): {' '.join(sentence.split())}")
+        what = "existing copy, kept" if kept else ("removed from existing copy" if existing else "removed after retry")
+        notes.append(f"{what} ({'; '.join(problems)}): {' '.join(sentence.split())}")
     return new, notes
 
 
@@ -1927,7 +1937,10 @@ def _generate_from_package(pkg: dict) -> tuple[str, str | None]:
         leaks = find_tool_output_leaks(ad_copy)
         hits = find_banned_scarcity_phrases(ad_copy, pkg.get("scarcity_sentence"))
         missing = missing_required_sentences(ad_copy, required)
-        pt_bad = check_claims(ad_copy, pt.get("class") or UNKNOWN, pt.get("range"), protected)
+        pt_bad = check_claims(
+            ad_copy, pt.get("class") or UNKNOWN, pt.get("range"), protected,
+            sticker_mild=bool(pt.get("sticker_mild")),
+        )
         if not leaks and not hits and not missing and not pt_bad:
             return _done(ad_copy, feedback)
         problems = (
@@ -2409,7 +2422,9 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
     # Claude sees it: the reprice prompt keeps equipment sentences verbatim,
     # so a retry could never fix them.
     pt = powertrain_for(stock)
-    clean_p2, pt_notes = strip_powertrain_claims(clean_p2 or old_p2, pt, stock=stock, label="reprice")
+    clean_p2, pt_notes = strip_powertrain_claims(
+        clean_p2 or old_p2, pt, stock=stock, label="reprice", existing=True
+    )
     # Python-built sentences the new paragraph must carry verbatim: the fresh
     # proof-point sentence, plus the warranty and shipping sentences the old
     # paragraph already had (a reprice does not rebuild those). Scarcity is
@@ -2443,12 +2458,23 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
             user=data_block, size_text=clean_p2 or old_p2, floor=REPRICE_MIN_TOKENS,
         )
 
-    protected = list(required.values())
+    # Sentences kept from the existing paragraph (mild-hybrid wording only)
+    # come back verbatim from the rewrite; they are flagged above, not retried.
+    kept_existing = [
+        s for s, _ in check_claims(
+            clean_p2, pt.get("class") or UNKNOWN, pt.get("range"),
+            sticker_mild=bool(pt.get("sticker_mild")),
+        )
+    ]
+    protected = list(required.values()) + kept_existing
     for attempt in (1, 2):
         new_p2 = _rewrite()
         hits = find_banned_scarcity_phrases(new_p2)
         missing = missing_required_sentences(new_p2, required)
-        pt_bad = check_claims(new_p2, pt.get("class") or UNKNOWN, pt.get("range"), protected)
+        pt_bad = check_claims(
+            new_p2, pt.get("class") or UNKNOWN, pt.get("range"), protected,
+            sticker_mild=bool(pt.get("sticker_mild")),
+        )
         if not hits and not missing and not pt_bad:
             break
         problems = ([f"banned scarcity wording {sorted(set(hits))}"] if hits else []) + (
@@ -2487,9 +2513,9 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
     )
     # The paragraphs a reprice leaves alone get the same powertrain check
     # (no model call there, so offending sentences are removed and logged).
-    p1, n1 = strip_powertrain_claims(p1, pt, stock=stock, label="reprice")
-    p3, n3 = strip_powertrain_claims(p3, pt, stock=stock, label="reprice")
-    p4, n4 = strip_powertrain_claims(p4, pt, stock=stock, label="reprice")
+    p1, n1 = strip_powertrain_claims(p1, pt, stock=stock, label="reprice", existing=True)
+    p3, n3 = strip_powertrain_claims(p3, pt, stock=stock, label="reprice", existing=True)
+    p4, n4 = strip_powertrain_claims(p4, pt, stock=stock, label="reprice", existing=True)
     pt_notes.extend(n1 + n3 + n4)
     if pt_notes or pt.get("flags"):
         entry["powertrain_flags"] = list(pt.get("flags") or []) + pt_notes
@@ -2615,7 +2641,9 @@ def _topup_powertrain_check(stock: str, entry: dict) -> None:
     notes: list[str] = []
     for key in ("paragraph_one", "paragraph_two", "paragraph_three", "paragraph_four", "current_ad_text"):
         if entry.get(key):
-            entry[key], n = strip_powertrain_claims(entry[key], pt, stock=stock, label="update_recon")
+            entry[key], n = strip_powertrain_claims(
+                entry[key], pt, stock=stock, label="update_recon", existing=True
+            )
             if key != "current_ad_text":
                 notes.extend(n)
     if notes or pt.get("flags"):
