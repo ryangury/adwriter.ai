@@ -104,9 +104,15 @@ A feature that buyers in this segment specifically search for (ventilated seats,
 
 Before deciding a feature's tier for a non-MB vehicle, verify its trim-level availability via web search."""
 
+# Store Google rating and review count, used by both closer paragraphs below.
+# As of 2026-10-04: 5,218 reviews, 4.9 stars; update when the count passes the
+# next thousand.
+STORE_REVIEW_COUNT_TEXT = "5,000-plus"
+STORE_RATING = "4.9"
+
 STORE_CLOSER_PARAGRAPH = (
     "Mercedes-Benz of Durham is the number one Certified Pre-Owned Mercedes-Benz "
-    "dealer in the Triangle, with 4.9 stars across 4,000-plus Google reviews, part "
+    f"dealer in the Triangle, with {STORE_RATING} stars across {STORE_REVIEW_COUNT_TEXT} Google reviews, part "
     "of the Hendrick Automotive Group. Our pricing is researched daily against live "
     "market data so you can buy with confidence and skip the back-and-forth. Find "
     "us at the Hendrick Automotive Mall on Kentington Drive in Durham, serving "
@@ -119,8 +125,8 @@ STORE_CLOSER_PARAGRAPH = (
 # courtesy (status 10/16) only: its "number one Certified Pre-Owned
 # Mercedes-Benz dealer" claim doesn't belong on non-MB-CPO inventory.
 HENDRICK_STORE_CLOSER_PARAGRAPH = (
-    "Mercedes-Benz of Durham is part of the Hendrick Automotive Group, rated 4.9 "
-    "stars across 4,000-plus Google reviews. Located at the Hendrick Automotive Mall "
+    f"Mercedes-Benz of Durham is part of the Hendrick Automotive Group, rated {STORE_RATING} "
+    f"stars across {STORE_REVIEW_COUNT_TEXT} Google reviews. Located at the Hendrick Automotive Mall "
     "on Kentington Drive in Durham, just minutes from Southpoint Mall. Six stores, "
     "nine brands on one campus. Pricing is researched daily against live market data "
     "so you can shop with confidence and buy without the back-and-forth."
