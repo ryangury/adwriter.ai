@@ -133,6 +133,14 @@ _EPA_LABEL_RE = re.compile(
 )
 _HYBRID_TEXT_RE = re.compile(r"(?<!mild )(?<!mild-)\bHYB(?:RID)?\b", re.I)
 _MILD_TEXT_RE = re.compile(r"\bMHEV\b|\bmild[- ]hybrid\b|\b48[- ]?V(?:olt)?\b|\bEQ\s*Boost\b", re.I)
+# Python-built paragraph-two sentence for Mercedes-Benz mild hybrids whose
+# sticker prints the 48-volt system line (see mild_sentence_for()).
+MILD_HYBRID_SENTENCE = (
+    "A 48-volt mild-hybrid system (Mercedes-Benz EQ Boost) adds a short electric boost, "
+    "recovers braking energy and restarts the engine almost imperceptibly at stops. "
+    "There is nothing to plug in."
+)
+_STICKER_48V_RE = re.compile(r"\b48[- ]?V(?:olt)?\b[^\n]{0,20}\bsystem\b", re.I)
 _STICKER_MILD_TERM_RE = re.compile(r"\bmild[- ]hybrid\b|\bMHEV\b", re.I)
 _MB_CODE_RE = re.compile(r"\b(?:19|20)\d\d\s+MERCEDES-BENZ\s+([A-Z0-9]+)\b")
 _MB_BEV_CODE_RE = re.compile(r"^(?:EQ[A-Z]|G580)")
@@ -267,19 +275,40 @@ def classify(
     # "mild hybrid" is a selling term only when the sticker itself prints it
     # (a "48 Volt System" option line alone classes the car, but doesn't).
     sticker_mild = bool(_STICKER_MILD_TERM_RE.search(sticker_text or ""))
+    m48 = _STICKER_48V_RE.search(sticker_text or "")
+    sticker_48v = " ".join(m48.group(0).split()) if m48 else None
     ov = (overrides if overrides is not None else load_overrides()).get((vin or "").strip().upper())
     if ov:
         cls = ov["class"]
         return {
             "class": cls, "label": CLASS_LABELS[cls], "source": "override",
             "signals": signals, "flag": None, "override": ov, "sticker_mild": sticker_mild,
+            "sticker_48v": sticker_48v,
         }
     cls, flag = resolve(signals)
     return {
         "class": cls, "label": CLASS_LABELS[cls],
         "source": "signals" if signals else "default",
         "signals": signals, "flag": flag, "override": None, "sticker_mild": sticker_mild,
+        "sticker_48v": sticker_48v,
     }
+
+
+def mild_sentence_for(info: dict[str, Any], make: str | None) -> str | None:
+    """MILD_HYBRID_SENTENCE when every gate holds: Mercedes-Benz, class mild
+    hybrid, and the window sticker prints the 48-volt system line."""
+    if (make or "").strip().lower() != "mercedes-benz":
+        return None
+    if info.get("class") != MILD or not info.get("sticker_48v"):
+        return None
+    return MILD_HYBRID_SENTENCE
+
+
+def mild_wording_ok(pt: dict[str, Any]) -> bool:
+    """Whether the model's own mild-hybrid wording may stand: only when the
+    sticker prints the term and no MILD_HYBRID_SENTENCE is carrying it (the
+    term never appears twice)."""
+    return bool(pt.get("sticker_mild")) and not pt.get("mild_sentence")
 
 
 def cached_texts(vin: str | None) -> tuple[str, str]:
@@ -736,6 +765,7 @@ def vehicle_powertrain(
     else:
         rng = _range_info(None, None, None, None, None, False)
     info["range"] = rng
+    info["mild_sentence"] = mild_sentence_for(info, make)
     info["flags"] = [f for f in (info.get("flag"), rng.get("flag")) if f]
     return info
 
@@ -848,8 +878,10 @@ def check_claims(
     *, sticker_mild: bool = False,
 ) -> list[tuple[str, list[str]]]:
     """[(sentence, [problems])] for every sentence that breaks the rules.
-    Sentences in `protected` (pipeline-built, verbatim) are never flagged."""
-    keep = {_ws(p) for p in protected or [] if p}
+    Sentences in `protected` (pipeline-built, verbatim) are never flagged,
+    and on a mild hybrid neither is MILD_HYBRID_SENTENCE."""
+    sources = [p for p in protected or [] if p] + ([MILD_HYBRID_SENTENCE] if cls == MILD else [])
+    keep = {_ws(s) for p in sources for s in _sentences(p)}
     out = []
     for s in _sentences(text):
         if _ws(s) in keep:
@@ -897,7 +929,14 @@ def data_package_lines(pt: dict[str, Any]) -> list[str]:
         lines.append("  (set by a manual override)")
     if pt.get("class") == UNKNOWN:
         lines.append("  Signals disagree: name no powertrain type (no hybrid, plug-in, electric or gas wording).")
-    if not (pt.get("class") == MILD and pt.get("sticker_mild")):
+    if pt.get("mild_sentence"):
+        lines.append(
+            "MILD_HYBRID_SENTENCE (use verbatim in paragraph two, right after the engine/powertrain "
+            "sentence, or after the opening sentence when there is none; write no other mild-hybrid, "
+            "48-volt or EQ Boost wording):"
+        )
+        lines.append(pt["mild_sentence"])
+    elif not (pt.get("class") == MILD and pt.get("sticker_mild")):
         lines.append("  Do not call this vehicle a mild hybrid or present mild-hybrid / MHEV technology as a selling feature (the sticker does not print that term).")
     if pt.get("class") in PLUG_IN and rng.get("phrase"):
         lines.append(f"ELECTRIC_RANGE: {rng['phrase']}")

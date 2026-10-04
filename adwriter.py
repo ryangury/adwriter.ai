@@ -43,6 +43,8 @@ from feature_cache import (
     save_trim_knowledge,
 )
 from powertrain import (
+    MILD_HYBRID_SENTENCE,
+    mild_wording_ok,
     CLASS_LABELS,
     UNKNOWN,
     check_claims,
@@ -1704,6 +1706,15 @@ REQUIRED_SENTENCE_KEYS = (
     "scarcity_sentence",
     "warranty_sentence",
     "shipping_sentence",
+    "mild_hybrid_sentence",
+)
+
+# Paragraph-two sentence that names the engine / powertrain; MILD_HYBRID_SENTENCE
+# goes right after it (or after the opening sentence when there is none).
+_ENGINE_SENTENCE_RE = re.compile(
+    r"\b(?:engine|powertrain|V-?(?:6|8|12)|inline[- ](?:four|six|4|6)|cylinder|\d\.\d[- ]?(?:liter|L)\b"
+    r"|turbocharged|horsepower|hp\b)",
+    re.IGNORECASE,
 )
 
 # A price claim of the model's own: anything stating the asking price, or a dollar
@@ -1800,7 +1811,7 @@ def insert_required_sentences(
         paras["paragraph_one"] = " ".join(units)
         print(f"{tag} inserted provenance sentence into paragraph one", file=sys.stderr)
 
-    p2_keys = [k for k in ("proof_point_sentence", "scarcity_sentence", "warranty_sentence", "shipping_sentence") if k in missing]
+    p2_keys = [k for k in ("proof_point_sentence", "scarcity_sentence", "warranty_sentence", "shipping_sentence", "mild_hybrid_sentence") if k in missing]
     if p2_keys:
         present = [s for k, s in required.items() if k not in missing and k != "provenance_sentence"]
         units = _units(paras["paragraph_two"], present)
@@ -1836,6 +1847,11 @@ def insert_required_sentences(
             units.insert(len(units) if at is None else at, required["warranty_sentence"])
         if "shipping_sentence" in p2_keys:
             units.append(required["shipping_sentence"])
+        if "mild_hybrid_sentence" in p2_keys:
+            eng = next(
+                (i for i, u in enumerate(units) if not is_req(u) and _ENGINE_SENTENCE_RE.search(u)), None
+            )
+            units.insert((eng + 1) if eng is not None else min(1, len(units)), required["mild_hybrid_sentence"])
         paras["paragraph_two"] = " ".join(units)
         for k in p2_keys:
             print(f"{tag} inserted {k.replace('_', ' ')} into paragraph two", file=sys.stderr)
@@ -1889,7 +1905,7 @@ def strip_powertrain_claims(
     print is kept and flagged rather than deleted."""
     new, removed = strip_violations(
         text, pt.get("class") or UNKNOWN, pt.get("range"), protected,
-        sticker_mild=bool(pt.get("sticker_mild")), keep_mild_only=existing,
+        sticker_mild=mild_wording_ok(pt), keep_mild_only=existing,
     )
     notes = []
     for sentence, problems in removed:
@@ -1920,9 +1936,13 @@ def _generate_from_package(pkg: dict) -> tuple[str, str | None]:
     position and logged."""
     stock = pkg.get("stock_number")
     vehicle = pkg.get("vehicle") or {}
-    required = required_sentences_from(pkg)
     pt = pkg.get("powertrain") or powertrain_for_package(pkg)
     pkg["powertrain"] = pt
+    if pt.get("mild_sentence"):
+        pkg["mild_hybrid_sentence"] = pt["mild_sentence"]
+    else:
+        pkg.pop("mild_hybrid_sentence", None)
+    required = required_sentences_from(pkg)
     protected = list(required.values())
     pt_flags = list(pt.get("flags") or [])
 
@@ -1939,7 +1959,7 @@ def _generate_from_package(pkg: dict) -> tuple[str, str | None]:
         missing = missing_required_sentences(ad_copy, required)
         pt_bad = check_claims(
             ad_copy, pt.get("class") or UNKNOWN, pt.get("range"), protected,
-            sticker_mild=bool(pt.get("sticker_mild")),
+            sticker_mild=mild_wording_ok(pt),
         )
         if not leaks and not hits and not missing and not pt_bad:
             return _done(ad_copy, feedback)
@@ -2145,6 +2165,15 @@ def normalize_stock(stock: str | None) -> str:
     return (stock or "").strip().lstrip("#").upper()
 
 
+def stamp_mild_sentence(entry: dict, today: str | None = None) -> None:
+    """mild_hybrid_sentence_first_date: the first day this ad carried
+    MILD_HYBRID_SENTENCE (set once, never moved)."""
+    if entry.get("mild_hybrid_sentence_first_date"):
+        return
+    if _ws(MILD_HYBRID_SENTENCE) in _ws(entry.get("current_ad_text")):
+        entry["mild_hybrid_sentence_first_date"] = today or date.today().isoformat()
+
+
 def record_ad(
     history: dict,
     stock: str,
@@ -2186,6 +2215,7 @@ def record_ad(
     entry.pop("stale_phrases", None)
     entry["verification_note"] = None
     entry.pop("generation_flag", None)
+    stamp_mild_sentence(entry, today)
     history[stock] = entry
     return entry
 
@@ -2441,6 +2471,8 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
         required["warranty_sentence"] = warranty
     if _ws(SHIPPING_SENTENCE) in _ws(old_p2):
         required["shipping_sentence"] = SHIPPING_SENTENCE
+    if pt.get("mild_sentence") and _ws(pt["mild_sentence"]) in _ws(old_p2):
+        required["mild_hybrid_sentence"] = pt["mild_sentence"]
     data_block = _format_reprice_package(
         clean_p2 or old_p2,
         advertised_price,
@@ -2463,7 +2495,7 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
     kept_existing = [
         s for s, _ in check_claims(
             clean_p2, pt.get("class") or UNKNOWN, pt.get("range"),
-            sticker_mild=bool(pt.get("sticker_mild")),
+            sticker_mild=mild_wording_ok(pt),
         )
     ]
     protected = list(required.values()) + kept_existing
@@ -2473,7 +2505,7 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
         missing = missing_required_sentences(new_p2, required)
         pt_bad = check_claims(
             new_p2, pt.get("class") or UNKNOWN, pt.get("range"), protected,
-            sticker_mild=bool(pt.get("sticker_mild")),
+            sticker_mild=mild_wording_ok(pt),
         )
         if not hits and not missing and not pt_bad:
             break
@@ -2542,6 +2574,7 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
     entry["identity_confirmed"] = None
     entry["verification_note"] = None
     entry.pop("generation_flag", None)    # a completed rewrite clears an earlier failure flag
+    stamp_mild_sentence(entry)
     history[stock] = entry
     save_ad_history(history)
     return full
@@ -2650,6 +2683,7 @@ def _topup_powertrain_check(stock: str, entry: dict) -> None:
         entry["powertrain_flags"] = list(pt.get("flags") or []) + notes
     else:
         entry.pop("powertrain_flags", None)
+    stamp_mild_sentence(entry)
 
 
 def update_recon(stock_number: str, status_code: int | None = None) -> str:
