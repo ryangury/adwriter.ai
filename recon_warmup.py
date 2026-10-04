@@ -113,7 +113,9 @@ def warmup(*, limit: int | None = None, headless: bool = True) -> int:
 
             # DOM-scraped line items are cached as-is — no vision overlay (see
             # aggregator._apply_recon_vision()'s docstring).
-            recon_complete = _recon_is_complete(recon_data.get("line_items", []))
+            recon_complete = _recon_is_complete(
+                recon_data.get("line_items", []), recon_data.get("header_status")
+            )
             save_recon(
                 vin, stock, recon_data, recon_complete,
                 image_path=recon_data.get("recon_image_path"),

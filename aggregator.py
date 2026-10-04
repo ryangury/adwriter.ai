@@ -3470,11 +3470,12 @@ def _recon_cached_info(stock: str) -> dict[str, Any]:
     return {"vin": row.get("vin"), "complete": bool(row.get("recon_complete")), "rows": rows}
 
 
-def _recon_details(items: list[dict[str, Any]]) -> dict[str, Any]:
-    complete, path, fqc = _recon_decision(items)
+def _recon_details(items: list[dict[str, Any]], header_status: str | None = None) -> dict[str, Any]:
+    complete, path, fqc = _recon_decision(items, header_status)
     return {
         "complete": complete,
         "path": path,
+        "header_status": header_status,
         "row_count": len(items),
         "fqc_present": fqc is not None,
         "fqc_completed": bool(fqc.get("completed")) if fqc is not None else None,
@@ -3487,18 +3488,20 @@ def _log_recon_verdict(stock: str, d: dict[str, Any], note: str = "") -> None:
         f"yes ({d['fqc_status'] or 'no status'})" if d["fqc_present"] else "no"
     )
     print(
-        f"[recon-gate] {stock}: incomplete - rows={d['row_count']}, FQC row={fqc}, "
-        f"decided by {d['path']}{note}",
+        f"[recon-gate] {stock}: incomplete - status={d.get('header_status') or 'n/a'}, "
+        f"rows={d['row_count']}, FQC row={fqc}, decided by {d['path']}{note}",
         file=sys.stderr,
     )
 
 
-def cached_recon_still_complete(stock: str, items: list[dict[str, Any]]) -> bool:
+def cached_recon_still_complete(
+    stock: str, items: list[dict[str, Any]], header_status: str | None = None
+) -> bool:
     """Re-run the completeness rule on cached recon items (no scrape). A cached
     row flagged complete can hold items that say otherwise (the flag is sticky:
     save_recon() never lowers it). When the rule says incomplete this logs the
     evidence and returns False; the stored flag is left alone."""
-    d = _recon_details(items)
+    d = _recon_details(items, header_status)
     if d["complete"]:
         return True
     print(
@@ -3524,7 +3527,7 @@ def scrape_recon_checked(
     `retried`. Every incomplete verdict is logged with its evidence."""
     cached = cached if cached is not None else _recon_cached_info(stock)
     raw = rv.scrape_work_order(stock)
-    d = _recon_details(raw.get("line_items", []))
+    d = _recon_details(raw.get("line_items", []), raw.get("header_status"))
     d["retried"] = False
     if not d["complete"]:
         dropped = bool(
@@ -3547,7 +3550,7 @@ def scrape_recon_checked(
             )
             time.sleep(RECON_RETRY_WAIT_SECONDS if wait_seconds is None else wait_seconds)
             raw2 = rv.scrape_work_order(stock)
-            d2 = _recon_details(raw2.get("line_items", []))
+            d2 = _recon_details(raw2.get("line_items", []), raw2.get("header_status"))
             d2["retried"] = True
             if d2["complete"]:
                 print(f"[recon-gate] {stock}: rescrape found recon complete (first scrape rows={d['row_count']})", file=sys.stderr)
@@ -3781,11 +3784,21 @@ def _carfax_disqualifying_gate(
     }
 
 
+RECON_DONE_HEADER_STATUS = "Closed/Ready For Sale"
+
+
 def _recon_decision(
     line_items: list[dict[str, Any]],
+    header_status: str | None = None,
 ) -> tuple[bool, str, dict[str, Any] | None]:
     """(complete, deciding path, the Final Quality Control row or None). The one
-    place the completeness rule lives; _recon_is_complete() is its boolean."""
+    place the completeness rule lives; _recon_is_complete() is its boolean.
+
+    A work order whose status (ReconVision's search results, kept as
+    header_status by the scraper) reads exactly "Closed/Ready For Sale" is
+    complete, whatever its rows say: ReconVision closes the order only when
+    the car is ready. Every other status falls through to the row rules below
+    (unchanged — "Completed by Vendor Add PO" still does not count)."""
     fqc = next(
         (
             li
@@ -3796,6 +3809,8 @@ def _recon_decision(
         ),
         None,
     )
+    if header_status is not None and " ".join(header_status.split()) == RECON_DONE_HEADER_STATUS:
+        return True, f"work order status {RECON_DONE_HEADER_STATUS}", fqc
     if fqc is not None:
         return bool(fqc.get("completed")), "Final Quality Control", fqc
     close_ro = next(
@@ -3816,7 +3831,7 @@ def _recon_decision(
     return all(li.get("completed") for li in service_items), "all service items", None
 
 
-def _recon_is_complete(line_items: list[dict[str, Any]]) -> bool:
+def _recon_is_complete(line_items: list[dict[str, Any]], header_status: str | None = None) -> bool:
     """Recon is complete when the 'Final Quality Control' task is completed —
     its status is authoritative whenever the work order has one. Close RO can
     close before QC finishes, so it is ignored when FQC is present. Only a
@@ -3833,35 +3848,11 @@ def _recon_is_complete(line_items: list[dict[str, Any]]) -> bool:
 
     Line items only carry kind "task" (workflow steps: Check In, Pre-Wash,
     Close RO, Final QC, ...) or "service" (the actual repair lines, with their
-    labor/parts costs), so "service" is the complete set of real work."""
-    fqc = next(
-        (
-            li
-            for li in line_items
-            if li.get("kind") == "task"
-            and re.sub(r"[^a-z]", "", (li.get("section") or "").lower())
-            == "finalqualitycontrol"
-        ),
-        None,
-    )
-    if fqc is not None:
-        return bool(fqc.get("completed"))
-    close_ro = next(
-        (
-            li
-            for li in line_items
-            if re.sub(r"[^a-z]", "", (li.get("section") or "").lower()) == "closero"
-        ),
-        None,
-    )
-    if close_ro is not None:
-        return bool(close_ro.get("completed"))
-    service_items = [
-        li for li in line_items if li.get("kind") == "service" and not li.get("rejected")
-    ]
-    if not service_items:
-        return False
-    return all(li.get("completed") for li in service_items)
+    labor/parts costs), so "service" is the complete set of real work.
+
+    A "Closed/Ready For Sale" work-order status overrides all of the above
+    (see _recon_decision(), which this delegates to)."""
+    return _recon_decision(line_items, header_status)[0]
 
 
 def check_recon(
@@ -4058,7 +4049,7 @@ def aggregate(
                 recon_raw = get_recon(expected_vin) or {}
                 items = recon_raw.get("line_items", [])
                 recon_status = "cache_hit"
-                if not cached_recon_still_complete(stock, items):
+                if not cached_recon_still_complete(stock, items, recon_raw.get("header_status")):
                     # The cached flag says complete but the stored items say
                     # otherwise: treat recon as incomplete for this call (no
                     # scrape, stored flag untouched - the gate's two-check

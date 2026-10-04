@@ -5651,6 +5651,14 @@ class ReconVisionScraper(_BrowserSession):
             return "archived"
         return "unknown"
 
+    @staticmethod
+    def _wo_status_text(row_text: str | None) -> str | None:
+        """The status column of a work-order search-result row, exactly as
+        shown with whitespace collapsed: "PMB4201190 Closed/Ready For Sale
+        09/21/2026 3:07PM" -> "Closed/Ready For Sale"."""
+        m = re.match(r"\s*\S+\s+(.+?)\s+\d{2}/\d{2}/\d{4}\b", " ".join((row_text or "").split()))
+        return m.group(1) if m else None
+
     def find_work_order(self, stock_number: str) -> str | None:
         """Search by stock number and resolve to a single work-order id (digits
         in /work_orders/<id>).
@@ -5715,8 +5723,14 @@ class ReconVisionScraper(_BrowserSession):
                 f"See {DEBUG_DIR}/ for a snapshot."
             )
 
+        # Status of every matching work order, and of the one selected below
+        # (scrape_work_order() reports it as header_status).
+        self.last_wo_statuses = {wid: self._wo_status_text(by_id.get(wid)) for wid in matches}
+        self.last_wo_status = None
+
         if len(matches) == 1:
             wid = matches[0]
+            self.last_wo_status = self.last_wo_statuses.get(wid)
             print(f"[scraper] matched work order {wid}")
             return wid
 
@@ -5733,6 +5747,7 @@ class ReconVisionScraper(_BrowserSession):
         for tier in ("active", "archived", "unknown"):
             if buckets[tier]:
                 wid = max(buckets[tier], key=lambda w: int(w))
+                self.last_wo_status = self.last_wo_statuses.get(wid)
                 print(
                     f"[scraper] {len(matches)} work orders for stock #{stock_bare} "
                     f"({summary}) — selected {tier} work order {wid}"
@@ -5759,6 +5774,7 @@ class ReconVisionScraper(_BrowserSession):
             "scraped_at": datetime.now(timezone.utc).isoformat(),
             "stock_number": stock_number.strip().lstrip("#"),
             "work_order_id": None,
+            "header_status": None,
             "inventory_number": None,
             "repair_order_number": None,
             "vin": None,
@@ -5827,6 +5843,9 @@ class ReconVisionScraper(_BrowserSession):
             "scraped_at": datetime.now(timezone.utc).isoformat(),
             "stock_number": stock_number.strip().lstrip("#"),
             "work_order_id": wo_id,
+            # The work order's status as ReconVision's search results show it
+            # (e.g. "Closed/Ready For Sale"); see aggregator._recon_decision().
+            "header_status": getattr(self, "last_wo_status", None),
             "inventory_number": _find("Inv"),
             "repair_order_number": _find("RO"),
             "vin": vin,
