@@ -40,14 +40,18 @@ from feature_cache import (
     save_feature,
     save_trim_knowledge,
 )
-from towing import towing_for, unverified_tow_sentences
+from towing import tow_figures as _tow_figures_in
+from towing import towing_for, towing_sentence, unverified_tow_sentences
 from vehicle_cache import get_window_sticker
 from powertrain import (
     MILD_HYBRID_SENTENCE,
     mild_wording_ok,
     CLASS_LABELS,
     UNKNOWN,
+    cached_texts,
     check_claims,
+    classify,
+    split_ymm,
     data_package_lines,
     engine_problems,
     flags_block,
@@ -471,6 +475,29 @@ def read_vehicle_data() -> str:
 # works but has no dynamic filtering.
 WEB_SEARCH_TOOL = {"type": "web_search_20260209", "name": "web_search"}
 
+# Allow-list for the ad-writing call's web search: the vehicle make's own
+# domains (towing.allowed_domains: manufacturer + its fleet / tow-guide sites)
+# plus the federal / safety sources below. The tool takes allowed_domains OR
+# blocked_domains, never both, so an allow-list is what keeps forums, Reddit,
+# YouTube and content farms out. OFF until approved: with it on, third-party
+# feature pages (Bose, SiriusXM, ...) can no longer be searched.
+GENERATE_SEARCH_ALLOWLIST = False
+GENERATE_SEARCH_COMMON_DOMAINS = ["fueleconomy.gov", "nhtsa.gov", "iihs.org"]
+
+
+def web_search_tool_for(make: str | None) -> dict:
+    """The ad-writing call's web search tool: unrestricted, or (with
+    GENERATE_SEARCH_ALLOWLIST on and a make with known domains) limited to the
+    make's domains plus GENERATE_SEARCH_COMMON_DOMAINS."""
+    if not GENERATE_SEARCH_ALLOWLIST:
+        return WEB_SEARCH_TOOL
+    from towing import allowed_domains
+
+    make_domains = allowed_domains(make)
+    if not make_domains:
+        return WEB_SEARCH_TOOL
+    return {**WEB_SEARCH_TOOL, "allowed_domains": sorted(set(make_domains + GENERATE_SEARCH_COMMON_DOMAINS))}
+
 _RESEARCH_RE = re.compile(
     r"===RESEARCH===\s*\n(.*?)\n\s*===END RESEARCH===", re.DOTALL | re.IGNORECASE
 )
@@ -716,11 +743,14 @@ def towing_package_lines(tow: dict | None) -> list[str]:
     if not tow or not tow.get("triggered"):
         return []
     if tow.get("rating"):
+        how = ("set by a manual override" if tow.get("override")
+               else f"verified on a manufacturer page for this exact configuration ({tow['config_text']}; {tow.get('source_url')})")
         return [
             "",
-            f"TOWING CAPACITY: {tow['rating']:,} lbs — verified on a manufacturer page for this exact "
-            f"configuration ({tow['config_text']}; {tow.get('source_url')}). State exactly this figure "
-            "in a sentence of its own; no other tow figure.",
+            f"TOWING CAPACITY: {tow['rating']:,} lbs — {how}.",
+            "TOWING_SENTENCE (use verbatim in paragraph two, right after the engine sentence; "
+            "state no other tow figure anywhere):",
+            tow.get("sentence") or towing_sentence(tow["rating"]),
         ]
     return [
         "",
@@ -749,11 +779,18 @@ def towing_for_package(pkg: dict) -> dict:
     snap = _snapshot_vehicle(stock) if stock else {}
     msrp = pkg.get("msrp_data") or {}
     raw = _sticker_text_for(pkg)
-    names =[o.get("name") or "" for o in (msrp.get("option_packages") or []) + (msrp.get("added_options_all") or [])]
+    names = [o.get("name") or "" for o in (msrp.get("option_packages") or []) + (msrp.get("added_options_all") or [])]
+    vin = snap.get("vin") or v.get("vin")
+    ymm = snap.get("year_make_model") or v.get("year_make_model")
+    trim = snap.get("trim") or v.get("trim_body")
     try:
+        pclass = (pkg.get("powertrain") or {}).get("class")
+        if not pclass and vin:
+            st, rc = cached_texts(vin)
+            pclass = classify(vin, ymm, trim, sticker_text=st, recon_text=rc)["class"]
         return towing_for(
-            snap.get("year_make_model") or v.get("year_make_model"),
-            snap.get("trim") or v.get("trim_body"), snap.get("body_style"), raw, names,
+            ymm, trim, snap.get("body_style"), raw, names,
+            vin=vin, powertrain_class=pclass, force=bool(pkg.get("_tow_force")),
         )
     except Exception as exc:  # noqa: BLE001 - a tow lookup must never sink a build
         print(f"[towing] {stock}: lookup failed — {exc}", file=sys.stderr)
@@ -930,6 +967,7 @@ def generate_ad(
     system_prompt: str = SYSTEM_PROMPT,
     needs_lookup: list[dict] | None = None,
     stock: str | None = None,
+    make: str | None = None,
 ) -> tuple[str, str | None]:
     """Send the vehicle data to Claude and return (ad_copy, feedback_block).
 
@@ -957,7 +995,7 @@ def generate_ad(
     }
     if needs_lookup:
         user_content += _research_instructions(needs_lookup)
-        kwargs["tools"] = [WEB_SEARCH_TOOL]
+        kwargs["tools"] = [web_search_tool_for(make)]
 
     messages: list[dict] = [{"role": "user", "content": user_content}]
     response = None
@@ -1757,6 +1795,7 @@ REQUIRED_SENTENCE_KEYS = (
     "warranty_sentence",
     "shipping_sentence",
     "engine_sentence",
+    "towing_sentence",
     "mild_hybrid_sentence",
     "factory_warranty_sentence",
 )
@@ -1916,7 +1955,7 @@ def insert_required_sentences(
         paras["paragraph_three"] = " ".join(units)
         print(f"{tag} inserted warranty sentence into paragraph three", file=sys.stderr)
         missing = [k for k in missing if k != "warranty_sentence"]
-    p2_keys = [k for k in ("proof_point_sentence", "scarcity_sentence", "warranty_sentence", "shipping_sentence", "engine_sentence", "mild_hybrid_sentence") if k in missing]
+    p2_keys = [k for k in ("proof_point_sentence", "scarcity_sentence", "warranty_sentence", "shipping_sentence", "engine_sentence", "towing_sentence", "mild_hybrid_sentence") if k in missing]
     if p2_keys:
         present = [s for k, s in required.items() if k not in missing and k != "provenance_sentence"]
         units = _units(paras["paragraph_two"], present)
@@ -1965,6 +2004,15 @@ def insert_required_sentences(
                     (i for i, u in enumerate(units) if not is_req(u) and _ENGINE_SENTENCE_RE.search(u)), None
                 )
             units.insert((eng + 1) if eng is not None else min(1, len(units)), required["mild_hybrid_sentence"])
+        if "towing_sentence" in p2_keys:
+            # After the engine sentence (and the mild-hybrid sentence that
+            # follows it), else after paragraph two's opening sentence.
+            at = find("mild_hybrid_sentence")
+            if at is None:
+                at = find("engine_sentence")
+            if at is None:
+                at = next((i for i, u in enumerate(units) if not is_req(u) and _ENGINE_SENTENCE_RE.search(u)), None)
+            units.insert((at + 1) if at is not None else min(1, len(units)), required["towing_sentence"])
         paras["paragraph_two"] = " ".join(units)
         for k in p2_keys:
             print(f"{tag} inserted {k.replace('_', ' ')} into paragraph two", file=sys.stderr)
@@ -2061,6 +2109,11 @@ def _generate_from_package(pkg: dict) -> tuple[str, str | None]:
         pkg.pop("engine_sentence", None)
     if "towing" not in pkg:
         pkg["towing"] = towing_for_package(pkg)
+    tow_sentence = (pkg["towing"] or {}).get("sentence")
+    if tow_sentence:
+        pkg["towing_sentence"] = tow_sentence
+    else:
+        pkg.pop("towing_sentence", None)
     required = required_sentences_from(pkg)
     protected = list(required.values())
     pt_flags = list(pt.get("flags") or [])
@@ -2158,6 +2211,7 @@ def _generate_once(pkg: dict) -> tuple[str, str | None]:
         system_prompt=system_prompt,
         needs_lookup=needs_lookup,
         stock=pkg.get("stock_number"),
+        make=split_ymm(v.get("year_make_model"))[1],
     )
 
 
@@ -2720,9 +2774,19 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
     # Tow figures and tire sizes: only a verified rating for this exact
     # configuration and sizes printed on the sticker survive (the reprice
     # "package" is the old paragraph itself, so the sticker is the source).
-    tow_pkg = {"stock_number": stock, "vehicle": {}, "_data_package_text": ""}
+    tow_pkg = {"stock_number": stock, "vehicle": {}, "_data_package_text": "", "powertrain": pt}
     tow_pkg["towing"] = towing_for_package(tow_pkg)
     old_tow_bad, old_tire_bad = fact_check_problems(clean_p2 or old_p2, tow_pkg)
+    tow_sentence = tow_pkg["towing"].get("sentence")
+    if tow_sentence:
+        # TOWING_SENTENCE (verified rating or override) is required; any other
+        # sentence stating a tow figure goes, even one with the same figure,
+        # so the figure is stated once, in Python's words.
+        required["towing_sentence"] = tow_sentence
+        old_tow_bad = list(dict.fromkeys(old_tow_bad + [
+            s for s in _units(clean_p2 or old_p2, [SHIPPING_SENTENCE])
+            if _ws(s) != _ws(tow_sentence) and _tow_figures_in(s)
+        ]))
     if old_tow_bad or old_tire_bad:
         print(f"[reprice] {stock}: removing unverified tow / tire sentence(s) before the rewrite: {old_tow_bad + old_tire_bad}")
         clean_p2 = _drop_sentences(clean_p2 or old_p2, old_tow_bad + old_tire_bad)

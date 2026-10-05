@@ -13,10 +13,10 @@
   .upload-form { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
   .upload-form .k { width: 100%; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
   #seller-comments textarea { width: 100%; box-sizing: border-box; font: inherit; padding: 8px; border: 1px solid var(--line); border-radius: 8px; }
-  #powertrain-override { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
-  #powertrain-override select, #powertrain-override input { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; }
-  #powertrain-override input { flex: 1 1 200px; }
-  #seller-comments button, #powertrain-override button, .upload-form button { margin-top: 6px; padding: 6px 14px; border: 1px solid var(--accent); background: var(--accent); color: #fff; border-radius: 6px; cursor: pointer; }
+  #powertrain-override, #tow-override { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+  #powertrain-override select, #powertrain-override input, #tow-override input { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; }
+  #powertrain-override input, #tow-override input[name=source] { flex: 1 1 200px; }
+  #seller-comments button, #powertrain-override button, #tow-override button, .upload-form button { margin-top: 6px; padding: 6px 14px; border: 1px solid var(--accent); background: var(--accent); color: #fff; border-radius: 6px; cursor: pointer; }
   .form-status { font-size: 0.88rem; margin-top: 6px; width: 100%; }
   .form-status.ok { color: var(--ok); }
   .form-status.err { color: var(--fail); }
@@ -196,6 +196,30 @@
     </div>
   </details>
 
+  {# ---------------- TOWING ---------------- #}
+  <details class="cache-sec" open>
+    <summary>Towing<span class="meta">{% if towing.override %}{{ '{:,}'.format(towing.override.rating) }} lbs · set by override{% elif towing.rating %}{{ '{:,}'.format(towing.rating) }} lbs · verified{% elif towing.sticker_triggers %}needs review{% else %}no tow equipment on the sticker{% endif %}</span></summary>
+    <div class="body">
+      {% if towing.error %}<p class="warn">Towing check failed: {{ towing.error }}</p>{% endif %}
+      <p>Configuration: <strong>{{ towing.config_text }}</strong></p>
+      {% if towing.override %}
+      <p>Override: <strong>{{ '{:,}'.format(towing.override.rating) }} lbs</strong> — {{ towing.override.source or 'no source given' }} ({{ towing.override.date }}). Used verbatim: <em>{{ towing.sentence }}</em></p>
+      {% elif towing.rating %}
+      <p>Verified: <strong>{{ '{:,}'.format(towing.rating) }} lbs</strong>{% if towing.source_url %} (<a href="{{ towing.source_url }}" target="_blank" rel="noopener">source</a>){% endif %}. Sentence: <em>{{ towing.sentence }}</em></p>
+      {% else %}
+      <p class="none">No tow figure in the ad — {{ towing.note or 'no verified rating' }}.{% if not towing.sticker_triggers %} (The sticker prints no hitch / tow / trailer wording.){% endif %}</p>
+      {% endif %}
+      <form id="tow-override" action="{{ url_for('cache_save_towing', stock_number=stock) }}">
+        <label>Override (lbs)
+          <input type="text" name="rating" inputmode="numeric" placeholder="e.g. 7700 — blank to remove" value="{{ towing.override.rating if towing.override else '' }}">
+        </label>
+        <input type="text" name="source" placeholder="Source (required with a rating)" value="{{ towing.override.source if towing.override else '' }}">
+        <button type="submit">Save</button>
+        <div class="form-status" id="tow-override-status" aria-live="polite"></div>
+      </form>
+    </div>
+  </details>
+
   {# ---------------- SELLER COMMENTS ---------------- #}
   <details class="cache-sec" open>
     <summary>Seller comments<span class="meta">added verbatim at the end of paragraph one</span></summary>
@@ -240,6 +264,17 @@
     post(ptForm, st, new FormData(ptForm), function (j) {
       st.className = "form-status " + (j.saved ? "ok" : "err");
       st.textContent = j.saved ? (j.override ? "Saved: " + j.label + ". Reload to see it." : "Override removed. Reload to see the signal-based class.")
+                               : (j.error || "Save failed.");
+    });
+  });
+
+  var towForm = document.getElementById("tow-override");
+  if (towForm) towForm.addEventListener("submit", function (e) {
+    e.preventDefault();
+    var st = document.getElementById("tow-override-status");
+    post(towForm, st, new FormData(towForm), function (j) {
+      st.className = "form-status " + (j.saved ? "ok" : "err");
+      st.textContent = j.saved ? (j.override ? "Saved: " + Number(j.rating).toLocaleString("en-US") + " lbs. Reload to see it." : "Override removed. Reload to see the verified / review status.")
                                : (j.error || "Save failed.");
     });
   });

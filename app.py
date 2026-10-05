@@ -58,6 +58,8 @@ from credentials import DEMO_PASSWORD
 from run_lock import ScraperBusyError
 from feature_cache import get_electric_range
 from powertrain import CLASS_LABELS, CLASSES, classify, load_overrides, range_phrase, set_override, split_ymm, texts_from_row
+from towing import set_tow_override, towing_for
+from towing import triggered as tow_triggered
 
 # Simple shared-password gate for the demo — no user accounts. Change this to
 # rotate the password; every existing session is invalidated the next time the
@@ -895,6 +897,7 @@ def cache_detail(stock_number: str):
     ymm_for_pt = (vehicle or {}).get("year_make_model") or c.get("year_make_model")
     trim = (vehicle or {}).get("trim")
     powertrain = _powertrain_view(vin, ymm_for_pt, trim, c, load_overrides())
+    towing = _towing_view(vin, ymm_for_pt, trim, (vehicle or {}).get("body_style"), sticker, powertrain.get("class"))
     year, make, model = split_ymm(ymm_for_pt)
     range_row = get_electric_range(year, make, model, trim) if year and make and model else None
     if range_row:
@@ -902,6 +905,7 @@ def cache_detail(stock_number: str):
     return render_template(
         "cache_detail.html",
         powertrain=powertrain,
+        towing=towing,
         range_row=range_row,
         pt_classes=[(k, CLASS_LABELS[k]) for k in CLASSES],
         stock=stock,
@@ -925,6 +929,24 @@ def cache_detail(stock_number: str):
         make=_make_from_ymm((vehicle or {}).get("year_make_model") or c.get("year_make_model")),
         seller_comments=get_seller_comments(vin) if vin else None,
     )
+
+
+def _towing_view(
+    vin: str | None, ymm: str | None, trim: str | None, body_style: str | None,
+    sticker: dict[str, Any] | None, powertrain_class: str | None,
+) -> dict[str, Any]:
+    """The Database page's Towing section: override, verified rating or why
+    there is none. Reads the cache only; never runs a lookup."""
+    sticker = sticker or {}
+    raw = sticker.get("raw_text") or ""
+    names = [o.get("name") or "" for o in (sticker.get("option_packages") or []) + (sticker.get("added_options_all") or [])]
+    try:
+        view = towing_for(ymm, trim, body_style, raw, names, vin=vin, powertrain_class=powertrain_class,
+                          allow_lookup=False, force=True)
+    except Exception as exc:  # noqa: BLE001 - the page must render
+        return {"error": str(exc), "override": None, "rating": None}
+    view["sticker_triggers"] = tow_triggered(raw, names)
+    return view
 
 
 def _cache_vehicle_ref(stock: str) -> tuple[str | None, dict[str, Any] | None, dict[str, Any] | None]:
@@ -970,6 +992,29 @@ def cache_save_powertrain(stock_number: str):
         "override": bool(entry),
         "label": CLASS_LABELS[cls] if cls else None,
     })
+
+
+@app.post("/cache/<stock_number>/towing")
+def cache_save_towing(stock_number: str):
+    """Set or clear this VIN's tow override (tow_overrides.json). An override
+    beats any lookup and is used verbatim in TOWING_SENTENCE."""
+    if not session.get("authed"):
+        return jsonify({"saved": False, "error": "Not signed in."}), 401
+    stock = normalize_stock(stock_number)
+    vin, _vehicle, _cached = _cache_vehicle_ref(stock)
+    if not vin:
+        return jsonify({"saved": False, "error": f"No VIN on record for {stock}."}), 404
+    raw = (request.form.get("rating") or "").replace(",", "").replace("lbs", "").strip()
+    if raw and not raw.isdigit():
+        return jsonify({"saved": False, "error": f"Rating must be a whole number of pounds, not {raw!r}."}), 400
+    source = (request.form.get("source") or "").strip()
+    if raw and int(raw) and not source:
+        return jsonify({"saved": False, "error": "Say where the rating comes from (source)."}), 400
+    try:
+        entry = set_tow_override(vin, int(raw) if raw else None, source)
+    except ValueError as exc:
+        return jsonify({"saved": False, "error": str(exc)}), 400
+    return jsonify({"saved": True, "override": bool(entry), "rating": entry["rating"] if entry else None})
 
 
 _MAX_STICKER_UPLOAD_BYTES = 10 * 1024 * 1024

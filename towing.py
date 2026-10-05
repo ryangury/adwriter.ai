@@ -15,16 +15,27 @@ key. Results — including "no exact match" — are cached in feature_cache.db's
 towing_config table under the full key. No match means no figure: the ad states
 none and the car is listed under TOWING RATING NEEDS REVIEW.
 
+A battery-electric car has no engine line: its key is the powertrain class plus
+the trim (and drivetrain, cab / bed), and a page for another body style of the
+same model (EQE Sedan vs EQE SUV) never matches.
+
+tow_overrides.json ({VIN: {"rating", "source", "date"}}, editable on each car's
+Database page) beats any lookup. A verified rating or an override becomes
+TOWING_SENTENCE ("It is rated to tow up to 7,700 lbs."), a required sentence.
+
     from towing import towing_for
 """
 from __future__ import annotations
 
 import contextlib
+import json
+import os
 import re
 import sqlite3
 import sys
 import urllib.parse
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Any
 
 from feature_cache import DB_PATH
@@ -159,14 +170,35 @@ def is_truck(model: str | None, body_style: str | None = None) -> bool:
     return (body_style or "").lower() == "truck" or bool(TRUCK_MODELS_RE.search(model or ""))
 
 
+_DRIVE_WORDS_RE = re.compile(r"\b(?:AWD|4MATIC\+?|4MOTION|QUATTRO|XDRIVE|4WD|4X4|FWD|RWD|2WD|4X2)\b", re.I)
+
+
+def ev_trim(trim: str | None) -> str | None:
+    """The trim without its drivetrain word ("Long Range Plus AWD" -> "Long
+    Range Plus", "EQE 500 AWD" -> "EQE 500")."""
+    t = " ".join(_DRIVE_WORDS_RE.sub(" ", trim or "").split())
+    return t or None
+
+
 def vehicle_config(
-    year_make_model: str | None, trim: str | None, body_style: str | None, sticker_text: str | None
+    year_make_model: str | None,
+    trim: str | None,
+    body_style: str | None,
+    sticker_text: str | None,
+    powertrain_class: str | None = None,
 ) -> dict[str, Any]:
     """The configuration a tow rating must match, from printed data only.
-    "missing" lists any part that could not be read (no rating can match then)."""
+    "missing" lists any part that could not be read (no rating can match then).
+    A battery-electric car has no engine: its key is the powertrain class plus
+    the trim (stored in the engine column as "battery-electric <trim>")."""
     year, make, model = split_ymm(year_make_model)
-    engine = sticker_engine_phrase(sticker_text)
-    if not engine and make and make.lower().startswith("mercedes"):
+    ev = powertrain_class == "bev"
+    if ev:
+        t = ev_trim(trim)
+        engine = f"battery-electric {t}" if t else None
+    else:
+        engine = sticker_engine_phrase(sticker_text)
+    if not ev and not engine and make and make.lower().startswith("mercedes"):
         # Mercedes-Benz stickers print no engine line; the model designation in
         # the trim ("GLE 450") names the engine variant.
         m = re.search(r"\b([A-Z]{1,4}[- ]?\d{2,3}[a-z]?)\b", trim or "")
@@ -178,6 +210,7 @@ def vehicle_config(
     cfg = {
         "year": year, "make": make, "model": model, "engine": engine, "drivetrain": drive,
         "cab": cab, "bed": bed, "truck": truck, "tow_package": tow_equipment(sticker_text),
+        "ev": ev, "body": (body_style or "").strip(),
     }
     cfg["missing"] = [k for k in ("year", "make", "model", "engine", "drivetrain") if not cfg[k]] + (
         [k for k in ("cab", "bed") if truck and not cfg[k]]
@@ -256,8 +289,23 @@ def match_problems(cfg: dict[str, Any], page: dict[str, str]) -> list[str]:
     model_words = [w for w in re.findall(r"[A-Za-z0-9-]+", cfg["model"] or "") if w.lower() not in ("class",)]
     if not all(w.lower() in (page.get("model") or "").lower() for w in model_words):
         probs.append(f"model {page.get('model')!r} is not {cfg['model']}")
-    if not engine_matches(cfg["engine"], page.get("engine") or "", page.get("model") or ""):
+    if cfg.get("ev"):
+        # Battery-electric: the page names this trim (in its model or engine /
+        # trim field) and no combustion or hybrid powertrain.
+        trim = cfg["engine"].removeprefix("battery-electric ")
+        where = f"{page.get('model') or ''} {page.get('engine') or ''}".lower()
+        if not all(w.lower() in where for w in re.findall(r"[A-Za-z0-9+-]+", trim)):
+            probs.append(f"trim: the page ({page.get('model')!r} / {page.get('engine')!r}) is not {trim!r}")
+        if re.search(r"\bhybrid\b|\bgas(?:oline)?\b|\bdiesel\b|\d\.\dL\b", page.get("engine") or "", re.I):
+            probs.append(f"powertrain {page.get('engine')!r} is not battery-electric")
+    elif not engine_matches(cfg["engine"], page.get("engine") or "", page.get("model") or ""):
         probs.append(f"engine {page.get('engine')!r} is not the sticker's {cfg['engine']!r}")
+    # A page for another body style of the same model (EQE Sedan vs EQE SUV,
+    # which tow differently) is not this vehicle.
+    page_bodies = set(re.findall(r"\b(sedan|suv|coupe|wagon|convertible|cabriolet|hatchback)\b", (page.get("model") or "").lower()))
+    ours = (cfg.get("body") or "").lower()
+    if page_bodies and ours in ("sedan", "suv", "coupe", "wagon", "convertible", "cabriolet", "hatchback") and ours not in page_bodies:
+        probs.append(f"body {sorted(page_bodies)} is not {ours}")
     page_drive = page.get("drivetrain") or ""
     drives = {_DRIVE_TOKENS[t] for t in re.findall(r"[A-Za-z0-9]+", page_drive.upper()) if t in _DRIVE_TOKENS}
     if cfg["drivetrain"] not in drives:
@@ -329,12 +377,20 @@ def lookup(cfg: dict[str, Any]) -> dict[str, Any]:
         f", {cfg['cab']} cab, {cfg['bed']} bed" if cfg.get("truck") else ""
     )
     equip = cfg.get("tow_package") or "none printed"
+    if cfg.get("ev"):
+        what = (f"{cfg['year']} {cfg['make']} {cfg['model']} {cfg.get('body') or ''}, battery-electric, "
+                f"trim {cfg['engine'].removeprefix('battery-electric ')}, {cfg['drivetrain']}{truck}")
+        unit = "this trim"
+        engine_field = "<trim as the page prints it, and 'electric'>"
+    else:
+        what = f"{cfg['year']} {cfg['make']} {cfg['model']}, engine {cfg['engine']}, {cfg['drivetrain']}{truck}"
+        unit = "this engine"
+        engine_field = "<engine>"
     ask = (
-        f"Find the manufacturer-published maximum trailer tow rating for this exact vehicle: "
-        f"{cfg['year']} {cfg['make']} {cfg['model']}, engine {cfg['engine']}, {cfg['drivetrain']}{truck}. "
+        f"Find the manufacturer-published maximum trailer tow rating for this exact vehicle: {what}. "
         f"Its window sticker prints this tow equipment: {equip}. "
         "Use web search; only the manufacturer's own pages or its official towing / trailering guide "
-        "count. The rating must be printed for this model year AND this engine AND this drivetrain"
+        f"count. The rating must be printed for this model year AND {unit} AND this drivetrain"
         + (" AND this cab and bed length" if cfg.get("truck") else "")
         + " AND the tow equipment this vehicle has: if the page gives several ratings by package "
         "(for example with and without a max trailering package or a higher-capacity hitch), give the "
@@ -343,7 +399,7 @@ def lookup(cfg: dict[str, Any]) -> dict[str, Any]:
         + (", cab or bed" if cfg.get("truck") else "")
         + " or package, or from a dealer, forum, review or news site.\n\n"
         "Reply with exactly one line and nothing else, copying each field as the page prints it:\n"
-        "TOW :: <pounds, digits only, or NONE> :: <model year> :: <make> :: <model> :: <engine> :: "
+        f"TOW :: <pounds, digits only, or NONE> :: <model year> :: <make> :: <model and body style> :: {engine_field} :: "
         "<drivetrain> :: <cab or n/a> :: <bed length or n/a> :: <package the rating requires, or none> :: <page URL>"
     )
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -421,14 +477,27 @@ def towing_for(
     sticker_text: str | None,
     option_names: list[str] | None = None,
     *,
+    vin: str | None = None,
+    powertrain_class: str | None = None,
     allow_lookup: bool = True,
+    force: bool = False,
 ) -> dict[str, Any]:
     """{"triggered", "rating" (lbs or None), "config", "config_text", "source_url",
-    "note"}. Not triggered -> nothing to state. Triggered without a rating ->
-    the ad states no tow figure and "note" says why (TOWING RATING NEEDS REVIEW)."""
-    cfg = vehicle_config(year_make_model, trim, body_style, sticker_text)
-    out = {"triggered": triggered(sticker_text, option_names), "rating": None, "config": cfg,
-           "config_text": describe(cfg), "source_url": None, "note": None}
+    "note", "override", "sentence"}. A tow override for the VIN beats everything
+    (its rating is used verbatim). Not triggered -> nothing to state. Triggered
+    without a rating -> the ad states no tow figure and "note" says why
+    (TOWING RATING NEEDS REVIEW)."""
+    cfg = vehicle_config(year_make_model, trim, body_style, sticker_text, powertrain_class)
+    # force: check even without tow wording on the sticker (an ad that already
+    # states a tow figure, e.g. a Tesla with no cached sticker).
+    out = {"triggered": force or triggered(sticker_text, option_names), "rating": None, "config": cfg,
+           "config_text": describe(cfg), "source_url": None, "note": None, "override": None,
+           "sentence": None}
+    ov = load_tow_overrides().get((vin or "").strip().upper()) if vin else None
+    if ov:
+        out.update(triggered=True, rating=ov["rating"], source_url=f"override: {ov.get('source') or ''}".strip(),
+                   override=ov, sentence=towing_sentence(ov["rating"]))
+        return out
     if not out["triggered"]:
         return out
     if cfg["missing"]:
@@ -451,7 +520,62 @@ def towing_for(
     out["rating"] = row.get("tow_rating_lbs")
     out["source_url"] = row.get("source_url")
     out["note"] = None if out["rating"] else (row.get("note") or "no exact match on a manufacturer page")
+    out["sentence"] = towing_sentence(out["rating"])
     return out
+
+
+# --- the sentence ------------------------------------------------------------------ #
+
+def towing_sentence(rating: int | None) -> str | None:
+    """TOWING_SENTENCE, built from a verified rating or an override, verbatim."""
+    return f"It is rated to tow up to {rating:,} lbs." if rating else None
+
+
+# --- overrides (tow_overrides.json, keyed by VIN) ----------------------------------- #
+
+TOW_OVERRIDES_PATH = Path(__file__).with_name("tow_overrides.json")
+
+
+def load_tow_overrides(path: Path | None = None) -> dict[str, dict[str, Any]]:
+    """{VIN: {"rating", "source", "date"}}; entries without a positive rating are ignored."""
+    path = path or TOW_OVERRIDES_PATH
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        print(f"[towing] could not read {path.name}: {exc}", file=sys.stderr)
+        return {}
+    out = {}
+    for vin, v in (data or {}).items():
+        if isinstance(v, dict) and isinstance(v.get("rating"), int) and v["rating"] > 0:
+            out[str(vin).strip().upper()] = v
+    return out
+
+
+def set_tow_override(
+    vin: str, rating: int | None, source: str | None = None, path: Path | None = None
+) -> dict[str, Any] | None:
+    """Set (or, with rating None / 0, remove) one VIN's tow override. Returns the
+    stored entry, or None when removed. A rating must be 500-40,000 lbs."""
+    path = path or TOW_OVERRIDES_PATH
+    vin = vin.strip().upper()
+    if rating is not None and rating != 0 and not (500 <= int(rating) <= 40000):
+        raise ValueError(f"tow rating {rating!r} lbs is out of range (500-40,000)")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        data = {}
+    entry = None
+    if rating:
+        entry = {"rating": int(rating), "source": (source or "").strip(), "date": date.today().isoformat()}
+        data[vin] = entry
+    else:
+        data.pop(vin, None)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, path)
+    return entry
 
 
 # --- old cache --------------------------------------------------------------------- #
