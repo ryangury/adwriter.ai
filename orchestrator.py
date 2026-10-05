@@ -33,6 +33,7 @@ from ad_timeline import stamp_eligible
 from adwriter import (
     _format_ads_ready_email,
     _generate_from_package,
+    format_per_ad_email,
     _recon_has_includeable,
     _send_gmail,
     fresh_pricing_data,
@@ -292,6 +293,13 @@ def _format_action_email(
 # --------------------------------------------------------------------------- #
 # the run
 # --------------------------------------------------------------------------- #
+
+
+def _stored_flags_feedback(stock: str) -> str | None:
+    """TOOL FEEDBACK for an update with no model feedback of its own (recon
+    top-up, reprice): the powertrain flags the update stored on the ad."""
+    flags = (load_ad_history().get(stock) or {}).get("powertrain_flags") or []
+    return ("POWERTRAIN_FLAGS:\n" + "\n".join(f"- {f}" for f in flags)) if flags else None
 
 
 def _aggregate_failure(new_errors: list[dict[str, Any]]) -> str | None:
@@ -863,7 +871,7 @@ def _run_inner(
             _lifecycle_subject(
                 stage, stock, vehicle.get("year_make_model"), vehicle.get("advertised_price")
             ),
-            f"{change_note}\n\n{'=' * 60}\nAD COPY\n{'=' * 60}\n\n{ad_copy}\n",
+            format_per_ad_email(ads_generated[-1]),
         )
 
     def _build_and_record(v: dict[str, Any], *, skip_recon: bool) -> None:
@@ -942,6 +950,7 @@ def _run_inner(
                 "stock": stock,
                 "vehicle": v,
                 "ad_copy": ad_copy,
+                "feedback": _stored_flags_feedback(stock),
                 "lifecycle_stage": "recon_updated",
                 "change_note": "Recon completed; paragraph one now names the reconditioning work.",
             }
@@ -952,8 +961,7 @@ def _run_inner(
             _lifecycle_subject(
                 "recon_updated", stock, v.get("year_make_model"), _advertised(v.get("current_price"))
             ),
-            f"Recon completed; paragraph one now names the reconditioning work.\n\n"
-            f"{'=' * 60}\nAD COPY\n{'=' * 60}\n\n{ad_copy}\n",
+            format_per_ad_email(ads_generated[-1]),
         )
 
     # reprices — reprice_ad() persists ad_history itself
@@ -984,6 +992,8 @@ def _run_inner(
                 "stock": stock,
                 "vehicle": v,
                 "ad_copy": ad_copy,
+                "pricing": pricing_data,
+                "feedback": _stored_flags_feedback(stock),
                 "lifecycle_stage": "repriced",
                 "change_note": note,
             }
@@ -999,7 +1009,7 @@ def _run_inner(
                 old_price=pc.get("old_price"),
                 new_price=pc.get("new_price"),
             ),
-            f"{note}\n\n{'=' * 60}\nAD COPY\n{'=' * 60}\n\n{ad_copy}\n",
+            format_per_ad_email(ads_generated[-1]),
         )
 
     # refresh the in-memory copy after update_recon / reprice_ad writes

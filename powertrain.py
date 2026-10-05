@@ -195,6 +195,94 @@ def sticker_engine(sticker_text: str | None) -> dict[str, Any] | None:
     return None
 
 
+# --- ENGINE_SENTENCE: the sticker's engine + transmission, in its own words ---- #
+# Sticker text often runs neighbouring columns into the engine line ("SUMMIT
+# WHITE ECOTEC 1.3L TURBO", "3.6L V6 24V VVT Engine w/ESS Power Windows"), so the
+# phrase is built from a whitelist, not copied: the displacement, at most one
+# engine brand right before it, then the recognised engine words that follow it
+# (brands, layout, aspiration, fuel), stopping at "w/", "with", a bullet or the
+# word ENGINE. Words it doesn't recognise are dropped, never guessed at; nothing
+# is added that the line doesn't print (no horsepower, no unprinted layout).
+_ENGINE_BRANDS = {
+    "DURAMAX": "Duramax", "ECOTEC": "Ecotec", "ECOTEC3": "EcoTec3", "ECOBOOST": "EcoBoost",
+    "HEMI": "HEMI", "PENTASTAR": "Pentastar", "SMARTSTREAM": "Smartstream", "SKYACTIV": "Skyactiv",
+    "SKYACTIV-G": "Skyactiv-G", "TI-VCT": "Ti-VCT", "I-VTEC": "i-VTEC", "VTEC": "VTEC",
+    "ECODIESEL": "EcoDiesel", "POWERSTROKE": "Power Stroke", "CUMMINS": "Cummins", "HURRICANE": "Hurricane",
+}
+_ENGINE_WORDS = {
+    "V6": "V6", "V8": "V8", "V-6": "V6", "V-8": "V8", "V10": "V10", "V12": "V12",
+    "I4": "I-4", "I-4": "I-4", "I6": "I-6", "I-6": "I-6", "I3": "I-3", "I-3": "I-3",
+    "4-CYLINDER": "4-cylinder", "6-CYLINDER": "6-cylinder", "3-CYLINDER": "3-cylinder",
+    "TURBO": "turbo", "TURBOCHARGED": "turbocharged", "TURBO-CHARGED": "turbocharged",
+    "TWIN-TURBO": "twin-turbo", "TWIN-TURBOCHARGED": "twin-turbocharged",
+    "TURBO-DIESEL": "turbo-diesel", "TURBODIESEL": "turbo-diesel", "DIESEL": "diesel",
+    "SUPERCHARGED": "supercharged", "HYBRID": "hybrid", "HYB": "hybrid",
+}
+_ENGINE_STOP_RE = re.compile(r"^(?:W/.*|WITH|ENGINE|ENG|·.*|\(.*|-)$", re.I)
+_NOUN_END = {"diesel", "turbo-diesel"}  # "the 3.0L Duramax turbo-diesel" needs no "engine"
+_TRANS_RE = re.compile(r"\b(\d{1,2})[- ]?SPEED\b((?:\s+[A-Za-z®-]+){0,3})", re.I)
+
+
+def _engine_tokens(line: str) -> list[str]:
+    return [t.strip(",.;:®™*") for t in line.replace("®", " ").split() if t.strip(",.;:®™*")]
+
+
+def sticker_engine_phrase(sticker_text: str | None) -> str | None:
+    """"3.0L Duramax turbo-diesel" from the sticker's engine line, or None when
+    the sticker prints no engine (Mercedes-Benz) or only a bare displacement
+    nothing else on the line confirms."""
+    # Same line and displacement sticker_engine() picks: the first displacement
+    # with an engine keyword near it.
+    for line in (sticker_text or "").splitlines():
+        for m in _ENGINE_DISP_RE.finditer(line):
+            if not _ENGINE_KW_RE.search(line[max(0, m.start() - 35): m.end() + 40]):
+                continue
+            before = _engine_tokens(line[: m.start()])
+            brand = _ENGINE_BRANDS.get(before[-1].upper()) if before else None
+            words: list[str] = []
+            for t in _engine_tokens(line[m.end():])[:8]:
+                up = t.upper()
+                if _ENGINE_STOP_RE.match(t):
+                    break
+                if up in _ENGINE_BRANDS and not brand:
+                    brand = _ENGINE_BRANDS[up]
+                elif up in _ENGINE_WORDS and _ENGINE_WORDS[up] not in words:
+                    words.append(_ENGINE_WORDS[up])
+            if not brand and not words:
+                return None
+            return " ".join([f"{m.group(1)}L"] + ([brand] if brand else []) + words)
+    return None
+
+
+def sticker_transmission_phrase(sticker_text: str | None) -> str | None:
+    """"10-speed automatic transmission" from the sticker, or None. Only an
+    N-speed line that says AUTO / AUTOMATIC / MANUAL counts (a transfer case's
+    "2-SPEED AUTOTRAC TRANSFER" does not)."""
+    for m in _TRANS_RE.finditer(sticker_text or ""):
+        tail = m.group(2).upper().split()
+        if "TRANSFER" in tail:
+            continue
+        kind = "automatic" if {"AUTO", "AUTOMATIC"} & set(tail) else "manual" if "MANUAL" in tail else None
+        if kind:
+            return f"{int(m.group(1))}-speed {kind} transmission"
+    return None
+
+
+def engine_sentence(sticker_text: str | None) -> str | None:
+    """ENGINE_SENTENCE: "Power comes from the 3.0L Duramax turbo-diesel with a
+    10-speed automatic transmission." built only from the sticker's printed
+    engine (and transmission) words; None when it prints no engine."""
+    eng = sticker_engine_phrase(sticker_text)
+    if not eng:
+        return None
+    noun = eng if eng.split()[-1] in _NOUN_END else f"{eng} engine"
+    trans = sticker_transmission_phrase(sticker_text)
+    if trans:
+        article = "an" if re.match(r"(?:8|11|18)\b|8-", trans) else "a"
+        return f"Power comes from the {noun} with {article} {trans}."
+    return f"Power comes from the {noun}."
+
+
 def engine_problems(sentence: str, engine: dict[str, Any] | None) -> list[str]:
     """Where a sentence's displacement, cylinder layout or fuel disagrees with
     the sticker's engine line ([] when the sticker prints no engine)."""
@@ -880,6 +968,7 @@ def vehicle_powertrain(
         rng = _range_info(None, None, None, None, None, False)
     info["range"] = rng
     info["mild_sentence"] = mild_sentence_for(info, make)
+    info["engine_sentence"] = engine_sentence(sticker_text)
     info["flags"] = [f for f in (info.get("flag"), rng.get("flag")) if f]
     return info
 
@@ -1066,6 +1155,13 @@ def data_package_lines(pt: dict[str, Any]) -> list[str]:
             "  State only the displacement, cylinder layout and fuel this line prints; never a different "
             "displacement, a cylinder layout it does not print, or another fuel — whatever any research says."
         )
+    if pt.get("engine_sentence"):
+        lines.append(
+            "ENGINE_SENTENCE (use verbatim as paragraph two's engine sentence, right after the opening "
+            "sentence; write no other engine or transmission sentence, and add no horsepower, torque, "
+            "cylinder layout or other engine figure to it — a towing figure goes in a sentence of its own):"
+        )
+        lines.append(pt["engine_sentence"])
     if pt.get("mild_sentence"):
         lines.append(
             "MILD_HYBRID_SENTENCE (use verbatim in paragraph two, right after the engine/powertrain "

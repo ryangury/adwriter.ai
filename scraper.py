@@ -2846,6 +2846,32 @@ def _parse_gm_flow(column: str) -> dict[str, Any]:
     }
 
 
+# Header color fields on OEM (non-Mercedes) stickers: "EXTERIOR: SUMMIT WHITE
+# ENG: DURAMAX 3.0L TURBO-DIESEL" / "INTERIOR: JET BLACK TRANSMISSION: 10-SPEED
+# AUTO" (GM), "Interior Color: Black" (others). The value runs to the next label
+# on the same line. A value with a digit, a "$" or more than five words is not a
+# color (a column bleed), so it is ignored.
+# (Some print "TRANSMISSION, 10-SPEED AUTO" with a comma.)
+_STICKER_COLOR_NEXT_LABEL = r"(?=\s+(?:EXTERIOR|INTERIOR|ENG(?:INE)?|TRANS(?:MISSION)?|MPG|DRIVE|VIN)\b[^:,\n]{0,12}[:,]|\s{2,}|\s*$)"
+_STICKER_COLOR_RES = {
+    kind: re.compile(rf"\b{kind}(?:\s+COLOR)?\s*:\s*([^\n:]+?){_STICKER_COLOR_NEXT_LABEL}", re.IGNORECASE | re.MULTILINE)
+    for kind in ("EXTERIOR", "INTERIOR")
+}
+
+
+def sticker_header_color(text: str | None, kind: str) -> str | None:
+    """The sticker's printed EXTERIOR / INTERIOR color ("Summit White",
+    "Jet Black"), or None. `kind` is "EXTERIOR" or "INTERIOR"."""
+    for m in _STICKER_COLOR_RES[kind.upper()].finditer(text or ""):
+        value = " ".join(m.group(1).split()).strip(" -·*,")
+        if not value or re.search(r"[\d$]", value) or len(value.split()) > 5:
+            continue
+        if not re.search(r"[A-Za-z]{3,}", value):
+            continue
+        return value.title() if value.isupper() else value
+    return None
+
+
 def _parse_gm_sticker_text(text: str) -> dict[str, Any]:
     body = _body_text(text)
     column = _marked_block(text, _OPTIONS_COLUMN_MARK)
@@ -3290,6 +3316,11 @@ def _parse_oem_sticker(url: str, vin: str, make: str | None = None) -> dict[str,
         sticker_url=url,
         source="carfax_sticker_link",
     )
+    # The make parsers read prices and options only; the header's printed colors
+    # are the sticker's own exterior / interior color fields.
+    for key, kind in (("exterior_color", "EXTERIOR"), ("interior_color", "INTERIOR")):
+        if not data.get(key):
+            data[key] = sticker_header_color(text, kind)
     result = _reconcile_sticker(data, vin)
     if _GLYPH_DECODED_MARK in text and result.get("reconciliation_ok") is not True:
         raise StickerNotFoundError(

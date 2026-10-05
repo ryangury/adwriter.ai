@@ -39,6 +39,7 @@ from scraper import (
     WorkOrderLoadError,
     _INTERIOR_MATERIAL_RE,
     _parse_oem_sticker,
+    sticker_header_color,
 )
 from vehicle_cache import (
     downgrade_recon,
@@ -775,9 +776,11 @@ def _interior_from_raw_text(raw_text: str | None) -> str | None:
     if not raw_text:
         return None
     for m in _INTERIOR_LABEL_RE.finditer(raw_text):
-        start = max(0, m.start() - _INTERIOR_WORD_WINDOW)
+        # Only AFTER the word: the 40 characters before "INTERIOR" are usually
+        # the exterior color on the line above (GM: "EXTERIOR: SUMMIT WHITE ...
+        # \nINTERIOR: JET BLACK" read "White" here, CT23308A, 10/5/2026).
         end = m.end() + _INTERIOR_WORD_WINDOW
-        cm = _INTERIOR_COLOR_WORD_RE.search(raw_text[start:end])
+        cm = _INTERIOR_COLOR_WORD_RE.search(raw_text[m.end():end])
         if cm:
             return cm.group(1).title()
     return None
@@ -852,7 +855,13 @@ def _resolve_colors(
     from_options_tab = md.get("source") == "acvmax_options_tab"
 
     acv_ext = _color(pricing_raw.get("exterior_color"))
-    sticker_ext = _color(md.get("exterior_color"))
+    # An OEM sticker's printed header ("EXTERIOR: SUMMIT WHITE", "INTERIOR: JET
+    # BLACK") is the sticker's own color field: it fills a parse that didn't
+    # record one (every OEM sticker cached before the header was read).
+    raw_text = sr.get("raw_text") or md.get("raw_text")
+    sticker_ext = _color(md.get("exterior_color")) or (
+        None if from_options_tab else _color(sticker_header_color(raw_text, "EXTERIOR"))
+    )
     if from_options_tab:
         if acv_ext:
             ext, ext_src = acv_ext, "acvmax"
@@ -867,7 +876,9 @@ def _resolve_colors(
     else:
         ext, ext_src = None, None
 
-    sticker_int = _color(md.get("interior_color"))
+    sticker_int = _color(md.get("interior_color")) or (
+        None if from_options_tab else _color(sticker_header_color(raw_text, "INTERIOR"))
+    )
     acv_int = _color(pricing_raw.get("interior_color"))
     if sticker_int and from_options_tab:
         intr, int_src = sticker_int, "acvmax_options_tab"

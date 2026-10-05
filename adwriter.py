@@ -1721,6 +1721,7 @@ REQUIRED_SENTENCE_KEYS = (
     "scarcity_sentence",
     "warranty_sentence",
     "shipping_sentence",
+    "engine_sentence",
     "mild_hybrid_sentence",
     "factory_warranty_sentence",
 )
@@ -1747,6 +1748,14 @@ _ENGINE_SENTENCE_RE = re.compile(
     r"|turbocharged|horsepower|hp\b)",
     re.IGNORECASE,
 )
+
+# The model's own engine sentence in a stored paragraph two (a displacement, or a
+# horsepower / torque figure); a reprice swaps it for ENGINE_SENTENCE unless it
+# also carries a towing figure (_TOW_FIGURE_RE), the only place that figure lives.
+_OLD_ENGINE_SENTENCE_RE = re.compile(
+    r"(?<![\d.])\d\.\d[- ]?(?:liter|litre|L)\b|\bhorsepower\b|\b\d{2,3}\s*hp\b|\blb-?ft\b", re.IGNORECASE
+)
+_TOW_FIGURE_RE = re.compile(r"\btow(?:s|ing)?\b[^.]*?\b\d{1,2},\d{3}\b|\b\d{1,2},\d{3}\s*(?:pounds|lbs?)\b[^.]*\btow", re.IGNORECASE)
 
 # A price claim of the model's own: anything stating the asking price, or a dollar
 # gap below a pricing benchmark. Dropped when Python's proof-point sentence has to
@@ -1872,7 +1881,7 @@ def insert_required_sentences(
         paras["paragraph_three"] = " ".join(units)
         print(f"{tag} inserted warranty sentence into paragraph three", file=sys.stderr)
         missing = [k for k in missing if k != "warranty_sentence"]
-    p2_keys = [k for k in ("proof_point_sentence", "scarcity_sentence", "warranty_sentence", "shipping_sentence", "mild_hybrid_sentence") if k in missing]
+    p2_keys = [k for k in ("proof_point_sentence", "scarcity_sentence", "warranty_sentence", "shipping_sentence", "engine_sentence", "mild_hybrid_sentence") if k in missing]
     if p2_keys:
         present = [s for k, s in required.items() if k not in missing and k != "provenance_sentence"]
         units = _units(paras["paragraph_two"], present)
@@ -1908,10 +1917,18 @@ def insert_required_sentences(
             units.insert(len(units) if at is None else at, required["warranty_sentence"])
         if "shipping_sentence" in p2_keys:
             units.append(required["shipping_sentence"])
+        if "engine_sentence" in p2_keys:
+            # Right after paragraph two's opening sentence (the mild-hybrid
+            # sentence, when it is also missing, then follows it).
+            units.insert(min(1, len(units)), required["engine_sentence"])
         if "mild_hybrid_sentence" in p2_keys:
-            eng = next(
-                (i for i, u in enumerate(units) if not is_req(u) and _ENGINE_SENTENCE_RE.search(u)), None
-            )
+            # After ENGINE_SENTENCE when the ad has one, else after the model's
+            # own engine / powertrain sentence.
+            eng = find("engine_sentence")
+            if eng is None:
+                eng = next(
+                    (i for i, u in enumerate(units) if not is_req(u) and _ENGINE_SENTENCE_RE.search(u)), None
+                )
             units.insert((eng + 1) if eng is not None else min(1, len(units)), required["mild_hybrid_sentence"])
         paras["paragraph_two"] = " ".join(units)
         for k in p2_keys:
@@ -2003,6 +2020,10 @@ def _generate_from_package(pkg: dict) -> tuple[str, str | None]:
         pkg["mild_hybrid_sentence"] = pt["mild_sentence"]
     else:
         pkg.pop("mild_hybrid_sentence", None)
+    if pt.get("engine_sentence"):
+        pkg["engine_sentence"] = pt["engine_sentence"]
+    else:
+        pkg.pop("engine_sentence", None)
     required = required_sentences_from(pkg)
     protected = list(required.values())
     pt_flags = list(pt.get("flags") or [])
@@ -2633,6 +2654,19 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
         required["shipping_sentence"] = SHIPPING_SENTENCE
     if pt.get("mild_sentence") and _ws(pt["mild_sentence"]) in _ws(old_p2):
         required["mild_hybrid_sentence"] = pt["mild_sentence"]
+    # ENGINE_SENTENCE (built from the sticker's printed engine / transmission)
+    # replaces the model's own engine sentence: that one is dropped before the
+    # rewrite (a sentence that also carries a towing figure is kept) and the
+    # sticker-built one is required instead.
+    if pt.get("engine_sentence"):
+        required["engine_sentence"] = pt["engine_sentence"]
+        kept, dropped = [], []
+        for u in _units(clean_p2 or old_p2, [SHIPPING_SENTENCE]):
+            own_engine = _ws(u) != _ws(pt["engine_sentence"]) and _OLD_ENGINE_SENTENCE_RE.search(u)
+            (dropped if own_engine and not _TOW_FIGURE_RE.search(u) else kept).append(u)
+        if dropped:
+            print(f"[reprice] {stock}: replacing the old engine sentence(s) with ENGINE_SENTENCE: {dropped}")
+            clean_p2 = " ".join(kept)
     data_block = _format_reprice_package(
         clean_p2 or old_p2,
         advertised_price,
@@ -3170,8 +3204,10 @@ def _hendrickcars_line(e: dict) -> str:
     return "HendrickCars.com: (not found — vehicle may not be live yet)"
 
 
-def _ads_ready_full_block(e: dict) -> list[str]:
-    """Detailed per-vehicle block: data summary + finished ad copy."""
+def _ads_ready_full_block(e: dict, *, link: bool = True) -> list[str]:
+    """Detailed per-vehicle block: data summary + finished ad copy. `link`
+    False leaves out the HendrickCars.com line (a per-ad email goes out before
+    the batch lookup runs)."""
     pkg = e.get("pkg") or {}
     v = e.get("vehicle") or {}
     msrp = pkg.get("msrp_data") or {}
@@ -3186,10 +3222,18 @@ def _ads_ready_full_block(e: dict) -> list[str]:
         f"  —  {_usd(v.get('current_price'))}"
     )
     out.append("=" * 60)
-    out.append(_hendrickcars_line(e))
+    if link:
+        out.append(_hendrickcars_line(e))
     out.append("")
     out.append("DATA SUMMARY")
     out.append("-" * 60)
+    if not pkg:
+        # A recon top-up rewrites paragraph one from ReconVision alone; there
+        # is no aggregated data package to summarize.
+        out.append(f"  (no data package — {e.get('change_note') or 'this update did not re-aggregate the vehicle'})")
+        out.extend(_tool_feedback_block(e))
+        out += ["", "-" * 60, "FINISHED AD COPY", "-" * 60, e.get("ad_copy", ""), "", ""]
+        return out
 
     out.append(f"Pricing proof point used: {_best_proof_point_line(pricing)}")
 
@@ -3288,9 +3332,10 @@ def _tool_feedback_block(e: dict) -> list[str]:
     return out
 
 
-def _ads_ready_compact_block(e: dict) -> list[str]:
-    """Compact per-vehicle block for updates: stock / vehicle / price / the
-    specific change made + the finished ad copy."""
+def _ads_ready_compact_block(e: dict, *, link: bool = True) -> list[str]:
+    """Compact per-vehicle block for updates (reprices): stock / vehicle /
+    price, a short DATA SUMMARY (the change made and, with `pricing`, the proof
+    point used), TOOL FEEDBACK, and the finished ad copy."""
     v = e.get("vehicle") or {}
     out: list[str] = []
     out.append("=" * 60)
@@ -3299,10 +3344,15 @@ def _ads_ready_compact_block(e: dict) -> list[str]:
         f"  —  {_usd(v.get('current_price'))}"
     )
     out.append("=" * 60)
-    out.append(_hendrickcars_line(e))
+    if link:
+        out.append(_hendrickcars_line(e))
+    out.append("")
+    out.append("DATA SUMMARY")
+    out.append("-" * 60)
     out.append(f"Change made: {e.get('change_note', 'ad updated')}")
-    if e.get("feedback"):
-        out.extend(_tool_feedback_block(e))
+    if e.get("pricing"):
+        out.append(f"Pricing proof point used: {_best_proof_point_line(e['pricing'])}")
+    out.extend(_tool_feedback_block(e))
     out.append("")
     out.append("-" * 60)
     out.append("FINISHED AD COPY")
@@ -3311,6 +3361,16 @@ def _ads_ready_compact_block(e: dict) -> list[str]:
     out.append("")
     out.append("")
     return out
+
+
+def format_per_ad_email(e: dict) -> str:
+    """Body of one per-ad email (new, pre-recon, recon update or reprice): the
+    change made, then the same per-vehicle block the Ads Ready email builds —
+    DATA SUMMARY, TOOL FEEDBACK and the finished ad (_ads_ready_full_block), or
+    for a reprice the compact block (_ads_ready_compact_block). No
+    HendrickCars.com line: it is looked up later, for the Ads Ready email."""
+    render = _ads_ready_compact_block if e.get("lifecycle_stage") == "repriced" else _ads_ready_full_block
+    return "\n".join([e.get("change_note") or "Ad updated.", ""] + render(e, link=False))
 
 
 def _format_ads_ready_email(entries: list[dict]) -> str:
