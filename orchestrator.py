@@ -259,15 +259,23 @@ def _format_action_email(
         )
     out += ["", ""]
 
-    section("ODOMETER BELOW CARFAX", len(odometer_flags))
-    if not odometer_flags:
+    below = [o for o in odometer_flags if o.get("kind") == "below_carfax"]
+    dates = [o for o in odometer_flags if o.get("kind") == "warranty_date"]
+    section("ODOMETER BELOW CARFAX", len(below))
+    if not below:
         out.append("(none)")
-    for o in odometer_flags:
+    for o in below:
         out.append(
             f"  [{o.get('stock_number')}]  {o.get('year_make_model') or 'unknown'}"
             f"  —  lot odometer {o.get('lot_odometer'):,} vs Carfax {o.get('carfax_odometer'):,}"
-            f" ({o.get('gap'):,} miles below); warranty sentence still built"
+            f" ({o.get('gap'):,} miles below)"
         )
+    out += ["", ""]
+    section("WARRANTY ESTIMATE FLAGS", len(dates))
+    if not dates:
+        out.append("(none)")
+    for o in dates:
+        out.append(f"  [{o.get('stock_number')}]  {o.get('year_make_model') or 'unknown'}  —  {o.get('note')}")
     out += ["", ""]
 
     section("SCRAPER ERRORS", len(errors))
@@ -774,12 +782,12 @@ def _run_inner(
 
         if isinstance(pkg.get("ctr"), dict):
             aggregated_ctr[stock] = pkg["ctr"]
-        if pkg.get("odometer_below_carfax"):
-            odometer_flags.append({**v, **pkg["odometer_below_carfax"]})
-            print(
-                f"[{tag}] {stock}: lot odometer {pkg['odometer_below_carfax']['lot_odometer']:,} is "
-                f"{pkg['odometer_below_carfax']['gap']:,} miles below Carfax — flagged, sentence still built"
-            )
+        for o in pkg.get("odometer_flags") or []:
+            odometer_flags.append({**v, **o})
+            print(f"[{tag}] {stock}: odometer flag {o}")
+        for note in pkg.get("warranty_estimate_flags") or []:
+            odometer_flags.append({**v, "kind": "warranty_date", "note": note})
+            print(f"[{tag}] {stock}: warranty estimate flag — {note}")
 
         if pkg.get("recon_complete") is False:
             waiting_recon.append({**v, "note": pkg.get("note")})
@@ -1218,7 +1226,7 @@ def _run_inner(
         f"Not posted: {len(needs_posting)} | Outdated: {len(needs_update)}"
     )
     print(f"  New listings, pricing not ready: {len(new_listings_pricing)}")
-    print(f"  Odometer below Carfax:         {len(odometer_flags)}")
+    print(f"  Odometer / warranty-date flags: {len(odometer_flags)}")
     print(f"  Errors:                        {len(errors)}")
     print(f"  Total runtime:                 {_fmt_runtime(runtime)}")
     if stopped:

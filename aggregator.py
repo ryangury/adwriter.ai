@@ -2817,101 +2817,6 @@ MB_WARRANTY_MILES = 50_000
 MB_BATTERY_WARRANTY_MONTHS = 120
 MB_BATTERY_WARRANTY_MILES = 100_000
 
-# Basic (bumper-to-bumper) factory warranty by make — the only term the
-# factory-warranty sentence uses, for every status that builds one (10, 16,
-# 13). Never a powertrain term. "transfers" is whether the basic warranty
-# carries to a second owner as the manufacturer's own site states it
-# (2026-10-04, source in "source"); None = not confirmed, and no sentence is
-# built (it says "transferable to the new owner"). "second_owner_note" marks
-# brands whose later owners get different terms (powertrain only — never
-# stated in copy). A brand not in this table gets no sentence.
-WARRANTY_PERIODS: dict[str, dict[str, Any]] = {
-    "mercedes-benz": {"years": 4, "miles": 50_000, "transfers": True,
-                      "source": "mbusa.com warranty booklet: covers the original and each subsequent owner"},
-    "genesis": {"years": 5, "miles": 60_000, "transfers": True,
-                "source": "genesis.com/us/en/ownership/warranty",
-                "second_owner_note": "10-yr/100,000-mi powertrain is original-owner only; later owners get 5-yr/60,000-mi powertrain"},
-    "hyundai": {"years": 5, "miles": 60_000, "transfers": True,
-                "source": "hyundaiusa.com America's Best Warranty",
-                "second_owner_note": "10-yr/100,000-mi powertrain is original-owner only; later owners get 5-yr/60,000-mi powertrain"},
-    "volvo": {"years": 4, "miles": 50_000, "transfers": True,
-              "source": "volvocars.com/us/l/warranty: fully transferable to subsequent owners"},
-    "tesla": {"years": 4, "miles": 50_000, "transfers": True,
-              "source": "tesla.com New Vehicle Limited Warranty: transferable at no cost to subsequent owners"},
-    "lexus": {"years": 4, "miles": 50_000, "transfers": True,
-              "source": "lexus.com warranty: terms remain in effect regardless of ownership"},
-    "chevrolet": {"years": 3, "miles": 36_000, "transfers": True,
-                  "source": "chevrolet.com: bumper-to-bumper transfers to the new owner"},
-    "gmc": {"years": 3, "miles": 36_000, "transfers": True,
-            "source": "chevrolet.com / buick.com GM limited warranty: transfers to the new owner"},
-    "buick": {"years": 4, "miles": 50_000, "transfers": True,
-              "source": "buick.com: GM limited warranty transfers to the new owner",
-              "second_owner_note": "term not re-verified by model year (GM material also cites 3-yr/36,000-mi)"},
-    "jeep": {"years": 3, "miles": 36_000, "transfers": True,
-             "source": "jeep.com / mopar.com: FCA basic limited warranty transfers to the second owner"},
-    "dodge": {"years": 3, "miles": 36_000, "transfers": True,
-              "source": "jeep.com / mopar.com: FCA basic limited warranty transfers to the second owner"},
-    "ram": {"years": 3, "miles": 36_000, "transfers": True,
-            "source": "jeep.com / mopar.com: FCA basic limited warranty transfers to the second owner"},
-    "mazda": {"years": 3, "miles": 36_000, "transfers": True,
-              "source": "mazdausa.com: transferable limited warranty"},
-    "ford": {"years": 3, "miles": 36_000, "transfers": None,
-             "source": "ford.com: 3-yr/36,000-mi; transfer to a second owner not confirmed on ford.com"},
-    "honda": {"years": 3, "miles": 36_000, "transfers": None,
-              "source": "automobiles.honda.com: 3-yr/36,000-mi; transfer not confirmed"},
-    # Not on the lot on 2026-10-04 and not re-verified: terms kept, transfer unconfirmed.
-    "kia": {"years": 5, "miles": 60_000, "transfers": None, "source": None,
-            "second_owner_note": "Kia, like Hyundai, limits the 10-yr powertrain to the original owner"},
-    "toyota": {"years": 3, "miles": 36_000, "transfers": None, "source": None},
-    "acura": {"years": 4, "miles": 50_000, "transfers": None, "source": None},
-    "bmw": {"years": 4, "miles": 50_000, "transfers": None, "source": None},
-    "mini": {"years": 4, "miles": 50_000, "transfers": None, "source": None},
-    "volkswagen": {"years": 4, "miles": 50_000, "transfers": None, "source": None},
-    "audi": {"years": 4, "miles": 50_000, "transfers": None, "source": None},
-    "porsche": {"years": 4, "miles": 50_000, "transfers": None, "source": None},
-    "jaguar": {"years": 5, "miles": 60_000, "transfers": None, "source": None},
-    "land rover": {"years": 5, "miles": 60_000, "transfers": None, "source": None},
-    "alfa romeo": {"years": 4, "miles": 50_000, "transfers": None, "source": None},
-    "cadillac": {"years": 4, "miles": 50_000, "transfers": None, "source": None},
-    "nissan": {"years": 3, "miles": 36_000, "transfers": None, "source": None},
-    "infiniti": {"years": 4, "miles": 50_000, "transfers": None, "source": None},
-    "subaru": {"years": 3, "miles": 36_000, "transfers": None, "source": None},
-}
-
-# Models whose basic term differs from their make's.
-WARRANTY_MODEL_OVERRIDES: dict[tuple[str, str], dict[str, Any]] = {
-    ("mercedes-benz", "sprinter"): {
-        "years": 3, "miles": 36_000, "transfers": True,
-        "source": "mbvans.com 2022 Sprinter warranty booklet: 36 months or 36,000 miles; original and each subsequent owner",
-    },
-}
-
-
-def _warranty_period_for_make(
-    year_make_model: str | None,
-) -> tuple[str, dict[str, Any]] | None:
-    """(make display name, WARRANTY_PERIODS entry) for a vehicle, a model
-    override first (WARRANTY_MODEL_OVERRIDES), or None when the make is not
-    in the table (no default: an unknown brand gets no warranty sentence).
-
-    Checks the two-word make ("Land Rover", "Alfa Romeo") before the single
-    word after the model year."""
-    words = (year_make_model or "").split()
-    if len(words) < 2:
-        return None
-    make, rest = words[1], words[2:]
-    if len(words) >= 3 and f"{words[1]} {words[2]}".lower() in WARRANTY_PERIODS:
-        make, rest = f"{words[1]} {words[2]}", words[3:]
-    key = make.lower()
-    if key not in WARRANTY_PERIODS:
-        return None
-    model_words = {w.lower() for w in rest}
-    for (mk, model_word), entry in WARRANTY_MODEL_OVERRIDES.items():
-        if mk == key and model_word in model_words:
-            return make, entry
-    return make, WARRANTY_PERIODS[key]
-
-
 # Mercedes EQ model tokens: EQS EQE EQB EQA EQC EQV.
 _EV_MODEL_RE = re.compile(r"\bEQ[SEBACV]\b", re.IGNORECASE)
 
@@ -3042,6 +2947,101 @@ def _warranty_fields(
 
 
 ODOMETER_BELOW_CARFAX_MILES = 500
+CARFAX_REPORT_STALE_DAYS = 60
+FACTORY_WARRANTY_MIN_MONTHS = 3
+# Carfax's "Basic Warranty" box: the estimate line, then one "Warranty Active" /
+# "Warranty Expired" per owner column (oldest owner first).
+# The row label (e.g. "Basic Warranty") is captured: "basic" in the sentence
+# comes from it.
+_CF_WARRANTY_RE = re.compile(
+    r"(?m)^[ \t]*([A-Za-z][A-Za-z ]*Warranty)[ \t]*\n\s*(Original\b[^\n]*?\bwarranty[^\n]*)"
+    r"((?:\s*\n|[^\n]*Warranty (?:Active|Expired)[^\n]*\n)*)",
+    re.IGNORECASE,
+)
+_CF_ESTIMATE_RE = re.compile(r"estimated to have\s+(\d+)\s+months?\s+or\s+([\d,]+)\s+miles?\s+remaining", re.IGNORECASE)
+_CF_AS_OF_RE = re.compile(r"available as of (\d{1,2})/(\d{1,2})/(\d{2,4})")
+# Carfax's summary: one "Last reported odometer reading" label, then one value
+# per owner column (oldest owner first) up to "Detailed History".
+_CF_LAST_ODOMETER_RE = re.compile(
+    r"Last reported odometer reading(.*?)(?=Detailed History|\n[A-Za-z][A-Za-z ]{3,}\n|$)", re.IGNORECASE | re.DOTALL
+)
+
+
+def carfax_warranty_estimate(carfax_data: dict[str, Any] | None) -> dict[str, Any]:
+    """Carfax's own factory-warranty estimate, from the stored report text:
+    "Original warranty estimated to have N months or M miles remaining", the
+    date the report was calculated ("available as of"), the LAST "Last
+    reported odometer reading" in the text (the stored field only when the
+    text has none), the term those imply (M + that reading — it must be a
+    round number), and the per-owner "Warranty Active" columns.
+    {"ok", "reason", "flags", "line", "months_at_report", "miles_at_report",
+    "as_of", "last_odometer", "odometer_source", "term_miles", "statuses",
+    "latest_active", "basic"}."""
+    cf = carfax_data if isinstance(carfax_data, dict) else {}
+    raw = cf.get("raw_text") or ""
+    out: dict[str, Any] = {"ok": False, "reason": None, "flags": [], "line": None, "months_at_report": None,
+                           "miles_at_report": None, "as_of": None, "last_odometer": None, "odometer_source": None,
+                           "term_miles": None, "statuses": [], "latest_active": False, "basic": False, "label": None}
+    m = _CF_WARRANTY_RE.search(raw)
+    if not m:
+        out["reason"] = "Carfax report has no warranty estimate row"
+        return out
+    out["label"] = " ".join(m.group(1).split())
+    out["line"] = " ".join(m.group(2).split())
+    out["statuses"] = re.findall(r"Warranty (Active|Expired)", m.group(3))
+    out["latest_active"] = bool(out["statuses"]) and out["statuses"][-1] == "Active"
+    out["basic"] = out["label"].lower() == "basic warranty" or bool(re.search(r"\bbasic\b", out["line"], re.IGNORECASE))
+    est = _CF_ESTIMATE_RE.search(out["line"])
+    if not est:
+        out["reason"] = f"Carfax: {out['line']}"
+        return out
+    out["months_at_report"] = int(est.group(1))
+    out["miles_at_report"] = int(est.group(2).replace(",", ""))
+    a = _CF_AS_OF_RE.search(raw)
+    if not a:
+        out["reason"] = "Carfax report date ('available as of') not found"
+        out["flags"].append(out["reason"])
+        return out
+    yr = int(a.group(3))
+    out["as_of"] = date(yr + 2000 if yr < 100 else yr, int(a.group(1)), int(a.group(2)))
+    if (date.today() - out["as_of"]).days > CARFAX_REPORT_STALE_DAYS:
+        out["flags"].append(f"Carfax report is {(date.today() - out['as_of']).days} days old")
+    readings = [
+        n for block in _CF_LAST_ODOMETER_RE.findall(raw)
+        for n in re.findall(r"(?m)^\s*([\d,]+)\s*$", block)
+    ]
+    if readings:  # the last value is the latest owner's column
+        out["last_odometer"], out["odometer_source"] = int(readings[-1].replace(",", "")), "report text"
+    elif isinstance(cf.get("last_reported_odometer"), (int, float)):
+        out["last_odometer"], out["odometer_source"] = int(cf["last_reported_odometer"]), "stored field"
+    else:
+        out["reason"] = "no Carfax odometer reading"
+        out["flags"].append(out["reason"])
+        return out
+    out["term_miles"] = out["miles_at_report"] + out["last_odometer"]
+    if out["term_miles"] % 1000:
+        out["reason"] = (
+            f"derived term {out['term_miles']:,} (Carfax {out['miles_at_report']:,} + odometer "
+            f"{out['last_odometer']:,}) is not a round number"
+        )
+        out["flags"].append(out["reason"])
+        return out
+    out["ok"] = True
+    return out
+
+
+_TWO_WORD_MAKES = ("land rover", "alfa romeo", "aston martin", "rolls royce", "rolls-royce motor")
+
+
+def _warranty_make(year_make_model: str | None) -> str | None:
+    """The make as the sentence names it: "2024 Volvo S60" -> "Volvo",
+    "2023 Land Rover Defender" -> "Land Rover"."""
+    words = (year_make_model or "").split()
+    if len(words) < 2:
+        return None
+    if len(words) >= 3 and f"{words[1]} {words[2]}".lower() in _TWO_WORD_MAKES:
+        return f"{words[1]} {words[2]}"
+    return words[1]
 
 
 def factory_warranty_remaining(
@@ -3049,76 +3049,63 @@ def factory_warranty_remaining(
     pricing_data: dict[str, Any] | None,
     carfax_data: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Remaining basic factory warranty, or why there is none:
-    {"ok", "reason", "make", "months", "miles", "start", "start_source",
-    "period"}. Months = term months - months since Carfax's in-service date
-    (January 1 of the model year when Carfax gives no date); miles = term
-    miles - the lot odometer. No Carfax odometer gate."""
+    """Remaining factory warranty from Carfax's estimate only (no brand table,
+    no in-service date): months = Carfax's N minus whole months since its
+    report date (none under FACTORY_WARRANTY_MIN_MONTHS); miles = Carfax's
+    derived term minus the lot odometer, rounded down to 100 (none at 0)."""
     pr = pricing_data if isinstance(pricing_data, dict) else {}
-    cf = carfax_data if isinstance(carfax_data, dict) else {}
-    out: dict[str, Any] = {"ok": False, "reason": None, "make": None, "months": None, "miles": None,
-                           "start": None, "start_source": None, "period": None}
-    period = _warranty_period_for_make(year_make_model)
-    if period is None:
-        out["reason"] = "brand not in WARRANTY_PERIODS"
+    est = carfax_warranty_estimate(carfax_data)
+    out: dict[str, Any] = {"ok": False, "reason": est["reason"], "flags": list(est["flags"]), "estimate": est,
+                           "make": _warranty_make(year_make_model), "months": None, "miles": None,
+                           "transfer": est["latest_active"], "basic": est["basic"]}
+    if not est["ok"]:
         return out
-    make, entry = period
-    out["make"], out["period"] = make, entry
-    if entry.get("transfers") is not True:
-        out["reason"] = f"{make}: transfer to a second owner not confirmed on the manufacturer's site"
+    out["months"] = est["months_at_report"] - _months_between(est["as_of"], date.today())
+    if out["months"] < FACTORY_WARRANTY_MIN_MONTHS:
+        out["reason"] = f"{out['months']} months left (under {FACTORY_WARRANTY_MIN_MONTHS})"
         return out
-    start = _carfax_sale_date(cf.get("raw_text"))
-    out["start_source"] = "Carfax in-service date"
-    if start is None:
-        model_year, _ = _ymm_year_model(year_make_model)
-        if not model_year:
-            out["reason"] = "no Carfax in-service date and no model year"
-            return out
-        start = date(model_year, 1, 1)
-        out["start_source"] = "January 1 of the model year (no Carfax date)"
-    out["start"] = start.isoformat()
-    out["months"] = entry["years"] * 12 - _months_between(start, date.today())
     odometer = pr.get("mileage")
     if not isinstance(odometer, (int, float)) or odometer <= 0:
-        # 0 on a used car is a missing ACV Max reading, not a real odometer:
-        # it would claim the whole mileage term is left.
-        out["reason"] = "no lot odometer (ACV Max shows none or 0)"
+        out["reason"] = "lot odometer 0 or missing"
         return out
-    out["miles"] = entry["miles"] - int(odometer)
-    if out["months"] <= 0 or out["miles"] <= 0:
-        out["reason"] = (
-            f"{make} {entry['years']}-yr/{entry['miles']:,}-mi basic warranty expired "
-            f"({out['months']} months, {out['miles']:,} miles left)"
-        )
+    out["miles"] = ((est["term_miles"] - int(odometer)) // 100) * 100
+    if out["miles"] <= 0:
+        out["reason"] = f"{est['term_miles'] - int(odometer):,} miles left"
+        return out
+    if not out["make"]:
+        out["reason"] = "no make in year/make/model"
         return out
     out["ok"] = True
     return out
 
 
-def odometer_below_carfax(
+def odometer_flags(
     pricing_data: dict[str, Any] | None, carfax_data: dict[str, Any] | None
-) -> dict[str, Any] | None:
-    """{"lot_odometer", "carfax_odometer", "gap"} when the lot odometer is more
-    than ODOMETER_BELOW_CARFAX_MILES below Carfax's last reading, else None.
-    A flag for Action Required only — it never blocks a sentence."""
+) -> list[dict[str, Any]]:
+    """Action Required flag (never a block): the lot odometer is more than
+    ODOMETER_BELOW_CARFAX_MILES below Carfax's last reading. (A 0 or missing
+    odometer is not a flag: _odometer_gate() blocks the build.)"""
     pr = pricing_data if isinstance(pricing_data, dict) else {}
     cf = carfax_data if isinstance(carfax_data, dict) else {}
     lot, cfx = pr.get("mileage"), cf.get("last_reported_odometer")
-    if not isinstance(lot, (int, float)) or not isinstance(cfx, (int, float)):
-        return None
-    gap = int(cfx) - int(lot)
-    if gap > ODOMETER_BELOW_CARFAX_MILES:
-        return {"lot_odometer": int(lot), "carfax_odometer": int(cfx), "gap": gap}
-    return None
+    cfx = int(cfx) if isinstance(cfx, (int, float)) else None
+    if not isinstance(lot, (int, float)) or lot <= 0:
+        return []
+    if cfx is not None and cfx - int(lot) > ODOMETER_BELOW_CARFAX_MILES:
+        return [{"kind": "below_carfax", "lot_odometer": int(lot), "carfax_odometer": cfx, "gap": cfx - int(lot)}]
+    return []
 
 
 def factory_warranty_sentence(fw: dict[str, Any]) -> str | None:
+    """"CARFAX estimates about N months remain on the original <Make> [basic ]
+    warranty, or about M miles at the current odometer, whichever comes
+    first." "basic" when Carfax's row label reads "Basic Warranty"."""
     if not fw.get("ok"):
         return None
+    basic = "basic " if fw.get("basic") else ""
     return (
-        f"This vehicle carries an estimated {fw['months']} months or {fw['miles']:,} miles "
-        f"of remaining {fw['make']} factory warranty, whichever comes first, transferable "
-        "to the new owner."
+        f"CARFAX estimates about {fw['months']} months remain on the original {fw['make']} {basic}warranty, "
+        f"or about {fw['miles']:,} miles at the current odometer, whichever comes first."
     )
 
 
@@ -3137,19 +3124,18 @@ def build_warranty_sentence(
     dict, never written back onto carfax_raw. This calls _warranty_fields()
     directly rather than reading nonexistent keys off carfax_data.
 
-    Statuses 10, 16 and 13: the factory-warranty sentence from
-    factory_warranty_remaining() (basic term from WARRANTY_PERIODS, never
-    powertrain; no Carfax odometer gate). See _warranty_period_for_make() for
-    the make-extraction rule.
+    Statuses 10, 16 and 13: the factory-warranty sentence from Carfax's own
+    estimate (factory_warranty_remaining()). Statuses 11 and 12 return their
+    program warranty sentence here; their factory sentence is built separately
+    (pkg "factory_warranty_sentence", paragraph three).
     """
     cf = carfax_data if isinstance(carfax_data, dict) else {}
     pr = pricing_data if isinstance(pricing_data, dict) else {}
 
     if status_code in (10, 16, 13):
-        # Factory-warranty sentence: brand's basic term, remaining months from
-        # Carfax's in-service date, remaining miles from the lot odometer. No
-        # Carfax odometer (warranty_claimable) gate. Status 13 places it in
-        # paragraph three; 10 and 16 in paragraph two.
+        # Factory-warranty sentence from Carfax's estimate; no Carfax odometer
+        # (warranty_claimable) gate. Status 13 places it in paragraph three;
+        # 10 and 16 in paragraph two.
         return factory_warranty_sentence(factory_warranty_remaining(year_make_model, pr, cf))
 
     if status_code == 11:
@@ -3870,6 +3856,31 @@ def _non_cpo_data_gate(
         "stock_prefix": stock_prefix,
         "status_code": status_code,
         "current_internet_price": current_price,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _odometer_gate(
+    stock: str, stock_prefix: str, status_code: int | None, pricing_raw: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Every tier: no ad is built when ACV Max's odometer for the car is 0 or
+    missing (the data package would otherwise print "Mileage: 0" and the ad
+    would say "0 miles"). Returns a failure package (reason "incomplete_data",
+    failed_source "odometer") — reported as an error in Action Required."""
+    miles = pricing_raw.get("mileage")
+    if isinstance(miles, (int, float)) and miles > 0:
+        return None
+    return {
+        "recon_complete": True,
+        "data_gate_passed": False,
+        "reason": "incomplete_data",
+        "failed_source": "odometer",
+        "failed_sources": ["odometer"],
+        "message": f"Lot odometer is {miles!r} in ACV Max (0 or missing) — no ad built",
+        "stock_number": stock,
+        "stock_prefix": stock_prefix,
+        "status_code": status_code,
+        "current_internet_price": pricing_raw.get("current_internet_price"),
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -4605,7 +4616,9 @@ def aggregate(
     #     sticker must both have returned usable data.
     #   status 11/12/13 (Hendrick Certified/Affordable, As-Is): ACV Max
     #     pricing only — a window sticker is optional on these tiers.
-    gate_failure = _mb_cpo_data_gate(
+    gate_failure = _odometer_gate(
+        stock, stock_prefix, pricing_raw.get("status_code"), pricing_raw
+    ) or _mb_cpo_data_gate(
         stock, stock_prefix, pricing_raw.get("status_code"), pricing_raw, msrp_data
     ) or _non_cpo_data_gate(stock, stock_prefix, pricing_raw.get("status_code"), pricing_raw)
     if gate_failure is not None:
@@ -4746,7 +4759,19 @@ def aggregate(
             pricing_raw.get("year_make_model"),
         ),
         "warranty_sentence": warranty_sentence,
-        "odometer_below_carfax": odometer_below_carfax(pricing_raw, carfax_raw),
+        "odometer_flags": odometer_flags(pricing_raw, carfax_raw),
+        # Hendrick Certified / Affordable: the factory-warranty sentence lives
+        # in paragraph three, next to (not in place of) the program warranty.
+        "factory_warranty_sentence": (
+            factory_warranty_sentence(
+                factory_warranty_remaining(pricing_raw.get("year_make_model"), pricing_raw, carfax_raw)
+            )
+            if pricing_raw.get("status_code") in (11, 12) else None
+        ),
+        "warranty_estimate_flags": (
+            factory_warranty_remaining(pricing_raw.get("year_make_model"), pricing_raw, carfax_raw)["flags"]
+            if pricing_raw.get("status_code") in (10, 16, 13, 11, 12) else []
+        ),
         "shipping_sentence": build_shipping_sentence(
             pricing_raw,
             msrp_data,

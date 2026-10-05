@@ -102,6 +102,7 @@
               <button type="submit" class="btn-reprice" title="Reprice against current ACV Max pricing">Reprice</button>
             </form>
             {% endif %}
+            {% if r.warranty_stale %}<div class="mismatch-note" style="color: var(--warn, #b45309);" title="Warranty months/miles count down; a reprice rebuilds the sentence">&#9888; Warranty sentence built {{ r.warranty_sentence_date }} (over {{ r.warranty_stale_days }} days); reprice to refresh</div>{% endif %}
             {% if r.generation_flag %}<div class="mismatch-note" style="color: var(--warn, #b45309);" title="{{ r.generation_flag.detail }}">&#9888; {{ 'Reprice' if r.generation_flag.kind.startswith('reprice') else 'Recon update' }} did not finish ({{ r.generation_flag.date }}); old text kept</div>{% endif %}
           </td>
         </tr>

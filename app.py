@@ -446,6 +446,11 @@ def logout():
 from status_codes import STATUS_LABELS as _STATUS_LABELS  # noqa: E402
 
 
+# The factory-warranty sentence counts down by date and odometer: flag ads whose
+# sentence was built more than this many days ago (a reprice rebuilds it).
+WARRANTY_SENTENCE_STALE_DAYS = 30
+
+
 def _status_label(code: Any) -> str:
     if code is None:
         return "Unknown"
@@ -588,6 +593,12 @@ def inventory():
         identity_confirmed = entry.get("identity_confirmed") if entry else None
         verification_note = entry.get("verification_note") if entry else None
         generation_flag = entry.get("generation_flag") if entry else None
+        warranty_age_days = None
+        if entry and entry.get("warranty_sentence_date"):
+            try:
+                warranty_age_days = (date.today() - date.fromisoformat(entry["warranty_sentence_date"])).days
+            except ValueError:
+                warranty_age_days = None
         # Posted: green only when identity_confirmed is True (our proof-point $
         # or provenance sentence phrase-matched the live page — see verifier.py
         # compare_ad()); red when it's explicitly False (nothing of ours found,
@@ -656,6 +667,9 @@ def inventory():
                 "price_mismatch": price_mismatch,
                 "verification_note": verification_note,
                 "generation_flag": generation_flag,
+                "warranty_sentence_date": entry.get("warranty_sentence_date") if entry else None,
+                "warranty_stale": warranty_age_days is not None and warranty_age_days > WARRANTY_SENTENCE_STALE_DAYS,
+                "warranty_stale_days": WARRANTY_SENTENCE_STALE_DAYS,
             }
         )
     return render_template("inventory.html", rows=rows, snapshot_time=_fmt_snapshot_time(stamp))

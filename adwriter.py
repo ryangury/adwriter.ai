@@ -1441,7 +1441,14 @@ def format_data_package(pkg: dict) -> tuple[str, list[dict]]:
         )
     else:
         lines.append("WARRANTY SENTENCE (include in paragraph two when present, omit if null):")
-    lines.append(pkg.get("warranty_sentence") or "(omit — no remaining factory warranty, or no confirmed terms for this brand)")
+    lines.append(pkg.get("warranty_sentence") or "(omit — no remaining factory warranty per Carfax)")
+    if v.get("status_code") in (11, 12):
+        lines.append("")
+        lines.append(
+            "FACTORY WARRANTY SENTENCE (include verbatim in paragraph three, right before the program warranty "
+            "sentence, when present; omit if null — it is separate from the program warranty):"
+        )
+        lines.append(pkg.get("factory_warranty_sentence") or "(omit — no remaining factory warranty per Carfax)")
 
     lines.append("")
     lines.append("SHIPPING SENTENCE (include as final sentence of paragraph two when present, omit if null):")
@@ -1715,7 +1722,23 @@ REQUIRED_SENTENCE_KEYS = (
     "warranty_sentence",
     "shipping_sentence",
     "mild_hybrid_sentence",
+    "factory_warranty_sentence",
 )
+# The factory-warranty sentence (Carfax estimate); warranty_sentence_date
+# tracks only this one.
+_FACTORY_WARRANTY_RE = re.compile(
+    r"^(?:CARFAX estimates about \d+ months? remain on the original\b"
+    r"|Original \S+(?: \S+)? (?:basic )?factory warranty has\b)",
+    re.IGNORECASE,
+)
+# Hendrick Certified / Affordable program warranty sentence in paragraph
+# three; the factory-warranty sentence goes right before it (after the
+# services sentence on Hendrick Certified, the inspection sentence on
+# Hendrick Affordable, which has no services sentence).
+_PROGRAM_WARRANTY_RE = re.compile(r"^The Hendrick (?:Certified|Affordable) Limited Powertrain Warranty\b", re.IGNORECASE)
+# Hendrick Certified / Affordable paragraph three's inspection sentence; the
+# factory-warranty sentence goes right after it.
+_INSPECTION_SENTENCE_RE = re.compile(r"\binspection performed by Hendrick-certified technicians before it is offered for sale\b", re.IGNORECASE)
 
 # Paragraph-two sentence that names the engine / powertrain; MILD_HYBRID_SENTENCE
 # goes right after it (or after the opening sentence when there is none).
@@ -1738,7 +1761,17 @@ _DEPRECIATION_RE = re.compile(r"\bOriginal MSRP was\b|\bin depreciation\b", re.I
 # factory-warranty sentence goes right after it.
 _SERVICES_SENTENCE_RE = re.compile(r"\bservices were (?:completed|addressed) prior to delivery\b", re.IGNORECASE)
 _WARRANTY_START_RE = re.compile(
-    r"^(?:This vehicle carries an? .*warranty|The powertrain warranty runs through)", re.IGNORECASE
+    r"^(?:This vehicle carries an? .*warranty|The powertrain warranty runs through"
+    r"|The High-Tech Warranty adds|Original \S+(?: \S+)? factory warranty (?:has|remains)"
+    r"|CARFAX estimates about \d+ months? remain on the original)",
+    re.IGNORECASE,
+)
+# As-Is paragraph-three lines the factory-warranty sentence replaces (a reprice
+# of an older As-Is ad removes them).
+_ASIS_OLD_WARRANTY_LINES_RE = re.compile(
+    r"^(?:This vehicle is sold without dealer warranty or roadside assistance\."
+    r"|The original manufacturer warranty remains active and transfers to the new owner\.)",
+    re.IGNORECASE,
 )
 
 
@@ -1822,6 +1855,14 @@ def insert_required_sentences(
         paras["paragraph_one"] = " ".join(units)
         print(f"{tag} inserted provenance sentence into paragraph one", file=sys.stderr)
 
+    # Hendrick Certified / Affordable (11 / 12): the factory-warranty sentence
+    # goes in paragraph three right before the program warranty sentence.
+    if "factory_warranty_sentence" in missing:
+        paras["paragraph_three"] = hendrick_paragraph_three_with_factory_warranty(
+            paras["paragraph_three"], required["factory_warranty_sentence"]
+        )
+        print(f"{tag} inserted factory warranty sentence into paragraph three", file=sys.stderr)
+        missing = [k for k in missing if k != "factory_warranty_sentence"]
     # As-Is (status 13): the factory-warranty sentence lives in paragraph
     # three, right after the services sentence.
     if status_code == 13 and "warranty_sentence" in missing:
@@ -2185,6 +2226,85 @@ def normalize_stock(stock: str | None) -> str:
     return (stock or "").strip().lstrip("#").upper()
 
 
+def rebuild_warranty_sentence(stock: str, pricing: dict, status: int | None) -> str | None:
+    """The warranty sentence as it stands today: Carfax (cached) in-service
+    date, the current odometer (fresh pricing, else the snapshot), today's
+    date. Never reuses the sentence already in the ad."""
+    from aggregator import build_warranty_sentence
+    from vehicle_cache import get_vehicle
+
+    snap = _snapshot_vehicle(stock)
+    vin = pricing.get("vin") or snap.get("vin")
+    row = get_vehicle(vin) if vin else None
+    try:
+        cf = json.loads(row["carfax_json"]) if row and row.get("carfax_json") else {}
+    except (TypeError, ValueError):
+        cf = {}
+    mileage = pricing.get("mileage") if pricing.get("mileage") is not None else snap.get("mileage")
+    ymm = snap.get("year_make_model") or pricing.get("year_make_model")
+    return build_warranty_sentence(cf, {"mileage": mileage, "year_make_model": ymm}, status, ymm)
+
+
+def rebuild_factory_warranty_sentence(stock: str, pricing: dict) -> str | None:
+    """Statuses 11 / 12: today's factory-warranty sentence from the stored
+    Carfax estimate and the current odometer."""
+    from aggregator import factory_warranty_remaining, factory_warranty_sentence
+    from vehicle_cache import get_vehicle
+
+    snap = _snapshot_vehicle(stock)
+    vin = pricing.get("vin") or snap.get("vin")
+    row = get_vehicle(vin) if vin else None
+    try:
+        cf = json.loads(row["carfax_json"]) if row and row.get("carfax_json") else {}
+    except (TypeError, ValueError):
+        cf = {}
+    mileage = pricing.get("mileage") if pricing.get("mileage") is not None else snap.get("mileage")
+    ymm = snap.get("year_make_model") or pricing.get("year_make_model")
+    return factory_warranty_sentence(factory_warranty_remaining(ymm, {"mileage": mileage}, cf))
+
+
+def paragraph_three_with_factory_warranty(p3: str, sentence: str | None, anchor_re: re.Pattern) -> str:
+    """Paragraph three with today's factory-warranty sentence right after the
+    sentence `anchor_re` finds; any older factory-warranty sentence comes out
+    first, and nothing is added when no sentence is built."""
+    units = [u for u in _units(p3, []) if not _FACTORY_WARRANTY_RE.match(u)]
+    if sentence:
+        at = next((i for i, u in enumerate(units) if anchor_re.search(u)), None)
+        units.insert((at + 1) if at is not None else min(1, len(units)), sentence)
+    return " ".join(units)
+
+
+def hendrick_paragraph_three_with_factory_warranty(p3: str, sentence: str | None) -> str:
+    """Statuses 11 / 12: the factory-warranty sentence right before the
+    program warranty sentence (after the services sentence on Hendrick
+    Certified; after the inspection sentence on Hendrick Affordable). An older
+    factory-warranty sentence comes out first; nothing is added when none is
+    built."""
+    units = [u for u in _units(p3, []) if not _FACTORY_WARRANTY_RE.match(u)]
+    if sentence:
+        prog = next((i for i, u in enumerate(units) if _PROGRAM_WARRANTY_RE.match(u)), None)
+        if prog is None:
+            after = next((i for i, u in enumerate(units) if _INSPECTION_SENTENCE_RE.search(u)), None)
+            prog = (after + 1) if after is not None else min(1, len(units))
+        units.insert(prog, sentence)
+    return " ".join(units)
+
+
+def asis_paragraph_three_with_warranty(p3: str, warranty: str | None) -> str:
+    """As-Is paragraph three with today's factory-warranty sentence right
+    after the services sentence: any older warranty sentence and the old
+    "sold without dealer warranty" line come out; nothing is added when no
+    sentence is built."""
+    units = [
+        u for u in _units(p3, [])
+        if not _WARRANTY_START_RE.match(u) and not _ASIS_OLD_WARRANTY_LINES_RE.match(u)
+    ]
+    if warranty:
+        svc = next((i for i, u in enumerate(units) if _SERVICES_SENTENCE_RE.search(u)), None)
+        units.insert(len(units) if svc is None else svc + 1, warranty)
+    return " ".join(units)
+
+
 def stamp_mild_sentence(entry: dict, today: str | None = None) -> None:
     """mild_hybrid_sentence_first_date: the first day this ad carried
     MILD_HYBRID_SENTENCE (set once, never moved)."""
@@ -2236,6 +2356,11 @@ def record_ad(
     entry["verification_note"] = None
     entry.pop("generation_flag", None)
     stamp_mild_sentence(entry, today)
+    # warranty_sentence_date: the day this ad's factory-warranty sentence was built.
+    if any(_FACTORY_WARRANTY_RE.match(s) for s in _split_sentences(ad_text)):
+        entry["warranty_sentence_date"] = today
+    else:
+        entry.pop("warranty_sentence_date", None)
     history[stock] = entry
     return entry
 
@@ -2436,6 +2561,11 @@ def scrub_non_mb_tire_wording(
     return new
 
 
+class OdometerMissingError(RuntimeError):
+    """ACV Max's odometer for the car is 0 or missing: the reprice is refused
+    and nothing is saved (the orchestrator lists it as an error)."""
+
+
 def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
     """Rewrite paragraph two of an existing ad against fresh pricing data and
     return the reconstructed four-paragraph ad. Updates ad_history.json in place
@@ -2452,6 +2582,10 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
         raise ValueError(f"No paragraph two stored for {stock}; cannot reprice.")
 
     pd = new_pricing_data or {}
+    if "mileage" in pd and not (isinstance(pd.get("mileage"), (int, float)) and pd["mileage"] > 0):
+        raise OdometerMissingError(
+            f"{stock}: lot odometer is {pd.get('mileage')!r} in ACV Max (0 or missing) — reprice not saved"
+        )
     # current_price is the raw ACV Max price — kept for last_price_at_write /
     # reprice detection below. advertised_price (current_price + DEALER_DOC_FEE)
     # is what goes into the ad-copy prompt; proof_points_below/best_proof_point
@@ -2484,11 +2618,17 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
     required: dict[str, str] = {}
     if pd.get("proof_point_sentence"):
         required["proof_point_sentence"] = pd["proof_point_sentence"]
-    warranty = next(
-        (u for u in _units(clean_p2 or old_p2, [SHIPPING_SENTENCE]) if _WARRANTY_START_RE.match(u)), None
+    # The warranty sentence is rebuilt from today's date and the current
+    # odometer on every reprice; the old one never comes back as required
+    # text. Status 13 carries it in paragraph three (handled below).
+    clean_p2 = " ".join(
+        u for u in _units(clean_p2 or old_p2, [SHIPPING_SENTENCE]) if not _WARRANTY_START_RE.match(u)
     )
-    if warranty:
-        required["warranty_sentence"] = warranty
+    new_warranty = rebuild_warranty_sentence(stock, pd, status)
+    if new_warranty and status != 13:
+        required["warranty_sentence"] = new_warranty
+    # 11 / 12: the factory sentence (paragraph three) is rebuilt too.
+    new_factory = rebuild_factory_warranty_sentence(stock, pd) if status in (11, 12) else None
     if _ws(SHIPPING_SENTENCE) in _ws(old_p2):
         required["shipping_sentence"] = SHIPPING_SENTENCE
     if pt.get("mild_sentence") and _ws(pt["mild_sentence"]) in _ws(old_p2):
@@ -2563,6 +2703,15 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
             _paragraph(entry, "paragraph_three"), _paragraph(entry, "paragraph_four"),
         )
     )
+    if status == 13:
+        p3 = asis_paragraph_three_with_warranty(p3, new_warranty)
+    elif status in (11, 12):
+        p3 = hendrick_paragraph_three_with_factory_warranty(p3, new_factory)
+    factory_now = new_warranty if status in (10, 16, 13) else new_factory
+    if factory_now:
+        entry["warranty_sentence_date"] = date.today().isoformat()
+    else:
+        entry.pop("warranty_sentence_date", None)
     # The paragraphs a reprice leaves alone get the same powertrain check
     # (no model call there, so offending sentences are removed and logged).
     p1, n1 = strip_powertrain_claims(p1, pt, stock=stock, label="reprice", existing=True)
@@ -2620,6 +2769,9 @@ def fresh_pricing_data(stock_number: str, *, headless: bool = True) -> dict:
     shaped["current_price"] = pr.get("current_internet_price")
     shaped["advertised_price"] = advertised
     shaped["status_code"] = pr.get("status_code")
+    shaped["mileage"] = pr.get("mileage")
+    shaped["vin"] = pr.get("vin")
+    shaped["year_make_model"] = pr.get("year_make_model")
     from aggregator import BUILD_STATUS_CODES, build_scarcity_sentence
 
     shaped["scarcity_sentence"] = (
