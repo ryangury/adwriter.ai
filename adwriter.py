@@ -36,12 +36,12 @@ from aggregator import (
 )
 from feature_cache import (
     get_feature,
-    get_towing,
     get_trim_knowledge,
     save_feature,
-    save_towing,
     save_trim_knowledge,
 )
+from towing import towing_for, unverified_tow_sentences
+from vehicle_cache import get_window_sticker
 from powertrain import (
     MILD_HYBRID_SENTENCE,
     mild_wording_ok,
@@ -146,7 +146,7 @@ You have access to web search. Use it only when the FEATURES REQUIRING RESEARCH 
 
 When you find a feature description via web search write it in plain buyer language — what it does, not what it is called. Example: Magic Vision Control wipes rain off the windshield using heated washer fluid jets built into the wiper blades, eliminating streaking and the need for repeated wiper passes in heavy rain.
 
-TOWING CAPACITY RULE: Any vehicle with a trailer hitch in the option packages must state the rated towing capacity as a specific number in the ad. Never use generic language like increased towing capacity alone. Always pair it with the actual number. Example: rated for 7,700 lbs of towing capacity with the factory trailer hitch installed.
+TOWING CAPACITY RULE: State a towing capacity only as the data package's TOWING CAPACITY line gives it. When it gives a figure (verified for this exact configuration), state exactly that figure in a sentence of its own, never generic language like increased towing capacity alone. Example: rated for 7,700 lbs of towing capacity with the factory trailer hitch installed. When it says omit, state no towing figure or capacity in any form; the hitch or tow package may still be named as equipment. Never research or estimate a tow rating.
 
 FEATURE CONTEXT section in the data package contains pre-researched descriptions for features already in the cache. Use these descriptions directly without searching again.
 
@@ -343,7 +343,7 @@ TIER 2 — Name with brief context. Buyers mostly understand these but a short c
 - Panorama Sunroof — mention if it spans both rows
 - Burmester — one descriptive word is enough (premium, reference-grade)
 - Surround View Camera — "360-degree camera coverage" adds clarity
-- Towing capacity — state the specific number, that IS the explanation
+- Towing capacity — the data package's verified number, when it gives one, IS the explanation
 - 5-Zone Climate Control — note that every row has independent temperature control
 
 TIER 3 — Name only. Self-explanatory to any Mercedes-Benz buyer, no explanation needed:
@@ -564,6 +564,27 @@ _REASONING_RE = re.compile(
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 
+# The model writing as itself ("I searched...", "I couldn't find...", "I'm
+# using..."): a standalone capital I (not part of "II", "I-40" or "4MATIC") that
+# is contracted or followed by a verb. A Roman numeral ("Class II Trailer Tow
+# Package", "Package I", "Phase I") is not a pronoun, so a bare "I " is not
+# enough: on 10/5/2026 that substring test removed the Escape's "Class II
+# Trailer Tow Package" sentence (and its 3,500-lb tow figure) and the
+# Silverado's "Convenience Package II" sentence.
+_FIRST_PERSON_VERBS = (
+    "searched|found|could|couldn't|cannot|can't|can|did|didn't|do|don't|will|won't|would|wouldn't"
+    "|have|haven't|had|am|was|need|needed|noticed|checked|think|believe|see|saw|want|used|chose"
+    "|included|confirmed|verified|looked|recommend|should|tried|wrote|kept|added|removed|omitted"
+    "|selected|referenced|note|noted|assumed|made|went"
+)
+_FIRST_PERSON_RE = re.compile(
+    rf"(?<![\w'’-])I(?:['’](?:m|ve|ll|d)\b|\s+(?:{_FIRST_PERSON_VERBS})\b)"
+)
+
+
+def _is_first_person(sentence: str) -> bool:
+    return bool(_FIRST_PERSON_RE.search(sentence or ""))
+
 # The fixed warranty (paragraph three) and store-closer (paragraph four)
 # paragraphs, across every SYSTEM_PROMPT variant (MB CPO, Hendrick Certified,
 # Hendrick Affordable, As-Is INSPECTED/RECONDITIONED). These paragraphs are
@@ -584,11 +605,10 @@ PROTECTED_OPENINGS = [
 
 def _strip_reasoning_sentences(text: str) -> str:
     """Drop any sentence matching _REASONING_RE, any individual sentence
-    carrying a bare first-person "I " (ad copy is always third person — see
-    the ABSOLUTE RULE against first person in every SYSTEM_PROMPT variant,
-    and note this checks for a literal "I " substring, not a \\bI\\b word
-    boundary: the fixed store-closer paragraph's "I-40" would otherwise
-    false-positive, since a hyphen also counts as a word boundary), and any
+    in the first person (_FIRST_PERSON_RE: "I'm", "I've", "I'll", "I'd", or a
+    standalone "I" followed by a verb — ad copy is always third person, see
+    the ABSOLUTE RULE in every SYSTEM_PROMPT variant; Roman numerals like
+    "Class II" and the store closer's "I-40" are not pronouns), and any
     line ending in a colon (an internal outline header like "Equipment
     highlights:" or "Color:" that leaked into the ad body instead of flowing
     prose). Paragraph breaks (blank lines) are preserved. Logs everything
@@ -633,7 +653,7 @@ def _strip_reasoning_sentences(text: str) -> str:
         if not sentences:
             continue
 
-        first_person_count = sum(1 for s in sentences if "I " in s)
+        first_person_count = sum(1 for s in sentences if _is_first_person(s))
         if first_person_count > len(sentences) / 2:
             snippet = stripped_para[:50]
             print(
@@ -645,7 +665,7 @@ def _strip_reasoning_sentences(text: str) -> str:
 
         kept = []
         for s in sentences:
-            if "I " in s:
+            if _is_first_person(s):
                 snippet = s.strip()[:50]
                 print(
                     f'[adwriter] WARNING: stripped first-person sentence from ad body: "{snippet}..."',
@@ -691,15 +711,59 @@ def _extract_ad_body(text: str) -> str:
     return _strip_reasoning_sentences(ad_body_slice)
 
 
+def towing_package_lines(tow: dict | None) -> list[str]:
+    """The TOWING section of the data package (towing.towing_for())."""
+    if not tow or not tow.get("triggered"):
+        return []
+    if tow.get("rating"):
+        return [
+            "",
+            f"TOWING CAPACITY: {tow['rating']:,} lbs — verified on a manufacturer page for this exact "
+            f"configuration ({tow['config_text']}; {tow.get('source_url')}). State exactly this figure "
+            "in a sentence of its own; no other tow figure.",
+        ]
+    return [
+        "",
+        "TOWING CAPACITY: (omit — no manufacturer-published rating was found for this exact "
+        f"configuration, {tow['config_text']}). State no towing figure or towing capacity in any form; "
+        "a hitch or tow package may be named as equipment only.",
+    ]
+
+
+def set_towing_review(entry: dict, tow: dict | None) -> None:
+    """ad_history's towing_review: why the ad states no tow figure although
+    the car can tow (listed under TOWING RATING NEEDS REVIEW in Action
+    Required); removed once a verified rating exists or nothing triggers."""
+    tow = tow or {}
+    if tow.get("triggered") and not tow.get("rating"):
+        entry["towing_review"] = f"{tow.get('config_text')}: {tow.get('note')}"
+    else:
+        entry.pop("towing_review", None)
+
+
+def towing_for_package(pkg: dict) -> dict:
+    """towing.towing_for() for an aggregated package: the inventory record's
+    trim / body style, and the sticker text and option names. Never raises."""
+    v = pkg.get("vehicle") or {}
+    stock = normalize_stock(pkg.get("stock_number") or v.get("stock_number") or "")
+    snap = _snapshot_vehicle(stock) if stock else {}
+    msrp = pkg.get("msrp_data") or {}
+    raw = _sticker_text_for(pkg)
+    names =[o.get("name") or "" for o in (msrp.get("option_packages") or []) + (msrp.get("added_options_all") or [])]
+    try:
+        return towing_for(
+            snap.get("year_make_model") or v.get("year_make_model"),
+            snap.get("trim") or v.get("trim_body"), snap.get("body_style"), raw, names,
+        )
+    except Exception as exc:  # noqa: BLE001 - a tow lookup must never sink a build
+        print(f"[towing] {stock}: lookup failed — {exc}", file=sys.stderr)
+        return {"triggered": True, "rating": None, "config_text": stock, "note": f"lookup failed ({exc})"}
+
+
 def _research_instructions(needs_lookup: list[dict]) -> str:
     items = []
     for n in needs_lookup:
-        if n.get("kind") == "towing":
-            items.append(
-                f"TOWING rating for {n.get('year')} {n.get('make')} {n.get('model')}"
-                f" {n.get('trim') or ''}".strip()
-            )
-        elif n.get("kind") == "trim_knowledge":
+        if n.get("kind") == "trim_knowledge":
             label = CLASS_LABELS.get(n.get("powertrain") or UNKNOWN, "unknown")
             items.append(
                 f"STANDARD EQUIPMENT AND ENGINE SPECS for {n.get('year')} "
@@ -722,9 +786,10 @@ def _research_instructions(needs_lookup: list[dict]) -> str:
         f"\n\nFEATURES REQUIRING RESEARCH: {listed}\n"
         "For each item above: search for it, then write a 1-2 sentence plain "
         "English buyer-facing description of what it does and why a buyer would "
-        "want it. Use those descriptions when you write the ad. (A TOWING or "
-        "STANDARD EQUIPMENT AND ENGINE SPECS item is answered with its own "
-        "line format below instead of a description.)\n\n"
+        "want it. Use those descriptions when you write the ad. (A STANDARD "
+        "EQUIPMENT AND ENGINE SPECS item is answered with its own line format "
+        "below instead of a description. Never research a towing rating: the "
+        "data package's TOWING CAPACITY line is the only tow figure allowed.)\n\n"
         "When research is done you MUST output the findings block below BEFORE "
         "the ad. This block is the ONLY text allowed before paragraph one — do "
         "not write any sentence, preamble, or status note ('Now I have "
@@ -734,10 +799,7 @@ def _research_instructions(needs_lookup: list[dict]) -> str:
         "prose and do not skip it.\n\n"
         "===RESEARCH===\n"
         "<feature name> :: <1-2 sentence description> :: <source URL>\n"
-        "(one such line per feature above; then, only if a TOWING item is "
-        "listed above, exactly one line:)\n"
-        "TOWING :: <rated pounds, digits only> :: <required package name or none> :: <source URL>\n"
-        "(and, only if a STANDARD EQUIPMENT AND ENGINE SPECS item is listed "
+        "(one such line per feature above; then, only if a STANDARD EQUIPMENT AND ENGINE SPECS item is listed "
         "above, exactly one line:)\n"
         "TRIM :: <comma-separated list of standard equipment on this trim> :: "
         "<engine description: configuration, cylinder count, displacement, "
@@ -750,7 +812,6 @@ def _research_instructions(needs_lookup: list[dict]) -> str:
 
 def _cache_research_findings(block_text: str, needs_lookup: list[dict]) -> None:
     features = [n for n in needs_lookup if n.get("kind") == "feature"]
-    towings = [n for n in needs_lookup if n.get("kind") == "towing"]
     for raw in block_text.splitlines():
         parts = [p.strip() for p in raw.split("::")]
         if len(parts) < 2 or not parts[0]:
@@ -768,25 +829,7 @@ def _cache_research_findings(block_text: str, needs_lookup: list[dict]) -> None:
                 )
             continue
         if parts[0].upper() == "TOWING":
-            rating = None
-            m = re.search(r"[\d,]+", parts[1])
-            if m:
-                try:
-                    rating = int(m.group(0).replace(",", ""))
-                except ValueError:
-                    rating = None
-            pkg_name = parts[2] if len(parts) > 2 and parts[2].lower() not in ("none", "n/a", "") else None
-            url = parts[3] if len(parts) > 3 else None
-            tw = towings[0] if towings else None
-            if tw and rating and tw.get("year") and tw.get("make") and tw.get("model"):
-                save_towing(
-                    tw["year"], tw["make"], tw["model"], rating,
-                    trim=tw.get("trim"),
-                    package_required=bool(pkg_name),
-                    package_name=pkg_name,
-                    source_url=url,
-                )
-            continue
+            continue  # tow ratings come only from towing.py's verified lookup
 
         fname, desc = parts[0], parts[1]
         url = parts[2] if len(parts) > 2 else None
@@ -827,36 +870,12 @@ def _salvage_findings(
 ) -> None:
     """Best-effort cache write for when Claude narrated its research in prose
     instead of emitting the ===RESEARCH=== block. Only fills gaps the structured
-    parse left behind; save_feature/save_towing are upserts so re-writing is safe.
+    parse left behind; save_trim_knowledge is an upsert so re-writing is safe.
+    (Tow ratings are never taken from the ad model's research: see towing.py.)
     """
     if not region:
         return
     url = search_urls[0] if search_urls else None
-
-    towings = [n for n in needs_lookup if n.get("kind") == "towing"]
-    if towings:
-        tw = towings[0]
-        mt = re.search(r"([\d,]{4,})\s*(?:lbs|lb\.?|pounds)", region, re.IGNORECASE)
-        if mt and tw.get("year") and tw.get("make") and tw.get("model"):
-            try:
-                rating = int(mt.group(1).replace(",", ""))
-            except ValueError:
-                rating = None
-            if rating:
-                mp = re.search(
-                    r"with (?:the )?(?:optional |available )?"
-                    r"([A-Z][\w &/+-]*?(?:package|hitch|trailer[\w ]*))",
-                    region,
-                    re.IGNORECASE,
-                )
-                pkg_name = mp.group(1).strip() if mp else None
-                save_towing(
-                    tw["year"], tw["make"], tw["model"], rating,
-                    trim=tw.get("trim"),
-                    package_required=bool(pkg_name),
-                    package_name=pkg_name,
-                    source_url=url,
-                )
 
     # Trim knowledge: an engine description pulled from prose. Partial by
     # design (no equipment list), so it still reads as a cache miss next time
@@ -1103,8 +1122,49 @@ def _split_ymm(year_make_model: str | None) -> tuple[int | None, str | None, str
     return year, make, model
 
 
-def _looks_towing(name: str) -> bool:
-    return bool(re.search(r"trailer hitch|\btowing\b|\btow\b", name or "", re.IGNORECASE))
+# A tire size (P/LT optional, "275/60R20", "255/45ZR19") stated in an ad must be
+# printed in the sticker or the data package; the model looks sizes up on forums
+# otherwise (CT23308A's "LT275/60R20", 10/5/2026).
+_TIRE_SIZE_RE = re.compile(r"\b(?:P|LT)?(\d{3}/\d{2})\s?Z?R\s?(\d{2})\b", re.IGNORECASE)
+
+
+def _tire_cores(text: str | None) -> set[str]:
+    return {f"{a}R{b}" for a, b in _TIRE_SIZE_RE.findall(text or "")}
+
+
+def unsupported_tire_sentences(ad_text: str, source_text: str) -> list[str]:
+    """Sentences stating a tire size the sticker / data package doesn't print."""
+    known = _tire_cores(source_text)
+    return [
+        s.strip() for s in re.split(r"(?<=[.!?])\s+", ad_text or "")
+        if _tire_cores(s) - known
+    ]
+
+
+def _drop_sentences(text: str, bad: list[str]) -> str:
+    """`text` without the sentences in `bad` (whitespace-normalized match)."""
+    drop = {_ws(b) for b in bad}
+    paras = []
+    for p in (text or "").split("\n\n"):
+        units = [u for u in _split_sentences(p) if _ws(u) not in drop]
+        paras.append(" ".join(u.strip() for u in units if u.strip()))
+    return "\n\n".join(p for p in paras if p)
+
+
+def _sticker_text_for(pkg: dict) -> str:
+    v = pkg.get("vehicle") or {}
+    stock = normalize_stock(pkg.get("stock_number") or v.get("stock_number") or "")
+    vin = (_snapshot_vehicle(stock) if stock else {}).get("vin") or v.get("vin")
+    return ((get_window_sticker(vin) or {}) if vin else {}).get("raw_text") or (pkg.get("msrp_data") or {}).get("raw_text") or ""
+
+
+def fact_check_problems(text: str, pkg: dict) -> tuple[list[str], list[str]]:
+    """(sentences with an unverified tow figure, sentences with a tire size not
+    in the sticker / data package) — each gets one retry, then is removed."""
+    tow = pkg.get("towing") or {}
+    tow_bad = unverified_tow_sentences(text, tow.get("rating"))
+    source = f"{_sticker_text_for(pkg)}\n{pkg.get('_data_package_text') or ''}"
+    return tow_bad, unsupported_tire_sentences(text, source)
 
 
 # --------------------------------------------------------------------------- #
@@ -1346,33 +1406,8 @@ def format_data_package(pkg: dict) -> tuple[str, list[dict]]:
         lines.append("=== FEATURE CONTEXT (pre-researched, use directly) ===")
         lines.extend(feature_context or ["  (none cached yet)"])
 
-        # --- TOWING: cache hit -> inline number, miss -> needs_lookup ---
-        if any(_looks_towing(o.get("name") or "") for o in opts):
-            tw = get_towing(year, make, model, trim) if year and make and model else None
-            lines.append("")
-            if tw and tw.get("tow_rating_lbs"):
-                pkg_txt = (
-                    f" (with {tw['package_name']})"
-                    if tw.get("package_required") and tw.get("package_name")
-                    else ""
-                )
-                lines.append(
-                    f"TOWING CAPACITY: {tw['tow_rating_lbs']:,} lbs{pkg_txt}"
-                )
-            else:
-                lines.append(
-                    "TOWING CAPACITY: not cached — research required "
-                    "(vehicle has a trailer hitch)"
-                )
-                needs_lookup.append(
-                    {
-                        "kind": "towing",
-                        "year": year,
-                        "make": make,
-                        "model": model,
-                        "trim": trim,
-                    }
-                )
+    # --- TOWING: towing.py's verified rating for this exact configuration ---
+    lines.extend(towing_package_lines(pkg.get("towing")))
 
     # --- TRIM KNOWLEDGE: standard equipment + verified engine, non-MB only ---
     # Deliberately outside the branded-feature block above: it is keyed on
@@ -2024,9 +2059,14 @@ def _generate_from_package(pkg: dict) -> tuple[str, str | None]:
         pkg["engine_sentence"] = pt["engine_sentence"]
     else:
         pkg.pop("engine_sentence", None)
+    if "towing" not in pkg:
+        pkg["towing"] = towing_for_package(pkg)
     required = required_sentences_from(pkg)
     protected = list(required.values())
     pt_flags = list(pt.get("flags") or [])
+    tow = pkg["towing"] or {}
+    if tow.get("triggered") and not tow.get("rating"):
+        pt_flags.append(f"TOWING RATING NEEDS REVIEW — {tow.get('config_text')}: {tow.get('note')}")
 
     def _done(ad_copy: str, feedback: str | None) -> tuple[str, str | None]:
         return scrub_non_mb_tire_wording(
@@ -2043,13 +2083,16 @@ def _generate_from_package(pkg: dict) -> tuple[str, str | None]:
             ad_copy, pt.get("class") or UNKNOWN, pt.get("range"), protected,
             sticker_mild=mild_wording_ok(pt), engine=pt.get("engine"),
         )
-        if not leaks and not hits and not missing and not pt_bad:
+        tow_bad, tire_bad = fact_check_problems(ad_copy, pkg)
+        if not leaks and not hits and not missing and not pt_bad and not tow_bad and not tire_bad:
             return _done(ad_copy, feedback)
         problems = (
             ([f"tool output in the ad text {leaks[:2]}"] if leaks else [])
             + ([f"banned scarcity wording {sorted(set(hits))}"] if hits else [])
             + ([f"missing required sentence(s) {missing}"] if missing else [])
             + [f"powertrain: {'; '.join(p)}" for _, p in pt_bad]
+            + ([f"unverified tow figure: {tow_bad}"] if tow_bad else [])
+            + ([f"tire size not on the sticker or in the data package: {tire_bad}"] if tire_bad else [])
         )
         if attempt == 1:
             print(f"[adwriter] {stock}: {'; '.join(problems)} - retrying once", file=sys.stderr)
@@ -2077,12 +2120,19 @@ def _generate_from_package(pkg: dict) -> tuple[str, str | None]:
                 ad_copy, pt, stock=stock or "", label="adwriter", protected=protected
             )
             pt_flags.extend(notes)
+        for why, bad in (("unverified tow figure", tow_bad), ("tire size not on the sticker or in the data package", tire_bad)):
+            if bad:
+                ad_copy = _drop_sentences(ad_copy, bad)
+                for s in bad:
+                    print(f"[adwriter] {stock}: removed sentence ({why}): {s}", file=sys.stderr)
+                    pt_flags.append(f"removed after retry ({why}): {s}")
     return _done(ad_copy, feedback)
 
 
 def _generate_once(pkg: dict) -> tuple[str, str | None]:
     """(ad_copy, feedback_block) for one aggregated package."""
     formatted, needs_lookup = format_data_package(pkg)
+    pkg["_data_package_text"] = formatted  # the tire-size check reads it
     v = pkg.get("vehicle") or {}
     system_prompt = _system_prompt_for(v.get("status_code"), pkg.get("stock_prefix"))
     if system_prompt == HENDRICK_AFFORDABLE_PROMPT:
@@ -2667,6 +2717,16 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
         if dropped:
             print(f"[reprice] {stock}: replacing the old engine sentence(s) with ENGINE_SENTENCE: {dropped}")
             clean_p2 = " ".join(kept)
+    # Tow figures and tire sizes: only a verified rating for this exact
+    # configuration and sizes printed on the sticker survive (the reprice
+    # "package" is the old paragraph itself, so the sticker is the source).
+    tow_pkg = {"stock_number": stock, "vehicle": {}, "_data_package_text": ""}
+    tow_pkg["towing"] = towing_for_package(tow_pkg)
+    old_tow_bad, old_tire_bad = fact_check_problems(clean_p2 or old_p2, tow_pkg)
+    if old_tow_bad or old_tire_bad:
+        print(f"[reprice] {stock}: removing unverified tow / tire sentence(s) before the rewrite: {old_tow_bad + old_tire_bad}")
+        clean_p2 = _drop_sentences(clean_p2 or old_p2, old_tow_bad + old_tire_bad)
+        pt_notes.extend(f"removed (unverified tow figure / tire size): {s}" for s in old_tow_bad + old_tire_bad)
     data_block = _format_reprice_package(
         clean_p2 or old_p2,
         advertised_price,
@@ -2701,11 +2761,14 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
             new_p2, pt.get("class") or UNKNOWN, pt.get("range"), protected,
             sticker_mild=mild_wording_ok(pt), engine=pt.get("engine"),
         )
-        if not hits and not missing and not pt_bad:
+        tow_bad, tire_bad = fact_check_problems(new_p2, tow_pkg)
+        if not hits and not missing and not pt_bad and not tow_bad and not tire_bad:
             break
         problems = ([f"banned scarcity wording {sorted(set(hits))}"] if hits else []) + (
             [f"missing required sentence(s) {missing}"] if missing else []
-        ) + [f"powertrain: {'; '.join(p)}" for _, p in pt_bad]
+        ) + [f"powertrain: {'; '.join(p)}" for _, p in pt_bad] + (
+            [f"unverified tow figure / tire size: {tow_bad + tire_bad}"] if tow_bad or tire_bad else []
+        )
         if attempt == 1:
             print(f"[reprice] {stock}: {'; '.join(problems)} - retrying once", file=sys.stderr)
             continue
@@ -2725,7 +2788,13 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
                 new_p2, pt, stock=stock, label="reprice", protected=protected
             )
             pt_notes.extend(notes)
+        if tow_bad or tire_bad:
+            new_p2 = _drop_sentences(new_p2, tow_bad + tire_bad)
+            for s in tow_bad + tire_bad:
+                print(f"[reprice] {stock}: removed sentence (unverified tow figure / tire size): {s}", file=sys.stderr)
+                pt_notes.append(f"removed after retry (unverified tow figure / tire size): {s}")
     new_p2 = insert_scarcity_sentence(new_p2, pd.get("scarcity_sentence"))
+    set_towing_review(entry, tow_pkg["towing"])
 
     # Non-MB tire wording is scrubbed from every paragraph, not just the new
     # one, so a reprice also repairs an older paragraph one.

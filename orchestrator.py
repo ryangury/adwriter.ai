@@ -34,6 +34,7 @@ from adwriter import (
     _format_ads_ready_email,
     _generate_from_package,
     format_per_ad_email,
+    set_towing_review,
     _recon_has_includeable,
     _send_gmail,
     fresh_pricing_data,
@@ -181,10 +182,12 @@ def _format_action_email(
     pre_recon_watching: list[dict[str, Any]] | None = None,
     new_listings_pricing: list[dict[str, Any]] | None = None,
     odometer_flags: list[dict[str, Any]] | None = None,
+    towing_review: list[dict[str, Any]] | None = None,
 ) -> str:
     pre_recon_watching = pre_recon_watching or []
     new_listings_pricing = new_listings_pricing or []
     odometer_flags = odometer_flags or []
+    towing_review = towing_review or []
     out: list[str] = [
         f"MERCEDES-BENZ OF DURHAM — ACTION REQUIRED  {date.today().isoformat()}",
         "",
@@ -277,6 +280,14 @@ def _format_action_email(
         out.append("(none)")
     for o in dates:
         out.append(f"  [{o.get('stock_number')}]  {o.get('year_make_model') or 'unknown'}  —  {o.get('note')}")
+    out += ["", ""]
+
+    section("TOWING RATING NEEDS REVIEW", len(towing_review))
+    if not towing_review:
+        out.append("(none)")
+    for t in towing_review:
+        out.append(f"  [{t.get('stock_number')}]  {t.get('year_make_model') or 'unknown'}")
+        out.append(f"      no tow figure in the ad — {t.get('note')}")
     out += ["", ""]
 
     section("SCRAPER ERRORS", len(errors))
@@ -863,6 +874,8 @@ def _run_inner(
             today=today,
             last_feedback=feedback,
         )
+        if stock in ad_history:
+            set_towing_review(ad_history[stock], pkg.get("towing"))
         # Persist per vehicle so a later crash can't erase completed work.
         save_ad_history(ad_history)
         print(f"[{tag}] {stock}: ad generated ({stage})")
@@ -1164,10 +1177,18 @@ def _run_inner(
         key=lambda w: (w.get("days_since_initial_ad") is None, -(w.get("days_since_initial_ad") or 0))
     )
 
+    # Live ads that can tow but state no tow figure: no manufacturer-published
+    # rating matched the exact configuration (set by generate / reprice).
+    towing_review = [
+        {"stock_number": stock, "year_make_model": ymm_by_stock.get(stock), "note": entry["towing_review"]}
+        for stock, entry in ad_history.items()
+        if entry.get("towing_review") and not entry.get("absent_since")
+    ]
+
     rewritten = {a["stock"] for a in ads_generated}
     if reprice_only:
         print("[email] --reprice-only — Action Required email not sent")
-    elif waiting_recon or needs_cert or price_changes or errors or pre_recon_watching or new_listings_pricing or odometer_flags:
+    elif waiting_recon or needs_cert or price_changes or errors or pre_recon_watching or new_listings_pricing or odometer_flags or towing_review:
         _safe_send(
             f"Mercedes-Benz of Durham — Action Required {today}",
             _format_action_email(
@@ -1179,6 +1200,7 @@ def _run_inner(
                 pre_recon_watching,
                 new_listings_pricing,
                 odometer_flags,
+                towing_review,
             ),
         )
     else:

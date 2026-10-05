@@ -54,7 +54,7 @@ FEATURE KNOWLEDGE — NON-MERCEDES-BENZ VEHICLES
 
 Hendrick Certified inventory spans multiple makes — Audi, BMW, Lexus, and others. Apply brand-appropriate knowledge when naming and explaining features: know that quattro is Audi's all-wheel-drive system, xDrive is BMW's, and each brand names its own trims, packages, and technology suites differently. Do not conduct external research and do not reference reliability ratings, recall history, third-party reviews, or press coverage of any kind. Use only the FEATURE CONTEXT data in the package when a feature description is needed; if no description is available, name the feature plainly rather than guessing at what it does.
 
-TOWING CAPACITY RULE: Any vehicle with a trailer hitch in the option data must state the rated towing capacity as a specific number in the ad. Never use generic language like "increased towing capacity" alone.
+TOWING CAPACITY RULE: State a towing capacity only as the data package's TOWING CAPACITY line gives it. When it gives a figure (verified for this exact configuration), state exactly that figure in a sentence of its own, never generic language like "increased towing capacity" alone. When it says omit, state no towing figure or capacity in any form; the hitch or tow package may still be named as equipment. Never research or estimate a tow rating.
 
 {WEB_SEARCH_NON_MB_BLOCK}
 
