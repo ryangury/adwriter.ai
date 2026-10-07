@@ -58,7 +58,10 @@ class ConfigTests(unittest.TestCase):
     def test_escape_and_mercedes(self):
         self.assertEqual(cfg("D23371A")["engine"], "2.5L I-4 hybrid")
         self.assertEqual(cfg("X58848")["engine"], "GLE 450")
-        self.assertEqual(cfg("XH08745B")["missing"], ["cab", "bed"])
+        # Gladiator: one cab / one bed, implied from the model (Stellantis specs);
+        # the Ram 2500 comes in several, and its sticker prints no bed.
+        self.assertEqual((cfg("XH08745B")["cab"], cfg("XH08745B")["bed"], cfg("XH08745B")["missing"]), ("crew", "short", []))
+        self.assertEqual(cfg("PM29466B")["missing"], ["bed"])
 
     def test_trigger(self):
         self.assertTrue(T.triggered("TRAILERING PACKAGE", []))
@@ -158,9 +161,9 @@ class CacheAndEntryTests(unittest.TestCase):
 
     def test_incomplete_config_never_looks_up(self):
         with mock.patch.object(T, "lookup") as lk:
-            t = self._for("XH08745B")
+            t = self._for("PM29466B")
         lk.assert_not_called()
-        self.assertIn("no cab, bed", t["note"])
+        self.assertIn("no bed", t["note"])
 
 
 AD = ("This is a 2023 Ford Escape Platinum.\n\nThe Platinum is the top trim. The Class II Trailer Tow Package adds a hitch, "

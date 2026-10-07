@@ -102,6 +102,42 @@ def _source_of(figs: list[int], ymm: str, feedback: str, old_rows: list[dict]) -
     return "model's own search at write time (no record of the page)"
 
 
+# Words that make a clause about towing (a clause with none of these, and no
+# tow figure, is "other content").
+_TOW_TOPIC_RE = re.compile(r"\btow(?:s|ed|ing)?\b|\btrailer(?:s|ing)?\b|\bhitch\b|\bpull(?:s|ing)?\b|\bhaul(?:s|ing)?\b", re.I)
+# Where a trailing tow clause can be cut off: ", and <clause>", "; <clause>",
+# " — <clause>", or a shared-subject ", and / and (is) rated|able|capable to tow".
+_CLAUSE_SPLIT_RE = re.compile(r",\s+and\s+|;\s+|\s+[—–]\s+")
+_TRAILING_TOW_RE = re.compile(r",?\s+and\s+(?:is\s+|are\s+|has\s+been\s+)?(?:rated|able|capable|certified)\b[^.]*\btow\b[^.]*$", re.I)
+
+
+def strip_tow_clause(sentence: str) -> tuple[str | None, str]:
+    """(the sentence without its tow figure, how). how is "whole" (the whole
+    sentence is towing content: remove it), "clause" (only the trailing tow
+    clause was cut; the rest is returned), or "manual" (no clean split: the
+    caller skips the ad for a hand edit)."""
+    s = sentence.strip()
+    body = s.rstrip(".!? ")
+    m = _TRAILING_TOW_RE.search(body)
+    if m and not T.tow_figures(body[: m.start()]):
+        rest = body[: m.start()].rstrip(" ,")
+        return (rest + "." if rest else None), ("clause" if rest else "whole")
+    parts = _CLAUSE_SPLIT_RE.split(body)
+    seps = _CLAUSE_SPLIT_RE.findall(body)
+    if len(parts) == 1 or all(_TOW_TOPIC_RE.search(p) or T.tow_figures(p) for p in parts):
+        return None, "whole"
+    tow_idx = [i for i, p in enumerate(parts) if T.tow_figures(p)]
+    if tow_idx == [len(parts) - 1]:
+        kept = parts[0]
+        for sep, p in zip(seps, parts[1:-1]):
+            kept += sep + p
+        kept = kept.rstrip(" ,")
+        if T.tow_figures(kept) or not kept:
+            return None, "manual"
+        return kept + ".", "clause"
+    return None, "manual"
+
+
 def _tow_units(text: str) -> list[str]:
     return [s for s in A._split_sentences(text or "") if T.tow_figures(s)]
 
@@ -120,29 +156,42 @@ def _towing(stock: str, v: dict, allow_lookup: bool) -> dict:
 
 
 def _edit(entry: dict, action: str, sentence: str | None) -> tuple[dict, list[str]]:
-    """(paragraphs after, removed sentences) for one ad."""
+    """(paragraphs after, removed sentences) for one ad. A sentence that is all
+    towing goes whole; one that also carries other content loses only its
+    trailing tow clause (strip_tow_clause). When no clean split exists the
+    result carries "manual": True and nothing is changed for that ad."""
     keys = ("paragraph_one", "paragraph_two", "paragraph_three", "paragraph_four")
     before = {k: A._paragraph(entry, k) for k in keys}
     after = dict(before)
     removed: list[str] = []
+    manual: list[str] = []
     if action in ("replace", "remove"):
         placed = False
         for k in keys:
             out = []
             for u in A._split_sentences(before[k]):
                 if T.tow_figures(u):
+                    rest, how = strip_tow_clause(u)
+                    if how == "manual":
+                        manual.append(u.strip())
+                        out.append(u.strip())
+                        continue
                     removed.append(u.strip())
+                    if rest:
+                        out.append(rest)
                     if action == "replace" and sentence and not placed:
                         out.append(sentence)
                         placed = True
                     continue
                 out.append(u.strip())
             after[k] = " ".join(x for x in out if x)
+        if manual:
+            return {"before": before, "after": dict(before), "manual": manual}, []
     elif action == "add" and sentence:
         ad = "\n\n".join(before[k] for k in keys)
         new = A.insert_required_sentences(ad, {"towing_sentence": sentence}, ["towing_sentence"])
         after = A.split_ad_paragraphs(new)
-    return {"before": before, "after": after}, removed
+    return {"before": before, "after": after, "manual": []}, removed
 
 
 def plan(allow_lookup: bool) -> tuple[list[dict], list[dict]]:
@@ -177,7 +226,9 @@ def plan(allow_lookup: bool) -> tuple[list[dict], list[dict]]:
                 group, action = "unverifiable", ("pending lookup" if unlooked else "remove")
         else:
             group, action = "gaps", ("add" if rating else "pending lookup" if unlooked else "none")
-        edit, removed = _edit(e, action, tow.get("sentence")) if action in ("replace", "remove", "add") else ({"before": {}, "after": {}}, [])
+        edit, removed = _edit(e, action, tow.get("sentence")) if action in ("replace", "remove", "add") else ({"before": {}, "after": {}, "manual": []}, [])
+        if edit["manual"]:
+            action = "hand edit"
         rows.append({
             "stock": stock, "ymm": v.get("year_make_model"), "trim": v.get("trim"), "status": v.get("status_code"),
             "figs": figs, "units": units, "source": _source_of(figs, v.get("year_make_model"), e.get("last_feedback"), old_rows) if figs else None,
@@ -272,11 +323,20 @@ def main(argv: list[str]) -> int:
                   + (f"  <- {r['verified_by']}" if r["rating"] else f"  ({r['note']})"))
             print(f"  config   : {r['config_text']}")
             for u in r["units"]:
-                extra = len(u.split()) > 22 or "$" in u
-                print(f"    - {u}" + ("\n      NOTE: this sentence carries other content too; removing / replacing it drops that"
-                                     if extra and r["action"] in ("remove", "replace", "pending lookup") else ""))
+                rest, how = strip_tow_clause(u)
+                print(f"    - {u}")
+                if how == "clause":
+                    print(f"      (shares the sentence with other content: only the tow clause goes)\n    = {rest}")
+                elif how == "manual":
+                    print("      (no clean split: HAND EDIT — this ad is skipped by --apply)")
             if r["action"] in ("replace", "add") and r["sentence"]:
                 print(f"    + {r['sentence']}")
+    hand = [r for r in rows if r["action"] == "hand edit"]
+    if hand:
+        print(f"\n{'=' * 78}\nHAND EDIT ({len(hand)}): tow figure shares a sentence with other content and can't be cut cleanly")
+        for r in hand:
+            for u in r["manual"]:
+                print(f"  [{r['stock']}] {u}")
     print(f"\n{'=' * 78}\nTOWING RATING NEEDS REVIEW (no verified figure; fill tow_overrides.json from the Database page):")
     for r in rows:
         if not r["rating"]:

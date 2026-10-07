@@ -57,7 +57,12 @@ TOW_GUIDE_DOMAINS: dict[str, list[str]] = {
     "buick": ["buick.com", "gmfleet.com", "gm.com"],
     "ford": ["fordpro.com"],
     "lincoln": ["fordpro.com"],
-    "ram": ["ramtrucks.com"],
+    "ram": ["ramtrucks.com", "stellantisnorthamerica.com"],
+    # Stellantis's own media site publishes each model year's official
+    # specifications, towing tables included (jeep.com refuses automated fetches).
+    "jeep": ["stellantisnorthamerica.com"],
+    "dodge": ["stellantisnorthamerica.com"],
+    "chrysler": ["stellantisnorthamerica.com"],
 }
 TOW_LOOKUP_MAX_USES = 6
 NO_MATCH_RECHECK_DAYS = 30  # a cached "no exact match" is looked up again after this
@@ -166,6 +171,24 @@ def normalize_cab(text: str | None, *, sticker: bool = False) -> str | None:
     return re.sub(r"\s+", "", m.group(1)).lower() if m else None
 
 
+# Trucks sold in exactly one cab and one bed, so the model name implies both
+# when the sticker prints neither. Each entry is checked against the maker's own
+# specifications: (make, model regex) -> (cab, bed, source).
+IMPLIED_CAB_BED: list[tuple[str, re.Pattern, str, str, str]] = [
+    ("jeep", re.compile(r"^gladiator\b", re.I), "crew", "short",
+     "Stellantis 2021 Jeep Gladiator specifications: one body (fuel tank '(4-door)'), "
+     "one box (60.3 in, tailgate closed)"),
+]
+
+
+def implied_cab_bed(make: str | None, model: str | None) -> tuple[str, str, str] | None:
+    """(cab, bed, source) for a single-cab, single-bed model, else None."""
+    for mk, rx, cab, bed, src in IMPLIED_CAB_BED:
+        if (make or "").lower() == mk and rx.search(model or ""):
+            return cab, bed, src
+    return None
+
+
 def is_truck(model: str | None, body_style: str | None = None) -> bool:
     return (body_style or "").lower() == "truck" or bool(TRUCK_MODELS_RE.search(model or ""))
 
@@ -207,10 +230,16 @@ def vehicle_config(
     truck = is_truck(model, body_style)
     cab = normalize_cab(sticker_text, sticker=True) if truck else ""
     bed = normalize_bed(sticker_text) if truck else ""
+    implied = None
+    if truck and (not cab or not bed):
+        implied = implied_cab_bed(make, model)
+        if implied:
+            cab, bed = cab or implied[0], bed or implied[1]
     cfg = {
         "year": year, "make": make, "model": model, "engine": engine, "drivetrain": drive,
         "cab": cab, "bed": bed, "truck": truck, "tow_package": tow_equipment(sticker_text),
         "ev": ev, "body": (body_style or "").strip(),
+        "implied_cab_bed": implied[2] if implied else None,
     }
     cfg["missing"] = [k for k in ("year", "make", "model", "engine", "drivetrain") if not cfg[k]] + (
         [k for k in ("cab", "bed") if truck and not cfg[k]]

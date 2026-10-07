@@ -188,52 +188,85 @@ class TowRefreshTests(unittest.TestCase):
         add, _ = R._edit(gap, "add", "It is rated to tow up to 9,000 lbs.")
         self.assertIn("engine. It is rated to tow up to 9,000 lbs.", add["after"]["paragraph_two"])
 
-    def _plan(self, ratings):
-        def fake_towing(stock, v, allow_lookup):
-            r = ratings.get(stock, "unlooked")
-            if r == "unlooked":
-                return {"triggered": True, "rating": None, "note": "not looked up yet", "config": T.vehicle_config(v["year_make_model"], v["trim"], v["body_style"], ""),
-                        "config_text": stock, "sentence": None, "override": None, "sticker_triggers": True, "source_url": None}
-            return {"triggered": True, "rating": r, "note": None if r else "no exact match", "config": {}, "config_text": stock,
-                    "sentence": T.towing_sentence(r), "override": None, "sticker_triggers": True, "source_url": "https://x"}
-        with mock.patch.object(R, "_towing", side_effect=fake_towing):
-            return R.plan(allow_lookup=False)
+    # A fixed, synthetic set of ads and inventory: the live data moves every day
+    # (runs reprice and regenerate ads), so these tests never read it.
+    ADS = {
+        "S1": "Opening. Power comes from the GLS 450. The factory Trailer Hitch is rated for 7,716 lbs of towing capacity. Closing.",
+        "S2": "Opening. It is rated to tow up to 7,700 lbs. Closing.",
+        "S3": "Opening. A front trunk adds practical storage, and the factory tow rating on this model is 5,000 pounds. Closing.",
+        "S4": "Opening. Power comes from the 3.0L Duramax turbo-diesel. Closing.",
+        "S5": "Opening. The factory hitch is rated for 7,700 lbs. Closing.",
+        "S6": "Opening. Air suspension is standard. Closing.",
+    }
+    RATINGS = {"S1": 7700, "S2": 7700, "S3": None, "S4": 9000}  # S5: not looked up yet; S6: can't tow
+
+    def _fixture(self, d):
+        hist = {s: {"current_ad_text": f"P1.\n\n{p2}\n\nP3.\n\nP4.", "paragraph_one": "P1.", "paragraph_two": p2,
+                    "paragraph_three": "P3.", "paragraph_four": "P4.", "verification_verdict": "current",
+                    "last_feedback": ""} for s, p2 in self.ADS.items()}
+        snap = {"vehicles": [{"stock_number": s, "vin": f"VIN{s}", "year_make_model": "2026 Mercedes-Benz GLS",
+                              "trim": "GLS 450 AWD", "body_style": "SUV", "status_code": 10} for s in self.ADS]}
+        hp, sp = Path(d) / "ad_history.json", Path(d) / "snap.json"
+        hp.write_text(json.dumps(hist), encoding="utf-8")
+        sp.write_text(json.dumps(snap), encoding="utf-8")
+        return hp, sp
+
+    def _fake_towing(self, stock, v, allow_lookup):
+        if stock == "S6":
+            return {"triggered": False, "rating": None, "note": None, "config": {}, "config_text": stock,
+                    "sentence": None, "override": None, "sticker_triggers": False, "source_url": None}
+        if stock not in self.RATINGS:
+            return {"triggered": True, "rating": None, "note": "not looked up yet",
+                    "config": T.vehicle_config(v["year_make_model"], v["trim"], v["body_style"], ""),
+                    "config_text": stock, "sentence": None, "override": None, "sticker_triggers": True, "source_url": None}
+        r = self.RATINGS[stock]
+        return {"triggered": True, "rating": r, "note": None if r else "no exact match", "config": {}, "config_text": stock,
+                "sentence": T.towing_sentence(r), "override": None, "sticker_triggers": True, "source_url": "https://x"}
+
+    def _run(self, fn):
+        with tempfile.TemporaryDirectory() as d:
+            hp, sp = self._fixture(d)
+            lock = Path(d) / "orchestrator.lock"
+            with mock.patch.object(R, "_towing", side_effect=self._fake_towing), \
+                 mock.patch.object(R, "SNAPSHOT_PATH", sp), mock.patch.object(R, "_old_cache_rows", return_value=[]), \
+                 mock.patch.object(A, "AD_HISTORY_PATH", hp), mock.patch.object(R, "ORCHESTRATOR_LOCK_PATH", lock), \
+                 mock.patch.object(R.shutil, "copy2"):
+                return fn(hp, lock)
 
     def test_groups_and_actions(self):
-        rows, pending = self._plan({"P53971": 7700, "X58848": 7700, "PS18127A": None, "CT23308A": 9000})
+        rows, pending = self._run(lambda hp, lock: R.plan(allow_lookup=False))
         by = {r["stock"]: r for r in rows}
-        self.assertEqual((by["P53971"]["group"], by["P53971"]["action"]), ("overstated", "replace"))
-        self.assertEqual(by["P53971"]["kg"], {7716: 3500})
-        self.assertEqual((by["X58848"]["group"], by["X58848"]["action"], by["X58848"]["changes"]), ("matches", "keep", False))
-        self.assertEqual((by["PS18127A"]["group"], by["PS18127A"]["action"]), ("unverifiable", "remove"))
-        self.assertEqual((by["CT23308A"]["group"], by["CT23308A"]["action"]), ("gaps", "add"))
-        self.assertEqual(by["P25418"]["action"], "pending lookup")
-        self.assertFalse(by["P25418"]["changes"], "never edited before a lookup")
-        self.assertTrue(pending)
+        self.assertEqual((by["S1"]["group"], by["S1"]["action"]), ("overstated", "replace"))
+        self.assertEqual(by["S1"]["kg"], {7716: 3500})
+        self.assertEqual((by["S2"]["group"], by["S2"]["action"], by["S2"]["changes"]), ("matches", "keep", False))
+        self.assertEqual((by["S3"]["group"], by["S3"]["action"]), ("unverifiable", "remove"))
+        self.assertIn("A front trunk adds practical storage.", by["S3"]["after"]["paragraph_two"], "only the tow clause goes")
+        self.assertEqual((by["S4"]["group"], by["S4"]["action"]), ("gaps", "add"))
+        self.assertEqual((by["S5"]["action"], by["S5"]["changes"]), ("pending lookup", False))
+        self.assertNotIn("S6", by)
+        self.assertEqual(len(pending), 1)
 
     def test_apply_writes_only_changed_ads_and_respects_the_lock(self):
-        rows, _ = self._plan({"P53971": 7700, "X58848": 7700})
-        with tempfile.TemporaryDirectory() as d:
-            hist_path = Path(d) / "ad_history.json"
-            shutil.copy2(A.AD_HISTORY_PATH, hist_path)
-            before = json.loads(hist_path.read_text(encoding="utf-8"))
-            lock = Path(d) / "orchestrator.lock"
-            with mock.patch.object(A, "AD_HISTORY_PATH", hist_path), mock.patch.object(R, "ORCHESTRATOR_LOCK_PATH", lock):
-                lock.write_text("1")
-                with self.assertRaises(SystemExit):
-                    R.apply(rows)
-                lock.unlink()
-                n = R.apply([r for r in rows if r["stock"] in ("P53971", "X58848")])
-            after = json.loads(hist_path.read_text(encoding="utf-8"))
+        def go(hp, lock):
+            rows, _ = R.plan(allow_lookup=False)
+            before = json.loads(hp.read_text(encoding="utf-8"))
+            lock.write_text("1")
+            with self.assertRaises(SystemExit):
+                R.apply(rows)
+            lock.unlink()
+            n = R.apply([r for r in rows if r["stock"] in ("S1", "S2", "S5")])
+            return n, before, json.loads(hp.read_text(encoding="utf-8"))
+        n, before, after = self._run(go)
         self.assertEqual(n, 1)
-        self.assertEqual(after["X58848"], before["X58848"], "a keep is untouched")
-        e = after["P53971"]
+        self.assertEqual(after["S2"], before["S2"], "a keep is untouched")
+        self.assertEqual(after["S5"], before["S5"], "pending lookup is untouched")
+        e = after["S1"]
         self.assertIn("It is rated to tow up to 7,700 lbs.", e["current_ad_text"])
         self.assertNotIn("7,716", e["current_ad_text"])
         self.assertTrue(any("7,716" in s for s in e["stale_phrases"]))
         self.assertIsNone(e["verification_verdict"])
         changed = {s for s in after if after[s] != before[s]}
-        self.assertEqual(changed, {"P53971"})
+        self.assertEqual(changed, {"S1"})
 
 
 class AllowlistFlagTests(unittest.TestCase):
