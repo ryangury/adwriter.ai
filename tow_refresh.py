@@ -407,4 +407,7 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    import log_stamp
+
+    log_stamp.install()  # timestamped lines: when each lookup finished
     raise SystemExit(main(sys.argv[1:]))

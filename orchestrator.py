@@ -1436,4 +1436,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    # Every log line gets its local time (run_orchestrator.bat captures stdout + stderr).
+    import log_stamp
+
+    log_stamp.install()
     raise SystemExit(main())
