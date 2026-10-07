@@ -40,7 +40,14 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--result")
     ap.add_argument("--progress")
     ap.add_argument("--skip", default="")
+    ap.add_argument("--trace-after", type=float, default=0,
+                    help="dump every thread's stack to stderr after this many seconds (and every N s after): "
+                         "shows where a hang sits")
     args = ap.parse_args(argv)
+    if args.trace_after > 0:
+        import faulthandler
+
+        faulthandler.dump_traceback_later(args.trace_after, repeat=True, file=sys.stderr)
 
     from ctr_warmup import capture_benchmark_ctr, capture_durham_ctr
     from failure_streak import FailureStreak
