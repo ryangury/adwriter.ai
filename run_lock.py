@@ -85,6 +85,23 @@ def release_scraper_lock(lock_path: Path) -> None:
     lock_path.unlink(missing_ok=True)
 
 
+def lock_blocks_edit(lock_path: Path) -> int | None:
+    """PID of a live process holding `lock_path` that is NOT this edit's own
+    holder, else None. A hand edit can hold orchestrator.lock from a separate
+    process (so the verifier and orchestrator stay off ad_history.json) and name
+    it in ADWRITER_LOCK_HOLDER; that holder does not block the edit's tools. A
+    lock whose PID is dead is stale and blocks nothing."""
+    try:
+        pid = int(lock_path.read_text(encoding="utf-8").strip())
+    except FileNotFoundError:
+        return None
+    except (ValueError, OSError):
+        return -1  # unreadable: treat as held
+    if pid == os.getpid() or str(pid) == os.environ.get("ADWRITER_LOCK_HOLDER", "").strip():
+        return None
+    return pid if _pid_running(pid) else None
+
+
 def release_lock_if_owned(lock_path: Path) -> bool:
     """Remove the lock file only if it still holds this process's PID, so a
     late or crashed run can never delete a lock another process now holds.

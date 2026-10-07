@@ -41,7 +41,7 @@ from pathlib import Path
 import adwriter as A
 import carfax_history as H
 from powertrain import split_ymm
-from run_lock import ORCHESTRATOR_LOCK_PATH
+from run_lock import ORCHESTRATOR_LOCK_PATH, lock_blocks_edit
 
 HERE = Path(__file__).resolve().parent
 SNAPSHOT_PATH = HERE / "last_inventory_snapshot.json"
@@ -98,8 +98,9 @@ def plan() -> list[dict]:
 
 
 def apply(rows: list[dict]) -> int:
-    if ORCHESTRATOR_LOCK_PATH.exists():
-        sys.exit("orchestrator.lock is present — a run may be in progress; not applying.")
+    holder = lock_blocks_edit(ORCHESTRATOR_LOCK_PATH)
+    if holder is not None:
+        sys.exit(f"orchestrator.lock is held by PID {holder} — a run may be in progress; not applying.")
     changing = [r for r in rows if r["changes"]]
     if not changing:
         print("nothing to apply")

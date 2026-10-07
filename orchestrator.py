@@ -48,6 +48,7 @@ from adwriter import (
 from aggregator import DEALER_DOC_FEE, ScraperError, aggregate, check_recon
 from ctr_warmup import capture_benchmark_ctr, capture_durham_ctr
 from failure_streak import FailureStreak, failure_key
+import list_not_rebuilt
 from verifier import HendrickCarsScraper, run_verification, send_verification_alert
 from inventory_crawler import (
     crawl_inventory,
@@ -183,7 +184,9 @@ def _format_action_email(
     new_listings_pricing: list[dict[str, Any]] | None = None,
     odometer_flags: list[dict[str, Any]] | None = None,
     towing_review: list[dict[str, Any]] | None = None,
+    not_rebuilt: list[dict[str, Any]] | None = None,
 ) -> str:
+    not_rebuilt = not_rebuilt or []
     pre_recon_watching = pre_recon_watching or []
     new_listings_pricing = new_listings_pricing or []
     odometer_flags = odometer_flags or []
@@ -280,6 +283,15 @@ def _format_action_email(
         out.append("(none)")
     for o in dates:
         out.append(f"  [{o.get('stock_number')}]  {o.get('year_make_model') or 'unknown'}  —  {o.get('note')}")
+    out += ["", ""]
+
+    section("DELETED FOR REBUILD, NO NEW AD", len(not_rebuilt))
+    if not not_rebuilt:
+        out.append("(none)")
+    for r in not_rebuilt:
+        out.append(f"  [{r['stock']}]  {r['reason']}")
+        out.append(f"      archived in {r['archive']} (first ad {r['first_ad_date']}); "
+                   f"python restore_removed.py --only {r['stock']} puts the old entry back")
     out += ["", ""]
 
     section("TOWING RATING NEEDS REVIEW", len(towing_review))
@@ -1028,6 +1040,17 @@ def _run_inner(
     # refresh the in-memory copy after update_recon / reprice_ad writes
     ad_history = load_ad_history()
 
+    # Deleted-for-rebuild stocks that got no new ad this run, with the reason
+    # read from this run's own log. Printed here, before CTR, and listed in the
+    # Action Required email. Never fatal.
+    not_rebuilt: list[dict[str, Any]] = []
+    if not reprice_only:
+        try:
+            not_rebuilt = list_not_rebuilt.report(ad_history)
+            list_not_rebuilt.print_report(not_rebuilt)
+        except Exception as exc:  # noqa: BLE001 - a report must not sink the run
+            print(f"[not-rebuilt] report failed — {exc}", file=sys.stderr)
+
     # --- 5. DURHAM CTR CAPTURE (every retail vehicle) ------------- #
     # Logic lives in ctr_warmup.py (capture_durham_ctr()) so the standalone
     # daily AdWriter-CTR-Capture task and this full-orchestrator run share one
@@ -1188,7 +1211,7 @@ def _run_inner(
     rewritten = {a["stock"] for a in ads_generated}
     if reprice_only:
         print("[email] --reprice-only — Action Required email not sent")
-    elif waiting_recon or needs_cert or price_changes or errors or pre_recon_watching or new_listings_pricing or odometer_flags or towing_review:
+    elif waiting_recon or needs_cert or price_changes or errors or pre_recon_watching or new_listings_pricing or odometer_flags or towing_review or not_rebuilt:
         _safe_send(
             f"Mercedes-Benz of Durham — Action Required {today}",
             _format_action_email(
@@ -1201,6 +1224,7 @@ def _run_inner(
                 new_listings_pricing,
                 odometer_flags,
                 towing_review,
+                not_rebuilt,
             ),
         )
     else:

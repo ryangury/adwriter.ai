@@ -46,6 +46,9 @@ print("\n=== THE 9 LIVE ADS WITH MILD-HYBRID WORDING ===")
 NINE = ["ZT22862", "ZT22965", "P36138", "PM47578", "P16783", "PM88699", "P21297", "T23359A", "ZT22912A"]
 TERM = re.compile(r"\bmild[- ]hybrid\b|\bMHEV\b", re.I)
 for s in NINE:
+    if s not in hist:
+        print(f"{s:9} no current ad_history entry (deleted / rebuilt) - skipped")
+        continue
     v, st, info = info_for(s)
     ad = hist[s]["current_ad_text"]
     n = len(TERM.findall(ad))

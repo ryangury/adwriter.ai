@@ -19,6 +19,15 @@ import towing as T  # noqa: E402
 DB = sqlite3.connect(r"C:\adwriter\vehicle_cache.db")
 SNAP = {v["stock_number"]: v for v in json.load(open(r"C:\adwriter\last_inventory_snapshot.json", encoding="utf-8"))["vehicles"]}
 HIST = json.load(open(r"C:\adwriter\ad_history.json", encoding="utf-8"))
+# X58848 may be deleted for a rebuild: fall back to its archived entry.
+if "X58848" not in HIST:
+    import glob
+
+    for _p in sorted(glob.glob(r"C:\adwriter\ad_history_removed_*.json"), reverse=True):
+        _a = json.load(open(_p, encoding="utf-8"))
+        if "X58848" in _a:
+            HIST["X58848"] = _a["X58848"]
+            break
 
 
 def raw(stock):
