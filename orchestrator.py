@@ -20,6 +20,7 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 import time
 from datetime import date
 from pathlib import Path
@@ -46,7 +47,7 @@ from adwriter import (
     update_recon,
 )
 from aggregator import DEALER_DOC_FEE, ScraperError, aggregate, check_recon
-from ctr_warmup import capture_benchmark_ctr, capture_durham_ctr
+from ctr_database import BENCHMARK_DEALERSHIPS
 from failure_streak import FailureStreak, failure_key
 import list_not_rebuilt
 from verifier import HendrickCarsScraper, run_verification, send_verification_alert
@@ -59,7 +60,8 @@ from inventory_crawler import (
     save_snapshot,
     snapshot_stocks,
 )
-from scraper import AcvMaxRunAbort, ACVMaxScraper, ReconVisionScraper
+from scraper import ACVMAX_DEALERSHIP, AcvMaxRunAbort, ACVMaxScraper, ReconVisionScraper
+from step_watchdog import STEP_BUDGET_S, python_argv, run_watched
 from run_lock import (
     ORCHESTRATOR_LOCK_PATH,
     ScraperBusyError,
@@ -1128,6 +1130,48 @@ def _run_inner(
     # Logic lives in ctr_warmup.py (capture_durham_ctr()) so the standalone
     # daily AdWriter-CTR-Capture task and this full-orchestrator run share one
     # implementation.
+    # Steps 5 and 6 run in child processes (ctr_child.py) under step_watchdog:
+    # a vehicle over 90 s is skipped (child restarted past it), 10 minutes with
+    # no progress or the 45-minute budget kills the child and its browser, one
+    # "benchmark hung" email goes out, and the run carries on to verification
+    # and the final emails. Each vehicle is recorded as it is read.
+    work_dir = Path(tempfile.mkdtemp(prefix="adwriter-ctr-"))
+    hang_alerted: list[str] = []
+
+    def _run_ctr_child(step: str, label: str, extra: list[str], budget_s: float = STEP_BUDGET_S) -> dict[str, Any]:
+        tag = label.lower().replace(" ", "-")
+        result_path = work_dir / f"{tag}-result.json"
+        progress_path = work_dir / f"{tag}-progress.json"
+        result_path.unlink(missing_ok=True)
+        watch = run_watched(
+            lambda skipped: python_argv(
+                Path(__file__).with_name("ctr_child.py"), step, *extra,
+                "--result", str(result_path), "--progress", str(progress_path),
+                *(["--skip", ",".join(skipped)] if skipped else []),
+            ),
+            step=label, progress_path=progress_path, budget_s=budget_s,
+        )
+        try:
+            child = json.loads(result_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            child = {}
+        errors.extend(child.get("errors") or [])
+        for s_ in watch["skipped"]:
+            errors.append({"stock": s_, "phase": tag, "error": "over the 90-second per-vehicle limit; skipped"})
+        if watch["status"] in ("hung", "budget"):
+            errors.append({"stock": "-", "phase": tag, "error": watch["reason"]})
+            if not hang_alerted:
+                hang_alerted.append(label)
+                _safe_send(
+                    f"Mercedes-Benz of Durham — benchmark hung {today}",
+                    f"{watch['reason']}.\n\nThe step's child process and its browser were killed. "
+                    f"Vehicles read before that are recorded; the run continues to verification and "
+                    f"the final emails.\n",
+                )
+        if child.get("aborted"):
+            _stop_acv(AcvMaxRunAbort(child["aborted"]), label)
+        return {"watch": watch, "child": child}
+
     print(f"\n=== 5. DURHAM CTR CAPTURE ({len(retail)} vehicle(s)) ===")
     ctr_records = 0
     if reprice_only:
@@ -1135,25 +1179,15 @@ def _run_inner(
     elif stopped:
         print("[ctr] skipped — ACV Max work stopped")
     else:
-        try:
-            with ACVMaxScraper(headless=True) as ax:
-                ax.login()
-                durham_counts = capture_durham_ctr(
-                    ax, retail, ad_history=ad_history,
-                    aggregated_ctr=aggregated_ctr, errors=errors,
-                    streak=FailureStreak("ctr"),
-                )
-                ctr_records = durham_counts["recorded"]
-                if durham_counts.get("aborted"):
-                    errors.append(
-                        {"stock": "-", "phase": "ctr", "error": f"CTR loop stopped: {durham_counts['aborted']}"}
-                    )
-                    _alert_once(durham_counts["aborted"])
-        except AcvMaxRunAbort as exc:
-            _stop_acv(exc, "Durham CTR capture")
-        except ScraperError as exc:
-            errors.append({"stock": "-", "phase": "ctr_login", "error": str(exc)})
-            print(f"[ctr] ACV MAX login failed — {exc}", file=sys.stderr)
+        input_path = work_dir / "durham-input.json"
+        input_path.write_text(json.dumps({"retail": retail, "aggregated_ctr": aggregated_ctr}, default=str),
+                              encoding="utf-8")
+        out = _run_ctr_child("durham", "Durham CTR", ["--input", str(input_path)])
+        counts = out["child"].get("counts") or {}
+        ctr_records = counts.get("recorded", 0)
+        if counts.get("aborted"):
+            errors.append({"stock": "-", "phase": "ctr", "error": f"CTR loop stopped: {counts['aborted']}"})
+            _alert_once(counts["aborted"])
 
     # --- 6. BENCHMARK CTR CAPTURE ------------------------------- #
     print("\n=== 6. BENCHMARK CTR CAPTURE ===")
@@ -1167,19 +1201,21 @@ def _run_inner(
     elif stopped:
         print("[benchmark] skipped — ACV Max work stopped")
     else:
-        try:
-            with ACVMaxScraper(headless=True) as bx:
-                bx.login()  # lands on Mercedes-Benz of Durham
-                benchmark_counts = capture_benchmark_ctr(bx, errors=errors)
-                # Northlake/Charlotte switch the account's store; never carry on
-                # unless Durham is back. Raises WrongDealershipError (an
-                # AcvMaxRunAbort): the ACV Max work stops here and alerts.
-                bx.require_durham("after the Northlake/Charlotte benchmark")
-        except AcvMaxRunAbort as exc:
-            _stop_acv(exc, "benchmark")
-        except ScraperError as exc:
-            errors.append({"stock": "-", "phase": "benchmark_login", "error": str(exc)})
-            print(f"[benchmark] ACV MAX login failed — {exc}", file=sys.stderr)
+        # One child per store: a hang at one store never costs the other.
+        for store in BENCHMARK_DEALERSHIPS:
+            if stopped:
+                print(f"[benchmark] {store}: skipped — ACV Max work stopped")
+                continue
+            out = _run_ctr_child("benchmark", f"Benchmark {store.split()[-1]}", ["--store", store])
+            benchmark_counts.update(out["child"].get("counts") or {})
+            if out["watch"]["status"] in ("hung", "budget", "failed"):
+                # Killed (or died) mid-store: the account may still be on that
+                # store. Switch it back to Durham before anything else uses it.
+                fix = _run_ctr_child("restore-durham", "Restore Durham", [], budget_s=5 * 60)
+                if fix["watch"]["status"] != "ok":
+                    _stop_acv(AcvMaxRunAbort(
+                        f"could not confirm ACV Max is back on {ACVMAX_DEALERSHIP} after the {store} benchmark"
+                    ), "benchmark")
 
     # --- 7. AD POSTING VERIFICATION ------------------------------ #
     print("\n=== 7. AD POSTING VERIFICATION ===")

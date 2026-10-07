@@ -5337,7 +5337,12 @@ class ACVMaxScraper(_BrowserSession):
         print(f"[scraper] switched dealership: {dealership_name}")
 
     def scrape_benchmark_inventory(
-        self, dealership_name: str
+        self,
+        dealership_name: str,
+        *,
+        skip: set[str] | None = None,
+        progress: Any = None,
+        on_result: Any = None,
     ) -> list[dict[str, Any]]:
         """Switch ACV MAX to `dealership_name`, crawl its retail inventory (same
         pagination as inventory_crawler.crawl_inventory), scrape CTR per vehicle,
@@ -5349,6 +5354,13 @@ class ACVMaxScraper(_BrowserSession):
         days_on_lot, ctr_data), and one dict per vehicle whose CTR read failed
         (stock_number, vin, error) — e.g. the Merchandising iframe never
         attaching, which happens occasionally at Charlotte.
+
+        Watchdog hooks (ctr_child.py): `skip` stock numbers are not read (an
+        earlier attempt overran the per-vehicle limit on them); `progress` (a
+        step_watchdog.ProgressWriter) gets a beat per crawl page and a
+        start / done per vehicle; `on_result(row, ok)` is called as each
+        vehicle finishes, so the caller can record it at once instead of
+        losing the whole store to a later hang.
         """
         assert self.page is not None
         # Lazy import: inventory_crawler imports this module at load time.
@@ -5381,6 +5393,8 @@ class ACVMaxScraper(_BrowserSession):
                         seen.add(vid)
                         raw_rows.append(raw)
                 pages += 1
+                if progress is not None:
+                    progress.beat(f"{dealership_name} crawl page {pages}")
                 print(
                     f"[scraper] {dealership_name}: page {pages}, "
                     f"{len(raw_rows)} vehicle(s)"
@@ -5404,10 +5418,21 @@ class ACVMaxScraper(_BrowserSession):
                 f"{len(vehicles)} crawled"
             )
 
+            skip = skip or set()
             for v in retail:
                 vid = v.get("vehicle_id")
                 if not vid:
                     continue
+                stock = v.get("stock_number")
+                if stock in skip:
+                    fail = {"stock_number": stock, "vin": v.get("vin"),
+                            "error": "skipped: over the per-vehicle time limit on an earlier attempt"}
+                    failures.append(fail)
+                    if on_result is not None:
+                        on_result(fail, False)
+                    continue
+                if progress is not None:
+                    progress.start(stock or str(vid))
                 try:
                     self.open_pricing(vid)
                     ctr = self.scrape_ctr(vid)
@@ -5423,6 +5448,10 @@ class ACVMaxScraper(_BrowserSession):
                             "error": str(exc),
                         }
                     )
+                    if on_result is not None:
+                        on_result(failures[-1], False)
+                    if progress is not None:
+                        progress.done()
                     continue
                 out.append(
                     {
@@ -5438,6 +5467,10 @@ class ACVMaxScraper(_BrowserSession):
                         "ctr_data": ctr,
                     }
                 )
+                if on_result is not None:
+                    on_result(out[-1], True)
+                if progress is not None:
+                    progress.done()
             return out, failures
         finally:
             try:

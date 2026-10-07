@@ -67,6 +67,8 @@ def capture_durham_ctr(
     dry_run: bool = False,
     errors: list[dict[str, Any]] | None = None,
     streak: FailureStreak | None = None,
+    skip: set[str] | None = None,
+    progress: Any = None,
 ) -> dict[str, Any]:
     """Durham retail CTR capture for every vehicle in `retail`. `acv` must
     already be logged in. aggregated_ctr lets a caller that already scraped a
@@ -76,7 +78,11 @@ def capture_durham_ctr(
 
     With a `streak`, the loop stops after that many identical scrape failures
     in a row and returns the repeated message as counts["aborted"]; the
-    caller alerts. counts["aborted"] is None when the loop ran to the end."""
+    caller alerts. counts["aborted"] is None when the loop ran to the end.
+
+    Watchdog hooks (ctr_child.py): `skip` stocks are not read (they overran the
+    per-vehicle limit on an earlier attempt); `progress` (a
+    step_watchdog.ProgressWriter) gets a start / done per vehicle."""
     ad_history = ad_history or {}
     aggregated_ctr = aggregated_ctr or {}
     if errors is None:
@@ -86,6 +92,13 @@ def capture_durham_ctr(
     for i, v in enumerate(retail, 1):
         stock = v.get("stock_number")
         counts["attempted"] += 1
+        if skip and stock in skip:
+            counts["failed"] += 1
+            errors.append({"stock": stock, "phase": "ctr", "error": "skipped: over the per-vehicle time limit"})
+            print(f"[ctr] {i} of {total} — {stock}: skipped (over the per-vehicle time limit on an earlier attempt)")
+            continue
+        if progress is not None:
+            progress.start(stock)
         ctr_data = aggregated_ctr.get(stock)
         if not isinstance(ctr_data, dict) or ctr_data.get("error"):
             try:
@@ -94,6 +107,8 @@ def capture_durham_ctr(
             except AcvMaxRunAbort:
                 raise  # ACV MAX itself is unusable - stop, don't fail every vehicle
             except Exception as exc:  # noqa: BLE001 - one vehicle must never kill the run
+                if progress is not None:
+                    progress.done()
                 counts["failed"] += 1
                 errors.append({"stock": stock, "phase": "ctr", "error": str(exc)})
                 print(
@@ -111,6 +126,8 @@ def capture_durham_ctr(
                 continue
         if streak is not None:
             streak.ok()
+        if progress is not None:
+            progress.done()
         if dry_run:
             print(
                 f"[ctr] {i} of {total} — {stock}: would record "
@@ -149,19 +166,62 @@ def capture_benchmark_ctr(
     *,
     dry_run: bool = False,
     errors: list[dict[str, Any]] | None = None,
+    stores: list[str] | None = None,
+    skip: set[str] | None = None,
+    progress: Any = None,
 ) -> dict[str, dict[str, int]]:
     """Northlake/Charlotte competitive benchmark CTR capture. `bx` must
     already be logged in (lands on Mercedes-Benz of Durham; each store switch
-    is handled inside scrape_benchmark_inventory())."""
+    is handled inside scrape_benchmark_inventory()). Each vehicle is recorded
+    as soon as its CTR is read, so a hang later in the store loses only the
+    vehicle in flight. stores: default BENCHMARK_DEALERSHIPS; skip / progress:
+    the watchdog hooks (ctr_child.py)."""
     if errors is None:
         errors = []
-    results: dict[str, dict[str, int]] = {
-        d: {"attempted": 0, "recorded": 0, "failed": 0} for d in BENCHMARK_DEALERSHIPS
-    }
-    for dealership_name in BENCHMARK_DEALERSHIPS:
+    stores = stores or list(BENCHMARK_DEALERSHIPS)
+    results: dict[str, dict[str, int]] = {d: {"attempted": 0, "recorded": 0, "failed": 0} for d in stores}
+    for dealership_name in stores:
         short = dealership_name.split()[-1]
+        res = results[dealership_name]
+
+        def on_result(veh: dict[str, Any], ok: bool, *, _name=dealership_name, _short=short, _res=res) -> None:
+            _res["attempted"] += 1
+            if not ok:
+                _res["failed"] += 1
+                errors.append({"stock": veh.get("stock_number"), "phase": "benchmark_ctr", "error": veh.get("error")})
+                print(f"[benchmark] {_short}: {veh.get('stock_number')} — failed: {veh.get('error')}", file=sys.stderr)
+                return
+            # Both benchmark stores: tier from the row's real status code,
+            # objective and mileage (see infer_mileage_tier).
+            tier = infer_mileage_tier(
+                veh.get("status_code"), veh.get("objective"), veh.get("mileage"), veh.get("year_make_model"),
+            )
+            if dry_run:
+                print(f"[benchmark] {_short}: {_res['attempted']} — would record {veh.get('stock_number')}")
+                return
+            try:
+                record_ctr(
+                    veh,
+                    veh.get("ctr_data") or {},
+                    dealership_name=_name,
+                    dealership_role="benchmark",
+                    certification_tier=tier,
+                    status_code=veh.get("status_code"),
+                    mileage=veh.get("mileage"),
+                    objective=veh.get("objective"),
+                )
+                _res["recorded"] += 1
+            except Exception as exc:  # noqa: BLE001
+                _res["failed"] += 1
+                errors.append({"stock": veh.get("stock_number"), "phase": "benchmark_db", "error": str(exc)})
+                return
+            print(
+                f"[benchmark] {_short}: {_res['attempted']} vehicles — "
+                f"{veh.get('year_make_model') or '?'} {veh.get('stock_number') or '?'}"
+            )
+
         try:
-            vehicles, failed = bx.scrape_benchmark_inventory(dealership_name)
+            bx.scrape_benchmark_inventory(dealership_name, skip=skip, progress=progress, on_result=on_result)
         except AcvMaxRunAbort:
             raise
         except Exception as exc:  # noqa: BLE001 - one store must not stop the other
@@ -170,64 +230,9 @@ def capture_benchmark_ctr(
             )
             print(f"[benchmark] {short} FAILED — {exc}", file=sys.stderr)
             continue
-
-        n_total = len(vehicles) + len(failed)
-        results[dealership_name]["attempted"] = n_total
-        results[dealership_name]["failed"] = len(failed)
-        for f in failed:
-            errors.append(
-                {
-                    "stock": f.get("stock_number"),
-                    "phase": "benchmark_ctr",
-                    "error": f.get("error"),
-                }
-            )
-            print(
-                f"[benchmark] {short}: {f.get('stock_number')} — failed: {f.get('error')}",
-                file=sys.stderr,
-            )
-
-        for i, veh in enumerate(vehicles, 1):
-            # Both benchmark stores: tier from the row's real status code,
-            # objective and mileage (see infer_mileage_tier).
-            tier = infer_mileage_tier(
-                veh.get("status_code"),
-                veh.get("objective"),
-                veh.get("mileage"),
-                veh.get("year_make_model"),
-            )
-            if dry_run:
-                print(
-                    f"[benchmark] {short}: {i} of {n_total} vehicles — "
-                    f"would record {veh.get('stock_number')}"
-                )
-                continue
-            try:
-                record_ctr(
-                    veh,
-                    veh.get("ctr_data") or {},
-                    dealership_name=dealership_name,
-                    dealership_role="benchmark",
-                    certification_tier=tier,
-                    status_code=veh.get("status_code"),
-                    mileage=veh.get("mileage"),
-                    objective=veh.get("objective"),
-                )
-                results[dealership_name]["recorded"] += 1
-            except Exception as exc:  # noqa: BLE001
-                results[dealership_name]["failed"] += 1
-                errors.append(
-                    {"stock": veh.get("stock_number"), "phase": "benchmark_db", "error": str(exc)}
-                )
-                continue
-            print(
-                f"[benchmark] {short}: {i} of {n_total} vehicles — "
-                f"{veh.get('year_make_model') or '?'} {veh.get('stock_number') or '?'}"
-            )
         print(
             f"[benchmark] {short} complete — "
-            f"{results[dealership_name]['recorded']} recorded, "
-            f"{results[dealership_name]['failed']} failed, of {n_total} attempted"
+            f"{res['recorded']} recorded, {res['failed']} failed, of {res['attempted']} attempted"
         )
     return results
 

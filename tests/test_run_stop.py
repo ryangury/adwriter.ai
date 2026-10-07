@@ -8,6 +8,8 @@ from unittest import mock
 
 sys.path.insert(0, r"C:\adwriter")
 import orchestrator as o  # noqa: E402
+sys.path.insert(0, __import__('os').path.dirname(__file__))
+from _children import fake_run_watched, ok_children  # noqa: E402
 import scraper  # noqa: E402
 
 FRAME = "Merchandising iframe (merchandising/PricingAnalysis) for {} never attached with a usable URL."
@@ -18,7 +20,7 @@ def retail(n, with_ads=False):
 
 
 class Harness:
-    def __init__(self, vehicles, history, aggregate, ctr=None, require_durham=None):
+    def __init__(self, vehicles, history, aggregate, ctr=None, require_durham=None, child_status=None):
         self.sent = []
         self.released = 0
         self.acv_logins = 0
@@ -46,6 +48,16 @@ class Harness:
             def login(self, *a, **k):
                 pass  # ReconVision, not ACV Max
 
+        def on_child(kind, store):
+            h.acv_logins += 1
+            if kind == "benchmark" and require_durham:
+                return "failed", {"counts": {}, "errors": [], "aborted": str(require_durham)}
+            if kind == "benchmark" and child_status:
+                return child_status, {"counts": {}, "errors": [], "aborted": None}
+            return ok_children(kind, store)
+
+        self.children = fake_run_watched(on_child)
+        self.verify = mock.Mock(return_value=([], [], []))
         self.patches = [
             mock.patch.object(o, "acquire_scraper_lock"),
             mock.patch.object(o, "release_lock_if_owned", side_effect=self._release),
@@ -64,9 +76,9 @@ class Harness:
             mock.patch.object(o, "check_recon", return_value={"recon_complete": True}),
             mock.patch.object(o, "aggregate", side_effect=aggregate),
             mock.patch.object(o, "ACVMaxScraper", FakeACV),
-            mock.patch.object(o, "capture_durham_ctr", side_effect=ctr or (lambda *a, **k: {"recorded": 0, "aborted": None})),
-            mock.patch.object(o, "capture_benchmark_ctr", return_value={}),
-            mock.patch.object(o, "run_verification", return_value=([], [], [])),
+            mock.patch.object(o, "run_watched", side_effect=self.children),
+            mock.patch.object(o, "run_verification", new=self.verify),
+            mock.patch.object(o, "_carfax_leftovers", return_value=[]),
             mock.patch.object(o, "send_verification_alert"),
             mock.patch.object(o, "_send_gmail", side_effect=lambda s, b: self.sent.append((s, b))),
         ]
@@ -130,6 +142,22 @@ class StopTests(unittest.TestCase):
         self.assertEqual(len(has(subj, "ACV Max scraping broken: Merchandising iframe")), 1)
         self.assertEqual(len(has(subj, "Mercedes-Benz of Durham — Action Required")), 1)
         self.assertGreater(h.acv_logins, 0, "CTR still runs after a build-loop stop")
+
+
+    def test_benchmark_hang_kills_alerts_once_and_continues(self):
+        hist = {f"S{i}": {"current_ad_text": "x", "recon_pending": False} for i in range(3)}
+        h = Harness(retail(3), hist, aggregate=AssertionError("no builds expected"), child_status="hung")
+        rc = h.run()
+        subj = h.subjects()
+        print("\n  benchmark hang: rc", rc, "emails", subj, "children", h.children.calls)
+        self.assertEqual(rc, 0, "a hung benchmark is not a run stop")
+        self.assertEqual(len(has(subj, "Mercedes-Benz of Durham — benchmark hung")), 1, "one email for both stores")
+        kinds = [c[0] for c in h.children.calls]
+        self.assertEqual(kinds.count("benchmark"), 2, "the second store still runs after the first hangs")
+        self.assertEqual(kinds.count("restore-durham"), 2, "Durham restored after each killed store")
+        self.assertTrue(h.verify.called, "verification still runs")
+        self.assertEqual(len(has(subj, "Mercedes-Benz of Durham — Build Summary")), 1)
+        self.assertEqual(len(has(subj, "Mercedes-Benz of Durham — Action Required")), 1)
 
 
 if __name__ == "__main__":
