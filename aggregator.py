@@ -41,6 +41,7 @@ from scraper import (
     _parse_oem_sticker,
     sticker_header_color,
 )
+from carfax_history import apply_text_history, carfax_history
 from vehicle_cache import (
     downgrade_recon,
     get_vehicle,
@@ -1676,7 +1677,8 @@ def _apply_carfax_vision(
         carfax_raw.setdefault("carfax_parse_source", "text_regex")
         return carfax_raw
 
-    owner_type = _VISION_OWNER_TYPE_MAP.get(vjson.get("owner_type"), carfax_raw.get("owner_type"))
+    # Text first: the text parser's owner type stands; vision fills a gap only.
+    owner_type = carfax_raw.get("owner_type") or _VISION_OWNER_TYPE_MAP.get(vjson.get("owner_type"))
     accident_count = vjson.get("accident_count")
     title_brands = vjson.get("title_brands") or []
     airbag_deployed = bool(vjson.get("airbag_deployed"))
@@ -1713,13 +1715,20 @@ def _apply_carfax_vision(
         carfax_raw["all_service_mercedes_benz"] = bool(vjson["all_service_authorized_dealer"])
     # Titled states: deterministic text pattern first, vision only as a fallback.
     _set_titled_states(carfax_raw, vjson.get("geographic_states"), vin)
-    if vjson.get("annual_mileage") is not None:
+    # Text first for these too: vision only fills a value the text parser left empty.
+    if carfax_raw.get("miles_per_year") is None and vjson.get("annual_mileage") is not None:
         carfax_raw["miles_per_year"] = vjson["annual_mileage"]
-    if vjson.get("service_record_count") is not None:
+    if carfax_raw.get("service_record_count") is None and vjson.get("service_record_count") is not None:
         carfax_raw["service_record_count"] = vjson["service_record_count"]
-    if "low_mileage" in vjson:
+    if carfax_raw.get("miles_per_year") is not None:
+        carfax_raw["low_mileage"] = carfax_raw["miles_per_year"] < 10_000
+    elif "low_mileage" in vjson:
         carfax_raw["low_mileage"] = bool(vjson["low_mileage"])
     carfax_raw["carfax_parse_source"] = "vision"
+    # Accidents, damage, structural damage, airbag, title brands and the
+    # all-service flag: the report's text overrides whatever vision said above.
+    # (aggregate() re-applies this with the snapshot's make before the ad is built.)
+    carfax_raw = apply_text_history(carfax_raw, _make_from_ymm(carfax_raw.get("carfax_title")))
 
     if carfax_raw.get("no_structural_damage") is False:
         print(
@@ -1960,8 +1969,6 @@ def build_provenance_sentence(
     return f"{owners} owners, {tail}"
 
 
-_ACCIDENT_SEVERITY_MAP = {"minor": "minor", "moderate": "moderate", "severe": "significant"}
-_ACCIDENT_COUNT_WORDS = {1: "one", 2: "two", 3: "three"}
 
 
 def build_carfax_sentence(
@@ -1971,10 +1978,13 @@ def build_carfax_sentence(
     make: str | None = None,
 ) -> str | None:
     """Pre-written sentence for paragraph one sentence three, built from
-    Carfax accident/service/mileage signals. Returns None when the sentence
-    should be omitted (Z stock, no Carfax data, unknown accident history, or
-    a disqualifying title/airbag event — never disclosed per WHAT NEVER
-    APPEARS IN COPY / the recon exclusion rules).
+    Carfax history/service/mileage signals. "Clean vehicle history" only when
+    carfax_history() finds the report clean (no accident or damage event, no
+    badge, every summary and title row reading no issues); otherwise no
+    history claim at all — just the low-mileage fact when there is one. The
+    all-service clause needs carfax_history()'s service_ok. Returns None when
+    the sentence should be omitted (Z stock, no Carfax data, or nothing to
+    say).
 
     `provenance_sentence` is the already-built PROVENANCE SENTENCE (sentence
     two) — when it already mentions Carfax (see build_provenance_sentence()'s
@@ -1982,12 +1992,10 @@ def build_carfax_sentence(
     Carfax"/"reported on Carfax" attribution here so it isn't stated twice
     across sentences two and three.
 
-    Note: carfax_data is the raw Carfax dict (carfax_raw). Its field names
-    differ from the vision JSON's own vocabulary — "all_service_mercedes_benz"
-    not "all_service_authorized_dealer", "miles_per_year" not
-    "annual_mileage", "titled_states" not "geographic_states". "accident_count"
-    is only present when the vision parser ran (see _apply_carfax_vision) —
-    the text-regex parser only ever produces the "no_accidents" boolean.
+    Note: carfax_data is the raw Carfax dict (carfax_raw), with
+    apply_text_history() already applied ("clean_history",
+    "all_service_mercedes_benz" = service_ok); a dict without
+    "clean_history" is checked from its raw_text here.
 
     `make` (the vehicle's own make, e.g. from _make_from_ymm()) drives the
     authorized-dealer phrase below — never hardcoded to Mercedes-Benz, since
@@ -2000,9 +2008,14 @@ def build_carfax_sentence(
     if not cf:
         return None
 
-    no_accidents = cf.get("no_accidents")
-    if no_accidents is None:
-        return None
+    # "Clean vehicle history" only when the report's own text shows no accident
+    # or damage event, no badge, and every summary / title row reading no
+    # issues (carfax_history.py). Any event, or text that can't be parsed:
+    # no history claim at all.
+    if "clean_history" in cf:
+        no_accidents = bool(cf["clean_history"])
+    else:
+        no_accidents = bool(carfax_history(cf.get("raw_text"), make)["clean"])
 
     provenance_has_carfax = "carfax" in str(provenance_sentence or "").lower()
     provenance_has_clean_history = "clean vehicle history" in str(provenance_sentence or "").lower()
@@ -2049,32 +2062,15 @@ def build_carfax_sentence(
                     f"performed at {dealer_phrase}."
                 )
     else:
-        # Title brands / airbag deployment are disqualifying events handled
-        # (and gated well before ad generation) elsewhere — never write an
-        # accident sentence for one.
-        if cf.get("has_disqualifying_event"):
-            return None
-
-        accident_count = cf.get("accident_count")
-        accident_severity = cf.get("accident_severity") or "minor"
-        sev = _ACCIDENT_SEVERITY_MAP.get(accident_severity, "minor")
-        if isinstance(accident_count, int) and accident_count > 0:
-            count_word = _ACCIDENT_COUNT_WORDS.get(accident_count, str(accident_count))
-        else:
-            # Count unknown (text-regex parse only knows no_accidents is
-            # False) — "one" is the only defensible default without
-            # fabricating a specific number Carfax didn't confirm.
-            count_word = "one"
-        if provenance_has_carfax:
-            base = (
-                f"{count_word.capitalize()} {sev} accident event reported. "
-                "No title brands, no airbag deployment."
+        # An accident or damage event (or a report whose text can't be
+        # parsed): no history claim of any kind. Only the mileage fact below
+        # may still be stated.
+        if 0 < miles_per_year < 10000:
+            return (
+                f"Averaging {miles_per_year:,} miles per year against the "
+                "national average of roughly 15,000."
             )
-        else:
-            base = (
-                f"{count_word.capitalize()} {sev} accident event reported on "
-                "Carfax. No title brands, no airbag deployment."
-            )
+        return None
 
     if 0 < miles_per_year < 10000:
         base += (
@@ -4332,6 +4328,13 @@ def aggregate(
                             f"for {vin}",
                             file=sys.stderr,
                         )
+
+        # The report's own text is authoritative for every history / service
+        # flag (carfax_history.py); vision only fills a field the text can't
+        # answer. Runs on a cache hit too, so stored vision values are
+        # corrected without a new scrape.
+        if isinstance(carfax_raw, dict) and not carfax_raw.get("error"):
+            carfax_raw = apply_text_history(carfax_raw, _make_from_ymm(pricing_raw.get("year_make_model")))
 
         # Carfax disqualifying-event gate — a title brand or an airbag
         # deployment stops ad generation outright, on every status code. An

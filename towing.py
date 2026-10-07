@@ -118,6 +118,10 @@ def _connect():
 
 _DRIVE_TOKENS = {"AWD": "AWD", "4MATIC": "AWD", "4MOTION": "AWD", "QUATTRO": "AWD", "XDRIVE": "AWD",
                  "4WD": "4WD", "4X4": "4WD", "FWD": "FWD", "RWD": "RWD", "2WD": "2WD", "4X2": "2WD"}
+# Pages often spell the drivetrain out ("Rear-wheel drive").
+_DRIVE_SPELLED = [(r"\bALL[\s-]WHEEL[\s-]DRIVE\b", "AWD"), (r"\bFOUR[\s-]WHEEL[\s-]DRIVE\b", "4WD"),
+                  (r"\bFRONT[\s-]WHEEL[\s-]DRIVE\b", "FWD"), (r"\bREAR[\s-]WHEEL[\s-]DRIVE\b", "RWD"),
+                  (r"\bTWO[\s-]WHEEL[\s-]DRIVE\b", "2WD")]
 _CAB_WORDS = r"(CREW|DOUBLE|REGULAR|EXTENDED|QUAD|MEGA|SUPER\s?CREW|SUPER\s?CAB)"
 # On the sticker the word CAB must follow ("REGULAR UNLEADED" is not a cab);
 # a page's cab field is already just the cab.
@@ -336,7 +340,10 @@ def match_problems(cfg: dict[str, Any], page: dict[str, str]) -> list[str]:
     if page_bodies and ours in ("sedan", "suv", "coupe", "wagon", "convertible", "cabriolet", "hatchback") and ours not in page_bodies:
         probs.append(f"body {sorted(page_bodies)} is not {ours}")
     page_drive = page.get("drivetrain") or ""
-    drives = {_DRIVE_TOKENS[t] for t in re.findall(r"[A-Za-z0-9]+", page_drive.upper()) if t in _DRIVE_TOKENS}
+    spelled = page_drive.upper()
+    for words, token in _DRIVE_SPELLED:
+        spelled = re.sub(words, f" {token} ", spelled)
+    drives = {_DRIVE_TOKENS[t] for t in re.findall(r"[A-Za-z0-9]+", spelled) if t in _DRIVE_TOKENS}
     if cfg["drivetrain"] not in drives:
         probs.append(f"drivetrain {page_drive!r} is not {cfg['drivetrain']}")
     if cfg.get("truck"):

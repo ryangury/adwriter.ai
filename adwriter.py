@@ -40,9 +40,10 @@ from feature_cache import (
     save_feature,
     save_trim_knowledge,
 )
+from carfax_history import carfax_history, claim_problems, scrub_claims
 from towing import tow_figures as _tow_figures_in
 from towing import towing_for, towing_sentence, unverified_tow_sentences
-from vehicle_cache import get_window_sticker
+from vehicle_cache import get_vehicle, get_window_sticker
 from powertrain import (
     MILD_HYBRID_SENTENCE,
     mild_wording_ok,
@@ -736,6 +737,73 @@ def _extract_ad_body(text: str) -> str:
     tag_match = _AD_TAG_RE.search(text)
     ad_body_slice = tag_match.group(1).strip() if tag_match else _slice_ad_body(text)
     return _strip_reasoning_sentences(ad_body_slice)
+
+
+def _carfax_verdict(cf: dict, ymm: str | None) -> dict:
+    """carfax_history's verdict for a package's Carfax dict: the stored
+    carfax_history (apply_text_history ran in aggregate()), else recomputed
+    from raw_text when it is there, else "not parsed"."""
+    if (cf or {}).get("carfax_history"):
+        return cf["carfax_history"]
+    if (cf or {}).get("raw_text"):
+        return carfax_history(cf["raw_text"], split_ymm(ymm)[1])
+    return {"parsed": False, "clean": False, "reasons": ["Carfax text not available"],
+            "service_ok": False, "service_reasons": ["Carfax text not available"]}
+
+
+def carfax_claim_lines(cf: dict, ymm: str | None) -> list[str]:
+    """The data package's two Carfax claim verdicts, from the report's text."""
+    h = _carfax_verdict(cf, ymm)
+    make = split_ymm(ymm)[1] or "the manufacturer's"
+    lines = []
+    if h.get("clean"):
+        lines.append("CARFAX HISTORY: clean (no accident or damage event; every Carfax summary row reads no issues). "
+                     "'Clean vehicle history' may be stated.")
+    else:
+        lines.append("CARFAX HISTORY: NOT CLEAN (" + "; ".join(h.get("reasons") or ["not verified"]) + "). "
+                     "Make no claim about accident or damage history: never write clean history, clean Carfax, "
+                     "no accidents, accident-free or similar, and do not mention the event either.")
+    if h.get("service_ok"):
+        lines.append(f"ALL SERVICE AT AUTHORIZED {make.upper()} DEALERS: yes (two or more records incl. a maintenance visit).")
+    else:
+        lines.append("ALL SERVICE AT AUTHORIZED DEALERS: NO (" + "; ".join(h.get("service_reasons") or ["not verified"])
+                     + "). Do not claim all service at authorized dealers, dealer-maintained or similar.")
+    return lines
+
+
+def strip_unsupported_carfax_claims(text: str, pkg: dict, *, stock: str = "", label: str = "adwriter") -> tuple[str, list[str]]:
+    """(text without the unsupported clean-history / all-service claims, notes).
+    Known wordings are rewritten (carfax_history.scrub_claims); a sentence with
+    a claim in an unknown shape is dropped. Logged."""
+    h = _carfax_verdict(pkg.get("carfax") or {}, (pkg.get("vehicle") or {}).get("year_make_model"))
+    r = scrub_claims(text, bool(h.get("clean")), bool(h.get("service_ok")))
+    out, notes = r["text"], []
+    if r["manual"]:
+        out = _drop_sentences(out, r["manual"])
+    for s in r["removed"] + r["manual"]:
+        print(f"[{label}] {stock}: removed unsupported Carfax claim: {s}", file=sys.stderr)
+        notes.append(f"removed (Carfax claim not supported: {'; '.join(h.get('reasons') or []) or 'service records'}): {s}")
+    return out, notes
+
+
+def carfax_verdict_for_stock(stock: str) -> dict:
+    """The Carfax verdict for a stored ad (reprice, recon top-up): the cached
+    report's raw_text through carfax_history, by the snapshot's VIN."""
+    v = _snapshot_vehicle(stock)
+    row = (get_vehicle(v["vin"]) if v.get("vin") else None) or {}
+    try:
+        cf = json.loads(row.get("carfax_json") or "null") or {}
+    except ValueError:
+        cf = {}
+    # Any age: a stored claim is checked against the report it was written from.
+    return {"carfax": cf, "vehicle": {"year_make_model": v.get("year_make_model")}}
+
+
+def history_claim_problems(text: str, pkg: dict) -> list[str]:
+    """Sentences claiming a clean history / all-dealer service the package's
+    Carfax doesn't support (one retry, then carfax_history.scrub_claims)."""
+    h = _carfax_verdict(pkg.get("carfax") or {}, (pkg.get("vehicle") or {}).get("year_make_model"))
+    return claim_problems(text, bool(h.get("clean")), bool(h.get("service_ok")))
 
 
 def towing_package_lines(tow: dict | None) -> list[str]:
@@ -1540,14 +1608,9 @@ def format_data_package(pkg: dict) -> tuple[str, list[dict]]:
     else:
         lines.append(f"Number of owners: {cf.get('number_of_owners', 'n/a')}")
         lines.append(f"Owner type: {cf.get('owner_type', 'n/a')}")
-        lines.append(f"All service at authorized Mercedes-Benz dealers: {_yn(cf.get('all_service_mercedes_benz'))}")
+        lines.extend(carfax_claim_lines(cf, (pkg.get("vehicle") or {}).get("year_make_model")))
         lines.append(f"Last reported odometer (Carfax): {(cf.get('last_reported_odometer') or 0):,}")
         lines.append(f"Miles per year: {(cf.get('miles_per_year') or 0):,}  (low mileage: {_yn(cf.get('low_mileage'))})")
-        lines.append(
-            f"No accidents: {_yn(cf.get('no_accidents'))} | "
-            f"No structural damage: {_yn(cf.get('no_structural_damage'))} | "
-            f"No total loss: {_yn(cf.get('no_total_loss'))}"
-        )
         # Carfax's own warranty estimate and odometer cross-check are not shown:
         # the WARRANTY SENTENCE below is the only factory-warranty language.
         lines.append("Warranty: see WARRANTY SENTENCE (the only factory-warranty language for this ad)")
@@ -2137,7 +2200,8 @@ def _generate_from_package(pkg: dict) -> tuple[str, str | None]:
             sticker_mild=mild_wording_ok(pt), engine=pt.get("engine"),
         )
         tow_bad, tire_bad = fact_check_problems(ad_copy, pkg)
-        if not leaks and not hits and not missing and not pt_bad and not tow_bad and not tire_bad:
+        hist_bad = history_claim_problems(ad_copy, pkg)
+        if not leaks and not hits and not missing and not pt_bad and not tow_bad and not tire_bad and not hist_bad:
             return _done(ad_copy, feedback)
         problems = (
             ([f"tool output in the ad text {leaks[:2]}"] if leaks else [])
@@ -2146,6 +2210,7 @@ def _generate_from_package(pkg: dict) -> tuple[str, str | None]:
             + [f"powertrain: {'; '.join(p)}" for _, p in pt_bad]
             + ([f"unverified tow figure: {tow_bad}"] if tow_bad else [])
             + ([f"tire size not on the sticker or in the data package: {tire_bad}"] if tire_bad else [])
+            + ([f"Carfax claim the report doesn't support: {hist_bad}"] if hist_bad else [])
         )
         if attempt == 1:
             print(f"[adwriter] {stock}: {'; '.join(problems)} - retrying once", file=sys.stderr)
@@ -2179,6 +2244,9 @@ def _generate_from_package(pkg: dict) -> tuple[str, str | None]:
                 for s in bad:
                     print(f"[adwriter] {stock}: removed sentence ({why}): {s}", file=sys.stderr)
                     pt_flags.append(f"removed after retry ({why}): {s}")
+        if hist_bad:
+            ad_copy, notes = strip_unsupported_carfax_claims(ad_copy, pkg, stock=stock or "", label="adwriter")
+            pt_flags.extend(notes)
     return _done(ad_copy, feedback)
 
 
@@ -2885,6 +2953,15 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
     p3, n3 = strip_powertrain_claims(p3, pt, stock=stock, label="reprice", existing=True)
     p4, n4 = strip_powertrain_claims(p4, pt, stock=stock, label="reprice", existing=True)
     pt_notes.extend(n1 + n3 + n4)
+    # Carfax claims the report doesn't support (clean history, all service at
+    # authorized dealers): rewritten or removed in every paragraph, no model call.
+    verdict = carfax_verdict_for_stock(stock)
+    scrubbed = []
+    for p in (p1, new_p2, p3, p4):
+        new, n = strip_unsupported_carfax_claims(p, verdict, stock=stock, label="reprice") if p else (p, [])
+        scrubbed.append(new)
+        pt_notes.extend(n)
+    p1, new_p2, p3, p4 = scrubbed
     if pt_notes or pt.get("flags"):
         entry["powertrain_flags"] = list(pt.get("flags") or []) + pt_notes
     else:
@@ -3023,6 +3100,26 @@ def _topup_powertrain_check(stock: str, entry: dict) -> None:
     else:
         entry.pop("powertrain_flags", None)
     stamp_mild_sentence(entry)
+    _topup_carfax_check(stock, entry)
+
+
+def _topup_carfax_check(stock: str, entry: dict) -> None:
+    """No model call on a top-up: an unsupported clean-history / all-service
+    claim is rewritten or removed (logged) in each stored paragraph, and the
+    full ad text is rebuilt from them."""
+    verdict = carfax_verdict_for_stock(stock)
+    keys = ("paragraph_one", "paragraph_two", "paragraph_three", "paragraph_four")
+    changed = False
+    notes: list[str] = []
+    for key in keys:
+        if entry.get(key):
+            new, n = strip_unsupported_carfax_claims(entry[key], verdict, stock=stock, label="update_recon")
+            if new != entry[key]:
+                entry[key], changed = new, True
+                notes.extend(n)
+    if changed:
+        entry["current_ad_text"] = "\n\n".join(entry[k] for k in keys if entry.get(k))
+        entry["powertrain_flags"] = list(entry.get("powertrain_flags") or []) + notes
 
 
 def update_recon(stock_number: str, status_code: int | None = None) -> str:
@@ -3125,7 +3222,8 @@ def update_recon(stock_number: str, status_code: int | None = None) -> str:
     entry["last_ad_date"] = date.today().isoformat()
     history[stock] = entry
     save_ad_history(history)
-    return full
+    # The stored text: the powertrain / Carfax checks above may have edited it.
+    return entry["current_ad_text"]
 
 
 # --------------------------------------------------------------------------- #
