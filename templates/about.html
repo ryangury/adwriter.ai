@@ -1,0 +1,93 @@
+{% extends "layout.html" %}
+{% block title %}About This Tool | Mercedes-Benz of Durham{% endblock %}
+{% block head %}
+<style>
+  .about { max-width: 800px; margin: 0 auto; padding: 32px 20px 64px; line-height: 1.6; font-size: 1rem; }
+  .about h1 { font-size: 1.6rem; font-weight: 650; margin: 0 0 4px; color: var(--accent); }
+  .about .about-subtitle { margin: 0 0 4px; font-size: 1.05rem; }
+  .about .about-updated { margin: 0 0 28px; color: var(--muted); font-size: 0.9rem; }
+  .about h2 { font-size: 0.95rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--accent);
+              margin: 32px 0 8px; }
+  .about p { margin: 0 0 12px; }
+  .about ul { margin: 0 0 12px; padding-left: 22px; }
+  .about li { margin: 0 0 6px; }
+  .about-schedule { width: 100%; border-collapse: collapse; font-size: 0.92rem; margin: 4px 0 6px; }
+  .about-schedule th, .about-schedule td { text-align: left; vertical-align: top; padding: 7px 10px;
+                                           border-bottom: 1px solid #e5e7eb; }
+  .about-schedule th { font-weight: 600; color: var(--muted); }
+  .about-schedule td:first-child { white-space: nowrap; font-weight: 600; }
+  .about-checked { color: var(--muted); font-size: 0.85rem; }
+
+  @media print {
+    @page { margin: 0.75in; }
+    .sidebar { display: none !important; }
+    .app, .content { display: block !important; }
+    body { background: #fff !important; color: #000; }
+    .about { max-width: none; padding: 0; font-size: 11pt; }
+    .about h1, .about h2 { color: #000; }
+    .about h2 { break-after: avoid; page-break-after: avoid; }
+    .about-schedule, .about li { break-inside: avoid; page-break-inside: avoid; }
+    .about-schedule th, .about-schedule td { border-bottom: 1px solid #999; }
+  }
+</style>
+{% endblock %}
+{% block content %}
+<article class="about">
+  <h1>About This Tool</h1>
+  <p class="about-subtitle">How the used car listing writer at Mercedes-Benz of Durham works</p>
+  <p class="about-updated">Last updated: October 6, 2026</p>
+
+  <h2>Why I built it</h2>
+  <p>Most shoppers never read the description on a used car listing. They look at the photos and the price. The words underneath are read by search engines like Google, and by the AI assistants that buyers now paste listing links into when they want help deciding. When a shopper asks an assistant whether a car is a good deal, the assistant reads that text.</p>
+  <p>So I started a conversation with Claude, Anthropic's AI assistant, and asked it to write our listings for those readers while still covering every point that matters to a buyer. It worked, but each ad took a long back and forth, which could not scale to a whole lot. Using AI coding tools, I built a program that does the entire job automatically, every day, for every used car we have.</p>
+
+  <h2>What it does</h2>
+  <p>Each morning the tool reviews every used car in inventory. It gathers the facts, writes or updates the listing, and emails me finished copy that is ready to post. After I post it, the tool checks the live listing and tells me if anything is missing or out of date. Every ad has the same four short paragraphs: the car and its history, what makes this car worth a look, the inspection and warranty terms, and a closing about the store.</p>
+
+  <h2>What it learns about each car</h2>
+  <ul>
+    <li>Pricing and market position from ACV Max, including how many similar cars are for sale and how fast they sell.</li>
+    <li>The window sticker, for the original price, packages and options.</li>
+    <li>The Carfax vehicle history report, including owners, how the car was used, and the estimated factory warranty remaining.</li>
+    <li>Reconditioning records from ReconVision, such as new tires, brake work and scheduled service, and whether the car is finished.</li>
+    <li>Engine details from the window sticker, and electric range and towing capacity from official sources, never from memory.</li>
+    <li>Click-through numbers from CarGurus and AutoTrader, compared with two other Hendrick stores.</li>
+  </ul>
+
+  <h2>What it leaves out on purpose</h2>
+  <p>The tool does not feature negatives, and it never claims anything the records contradict. The Carfax report is included with every purchase.</p>
+  <ul>
+    <li>Repairs that raise doubts without helping a buyer, such as glass, wheel refinishing, trim panels and batteries.</li>
+    <li>Claims it cannot prove. It calls a car hard to find only when the number of similar cars listed nationwide is small, and that number appears in the same sentence.</li>
+    <li>A clean history claim unless the Carfax shows no accidents and no damage of any kind.</li>
+    <li>Details that do not help a buyer, such as fleet or rental use, more than two owners, and the names of competing dealers.</li>
+    <li>Our internal numbers, such as cost, profit and wholesale value.</li>
+    <li>Any number it cannot support. If the warranty estimate, electric range or towing capacity cannot be found in a trusted source, that sentence is left out.</li>
+  </ul>
+
+  <h2>Built for AI search</h2>
+  <ul>
+    <li>Every sentence answers a question a buyer or an AI might ask, and carries a specific number or condition. "Four new tires installed" and "about 30,100 miles of warranty remain" give a machine something to quote.</li>
+    <li>The structure is the same on every car, so machines learn where to find the owner count, the warranty and the price comparison.</li>
+    <li>The tone is plain and factual, with no hype words.</li>
+    <li>Sources are named where they build trust, such as "CARFAX estimates" and the J.D. Power or Kelley Blue Book price comparison.</li>
+    <li>The copy is written once and published through Homenet to AutoTrader, CarGurus and HendrickCars.com. As far as we can tell, Google reads CarGurus and HendrickCars.com, while AutoTrader's text feeds its own assistant.</li>
+  </ul>
+
+  <h2>How it runs</h2>
+  {% include "_about_schedule.html" %}
+
+  <h2>How it checks its own work</h2>
+  <ul>
+    <li>Ordinary code decides every fact, such as price, mileage, owners and warranty. The AI only writes the sentences around those facts.</li>
+    <li>Every ad passes automatic checks before it reaches me. Required sentences must be present, banned wording is rejected, cut-off text is caught, and claims must match the data. An ad that fails is retried once and then dropped, never sent.</li>
+    <li>Logins to the other systems refresh themselves. If a source breaks, the affected step stops and emails me instead of producing bad ads.</li>
+    <li>Sold cars are detected and dropped automatically, so reports only show cars we still have.</li>
+    <li>The posting checker reads the live listing and tells me when an ad is missing, out of date or priced differently from our system.</li>
+    <li>Every mistake we find becomes a new rule or test.</li>
+  </ul>
+
+  <h2>What we measure</h2>
+  <p>Click-through rates against two other Hendrick stores, the time from an ad being ready to being live, and how often the safety checks step in. The results are early, and I will update this page as the data builds.</p>
+</article>
+{% endblock %}

@@ -1272,6 +1272,15 @@ def _sonnet_haiku_split(total_cost: float, token_totals: dict[str, int]) -> dict
     return {k: total_cost * (v / grand_total) for k, v in buckets.items()}
 
 
+@app.get("/about")
+def about():
+    # Same login as every page; the schedule table is built from schtasks by
+    # build_about_schedule.py (templates/_about_schedule.html).
+    if not session.get("authed"):
+        return render_template("login.html", error=request.args.get("error"))
+    return render_template("about.html")
+
+
 @app.get("/cost")
 def cost():
     if not session.get("authed"):

@@ -4,7 +4,7 @@ any non-200. Run after a template or app.py change:
 
     python check_pages.py
 
-Covers the main pages (/, /inventory, /cache, /ctr, /cost) plus /cache/<stock>
+Covers the main pages (/, /inventory, /cache, /ctr, /cost, /about) plus /cache/<stock>
 for every snapshot stock and every cached row with a stock number, and
 /inventory/<stock> for every snapshot stock. Read-only: GETs only, with a
 test-client session marked authed (nothing is sent to any live service).
@@ -22,7 +22,7 @@ sys.path.insert(0, str(ROOT))
 
 import app as adapp  # noqa: E402
 
-MAIN_PAGES = ["/", "/inventory", "/cache", "/ctr", "/cost"]
+MAIN_PAGES = ["/", "/inventory", "/cache", "/ctr", "/cost", "/about"]
 
 
 def _stocks() -> tuple[list[str], list[str]]:
