@@ -313,6 +313,64 @@ def _format_action_email(
     return "\n".join(out)
 
 
+_BUILD_KIND = {"active": "NEW", "pre_recon": "PRE-RECON", "recon_updated": "RECON UPDATE", "repriced": "REPRICE"}
+
+
+def _carfax_leftovers() -> list[dict[str, Any]]:
+    """Live ads still carrying a clean-history / all-service claim the Carfax
+    text doesn't support (carfax_refresh.plan(): deterministic, no model call)."""
+    import carfax_refresh
+
+    return [
+        {"stock": r["stock"], "ymm": r["ymm"], "group": r["group"], "manual": bool(r["manual"])}
+        for r in carfax_refresh.plan()
+        if r["group"]
+    ]
+
+
+def _format_build_summary(
+    ads_generated: list[dict[str, Any]],
+    not_rebuilt: list[dict[str, Any]],
+    errors: list[dict[str, Any]],
+    carfax_leftovers: list[dict[str, Any]] | None,
+) -> str:
+    """The early email sent right after the build step (before CTR, the
+    benchmark and verification), so the day's ads are known even if a later
+    step hangs. The end-of-run emails still go out as before."""
+    out = [f"MERCEDES-BENZ OF DURHAM — BUILD SUMMARY  {date.today().isoformat()}",
+           "Sent after the build step; CTR, benchmark, verification and the end-of-run emails follow.", ""]
+    out += [f"ADS BUILT ({len(ads_generated)})", "=" * 60]
+    if not ads_generated:
+        out.append("(none)")
+    for kind in ("active", "pre_recon", "recon_updated", "repriced"):
+        for a in [a for a in ads_generated if a.get("lifecycle_stage") == kind]:
+            v = a.get("vehicle") or {}
+            out.append(f"  {_BUILD_KIND[kind]:12s} {a['stock']}  {v.get('year_make_model') or ''}  "
+                       f"{_fmt_price(v.get('advertised_price') or v.get('current_price'))}".rstrip())
+    out += ["", f"DELETED FOR REBUILD, NO NEW AD ({len(not_rebuilt)})", "=" * 60]
+    if not not_rebuilt:
+        out.append("(none)")
+    for r in not_rebuilt:
+        out.append(f"  [{r['stock']}]  {r['reason']}")
+        out.append(f"      restore: python restore_removed.py --only {r['stock']}")
+    out += ["", f"SCRAPER ERRORS SO FAR ({len(errors)})", "=" * 60]
+    if not errors:
+        out.append("(none)")
+    for e in errors:
+        out.append(f"  [{e.get('stock')}]  {e.get('phase')}  —  {e.get('error')}")
+    out += ["", "CARFAX-REFRESH LEFTOVERS", "=" * 60]
+    if carfax_leftovers is None:
+        out.append("(could not be checked this run)")
+    elif not carfax_leftovers:
+        out.append("(none: every live clean-history / all-service claim matches the Carfax text)")
+    else:
+        for c in carfax_leftovers:
+            out.append(f"  [{c['stock']}]  {c['ymm']}  {c['group']}" + ("  (hand edit)" if c["manual"] else ""))
+        out.append(f"      python carfax_refresh.py --only {','.join(c['stock'] for c in carfax_leftovers)}   (dry run)")
+    out.append("")
+    return "\n".join(out)
+
+
 # --------------------------------------------------------------------------- #
 # the run
 # --------------------------------------------------------------------------- #
@@ -1050,6 +1108,21 @@ def _run_inner(
             list_not_rebuilt.print_report(not_rebuilt)
         except Exception as exc:  # noqa: BLE001 - a report must not sink the run
             print(f"[not-rebuilt] report failed — {exc}", file=sys.stderr)
+
+    # Early Build Summary: the day's ads, the not-rebuilt list, errors so far and
+    # Carfax-claim leftovers, sent before CTR / the benchmark can hang the run.
+    try:
+        try:
+            leftovers: list[dict[str, Any]] | None = _carfax_leftovers()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[email] carfax leftovers check failed — {exc}", file=sys.stderr)
+            leftovers = None
+        _safe_send(
+            f"Mercedes-Benz of Durham — Build Summary {today}",
+            _format_build_summary(ads_generated, not_rebuilt, errors, leftovers),
+        )
+    except Exception as exc:  # noqa: BLE001 - the early email must not sink the run
+        print(f"[email] Build Summary failed — {exc}", file=sys.stderr)
 
     # --- 5. DURHAM CTR CAPTURE (every retail vehicle) ------------- #
     # Logic lives in ctr_warmup.py (capture_durham_ctr()) so the standalone
