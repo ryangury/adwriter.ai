@@ -33,6 +33,7 @@ import os
 import re
 import sqlite3
 import sys
+import time
 import urllib.parse
 from datetime import date, timedelta
 from pathlib import Path
@@ -397,6 +398,13 @@ def parse_reply(text: str, cfg: dict[str, Any], domains: list[str], seen_urls: s
     return {"lbs": int(lbs_raw), "url": url, "page_config": page_config, "note": None}
 
 
+# Limits on one configuration's lookup (the build path and tow_refresh alike).
+TOW_REQUEST_TIMEOUT_S = 120
+TOW_REQUEST_RETRIES = 1
+TOW_CONFIG_BUDGET_S = 8 * 60
+_clock = time.monotonic
+
+
 class TowLookupUnavailable(RuntimeError):
     """The search call itself failed (network / rate limit); nothing is cached."""
 
@@ -438,11 +446,21 @@ def lookup(cfg: dict[str, Any]) -> dict[str, Any]:
         f"TOW :: <pounds, digits only, or NONE> :: <model year> :: <make> :: <model and body style> :: {engine_field} :: "
         "<drivetrain> :: <cab or n/a> :: <bed length or n/a> :: <package the rating requires, or none> :: <page URL>"
     )
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    # Bounded: each request times out after TOW_REQUEST_TIMEOUT_S with one
+    # retry, and the whole configuration (pause_turn rounds included) gets
+    # TOW_CONFIG_BUDGET_S. Over budget: TowLookupUnavailable, nothing cached, so
+    # the next run (or tow_refresh --lookup) tries this configuration again.
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=TOW_REQUEST_TIMEOUT_S,
+                                 max_retries=TOW_REQUEST_RETRIES)
     messages: list[Any] = [{"role": "user", "content": ask}]
+    deadline = _clock() + TOW_CONFIG_BUDGET_S
     try:
         response = None
         for _ in range(4):
+            remaining = deadline - _clock()
+            if remaining <= 5:
+                raise TowLookupUnavailable(
+                    f"tow lookup over its {TOW_CONFIG_BUDGET_S // 60}-minute budget for {describe(cfg)}; skipped")
             response = client.messages.create(
                 model=MANUFACTURER_SEARCH_MODEL,
                 max_tokens=16000,
@@ -451,11 +469,16 @@ def lookup(cfg: dict[str, Any]) -> dict[str, Any]:
                     "allowed_domains": domains, "max_uses": TOW_LOOKUP_MAX_USES,
                 }],
                 messages=messages,
+                timeout=min(TOW_REQUEST_TIMEOUT_S, remaining),
             )
             if response.stop_reason != "pause_turn":
                 break
             messages.append({"role": "assistant", "content": response.content})
+        else:
+            if response is not None and response.stop_reason == "pause_turn":
+                raise TowLookupUnavailable(f"tow lookup still paused after 4 rounds for {describe(cfg)}; skipped")
     except (anthropic.APIConnectionError, anthropic.RateLimitError, anthropic.APIStatusError) as exc:
+        # APITimeoutError is an APIConnectionError: a request over 120 s (after its retry) lands here.
         raise TowLookupUnavailable(f"tow lookup failed: {exc}") from exc
     if response is None or response.stop_reason == "refusal":
         return {"lbs": None, "note": "tow lookup declined"}
@@ -517,8 +540,12 @@ def towing_for(
     powertrain_class: str | None = None,
     allow_lookup: bool = True,
     force: bool = False,
+    refresh: bool = False,
 ) -> dict[str, Any]:
-    """{"triggered", "rating" (lbs or None), "config", "config_text", "source_url",
+    """refresh: ignore a cached result and look the configuration up again
+    (tow_refresh --relookup).
+
+    {"triggered", "rating" (lbs or None), "config", "config_text", "source_url",
     "note", "override", "sentence"}. A tow override for the VIN beats everything
     (its rating is used verbatim). Not triggered -> nothing to state. Triggered
     without a rating -> the ad states no tow figure and "note" says why
@@ -539,11 +566,12 @@ def towing_for(
     if cfg["missing"]:
         out["note"] = f"configuration incomplete on the sticker / record (no {', '.join(cfg['missing'])})"
         return out
-    row = get_cached(cfg)
+    row = None if (refresh and allow_lookup) else get_cached(cfg)
     if row is None and allow_lookup:
         try:
             result = lookup(cfg)
         except TowLookupUnavailable as exc:
+            print(f"[towing] {out['config_text']}: SKIPPED - {exc}", file=sys.stderr)
             out["note"] = str(exc)
             return out
         save(cfg, result)

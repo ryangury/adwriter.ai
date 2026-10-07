@@ -142,7 +142,7 @@ def _tow_units(text: str) -> list[str]:
     return [s for s in A._split_sentences(text or "") if T.tow_figures(s)]
 
 
-def _towing(stock: str, v: dict, allow_lookup: bool) -> dict:
+def _towing(stock: str, v: dict, allow_lookup: bool, refresh: bool = False) -> dict:
     vin = v.get("vin")
     sticker = (get_window_sticker(vin) or {}) if vin else {}
     raw = sticker.get("raw_text") or ""
@@ -150,7 +150,8 @@ def _towing(stock: str, v: dict, allow_lookup: bool) -> dict:
     st, rc = cached_texts(vin) if vin else ("", "")
     pclass = classify(vin, v.get("year_make_model"), v.get("trim"), sticker_text=st, recon_text=rc)["class"]
     tow = T.towing_for(v.get("year_make_model"), v.get("trim"), v.get("body_style"), raw, names,
-                       vin=vin, powertrain_class=pclass, allow_lookup=allow_lookup, force=True)
+                       vin=vin, powertrain_class=pclass, allow_lookup=allow_lookup, force=True,
+                       refresh=refresh)
     tow["sticker_triggers"] = T.triggered(raw, names)
     return tow
 
@@ -275,6 +276,11 @@ def _parse(argv: list[str]) -> argparse.Namespace:
     mode.add_argument("--dry-run", action="store_true", help="default: show the plan, write nothing")
     mode.add_argument("--apply", action="store_true", help="write the selected ads (needs --only and/or --group)")
     ap.add_argument("--lookup", action="store_true", help="run the paid lookups still missing (count and cost printed first)")
+    ap.add_argument("--lookup-stocks", default="",
+                    help="STOCK[,...]: look up these inventory stocks' configurations, ad or not (cost printed first; "
+                         "add --run to spend)")
+    ap.add_argument("--relookup", default="", help="STOCK[,...]: with --lookup-stocks, ignore the cached result")
+    ap.add_argument("--run", action="store_true", help="with --lookup-stocks: run the lookups")
     ap.add_argument("--only", default="", help="STOCK[,STOCK...]")
     ap.add_argument("--group", default="", help="comma list of: " + ", ".join(GROUPS))
     args = ap.parse_args(argv)
@@ -288,8 +294,59 @@ def _parse(argv: list[str]) -> argparse.Namespace:
     return args
 
 
+MAX_LOOKUP_SPEND = 5.00
+
+
+def lookup_stocks(stocks: list[str], relookup: set[str], run: bool) -> int:
+    """Look up the tow configurations of specific inventory stocks, whether or
+    not they have an ad now (a car deleted for a rebuild gets its rating cached
+    before tomorrow's build). One lookup per configuration; cached ones are
+    skipped unless in `relookup`. Prints the count and cost first and stops
+    when the typical projection is over MAX_LOOKUP_SPEND."""
+    snap = {v["stock_number"]: v for v in json.loads(SNAPSHOT_PATH.read_text(encoding="utf-8"))["vehicles"]}
+    todo: dict[str, tuple[str, dict, bool]] = {}
+    for s in stocks:
+        v = snap.get(s)
+        if not v:
+            print(f"  {s}: not in the inventory snapshot - skipped")
+            continue
+        tow = _towing(s, v, allow_lookup=False)
+        cfg = tow["config_text"]
+        if (tow.get("config") or {}).get("missing"):
+            print(f"  {s}: {tow['note']} - skipped")
+            continue
+        if s in relookup or tow.get("note") == "not looked up yet":
+            todo.setdefault(cfg, (s, v, s in relookup))
+        else:
+            print(f"  {s}: {cfg} already cached ({tow.get('rating') or tow.get('note')}) - skipped")
+    lo, hi = LOOKUP_COST_RANGE
+    cost = len(todo) * LOOKUP_COST_TYPICAL
+    print(f"lookups to run: {len(todo)} configuration(s), expected about ${cost:.2f} "
+          f"(range ${len(todo) * lo:.2f}-${len(todo) * hi:.2f}); limits: {T.TOW_REQUEST_TIMEOUT_S}s per request, "
+          f"{T.TOW_REQUEST_RETRIES} retry, {T.TOW_CONFIG_BUDGET_S // 60} min per configuration")
+    for cfg, (s, _v, re_) in todo.items():
+        print(f"  - [{s}] {cfg}{'  (re-lookup: cached result ignored)' if re_ else ''}")
+    if cost > MAX_LOOKUP_SPEND:
+        print(f"STOP: projected ${cost:.2f} is over ${MAX_LOOKUP_SPEND:.2f}; nothing run")
+        return 1
+    if not run:
+        print("(not run: add --run)")
+        return 0
+    import time as _t
+
+    for i, (cfg, (s, v, re_)) in enumerate(todo.items(), 1):
+        t0 = _t.monotonic()
+        tow = _towing(s, v, allow_lookup=True, refresh=re_)
+        print(f"  {i}/{len(todo)} [{s}] {cfg}: {format(tow['rating'], ',') + ' lbs' if tow.get('rating') else 'none'}"
+              f" ({tow.get('source_url') or tow.get('note')}) in {_t.monotonic() - t0:.0f}s", flush=True)
+    return 0
+
+
 def main(argv: list[str]) -> int:
     args = _parse(argv)
+    if args.lookup_stocks:
+        return lookup_stocks([x.strip().upper() for x in args.lookup_stocks.split(",") if x.strip()],
+                             {x.strip().upper() for x in args.relookup.split(",") if x.strip()}, args.run)
     rows, pending = plan(allow_lookup=False)
     lo, hi = LOOKUP_COST_RANGE
     print(f"TOW REFRESH — {'APPLY' if args.apply else 'DRY RUN (nothing written)'} — {date.today()}")
