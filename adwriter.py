@@ -1853,6 +1853,7 @@ def insert_scarcity_sentence(paragraph_two: str, sentence: str | None) -> str:
 # provenance sentence (sentence two); paragraph two carries the rest.
 REQUIRED_SENTENCE_KEYS = (
     "provenance_sentence",
+    "carfax_sentence",
     "proof_point_sentence",
     "scarcity_sentence",
     "warranty_sentence",
@@ -2001,6 +2002,18 @@ def insert_required_sentences(
         paras["paragraph_one"] = " ".join(units)
         print(f"{tag} inserted provenance sentence into paragraph one", file=sys.stderr)
 
+    # CARFAX SENTENCE: paragraph one, right after the provenance sentence. The
+    # model sometimes rewords it ("Carfax shows a clean vehicle history with no
+    # accidents..."), which the reasoning filter then strips (T23151A, 10/7):
+    # the verbatim sentence goes back in.
+    if "carfax_sentence" in missing:
+        prov = required.get("provenance_sentence")
+        units = _units(paras["paragraph_one"], [s for s in (prov,) if s])
+        at = next((i + 1 for i, u in enumerate(units) if prov and _ws(u) == _ws(prov)), min(2, len(units)))
+        units.insert(at, required["carfax_sentence"])
+        paras["paragraph_one"] = " ".join(units)
+        print(f"{tag} inserted Carfax sentence into paragraph one", file=sys.stderr)
+
     # Hendrick Certified / Affordable (11 / 12): the factory-warranty sentence
     # goes in paragraph three right before the program warranty sentence.
     if "factory_warranty_sentence" in missing:
@@ -2020,7 +2033,7 @@ def insert_required_sentences(
         missing = [k for k in missing if k != "warranty_sentence"]
     p2_keys = [k for k in ("proof_point_sentence", "scarcity_sentence", "warranty_sentence", "shipping_sentence", "engine_sentence", "towing_sentence", "mild_hybrid_sentence") if k in missing]
     if p2_keys:
-        present = [s for k, s in required.items() if k not in missing and k != "provenance_sentence"]
+        present = [s for k, s in required.items() if k not in missing and k not in ("provenance_sentence", "carfax_sentence")]
         units = _units(paras["paragraph_two"], present)
         is_req = lambda u: _ws(u) in {_ws(s) for s in required.values()}  # noqa: E731
         find = lambda key: next((i for i, u in enumerate(units) if key in required and _ws(u) == _ws(required[key])), None)  # noqa: E731
