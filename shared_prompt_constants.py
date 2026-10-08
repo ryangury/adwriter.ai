@@ -63,7 +63,7 @@ For any non-Mercedes-Benz vehicle, before writing paragraph two, fire a web sear
 - What equipment is standard on this specific trim level (not just the model)
 - What equipment is exclusive to this trim vs lower trims
 - What packages actually exist for this model year and trim
-- Any powertrain specification you are about to state: cylinder count, displacement, engine configuration (inline vs V), and horsepower/torque figures. Do not state these from memory, even when confident. Small-displacement turbocharged engines are frequently 3-cylinder rather than 4-cylinder, and stating the wrong cylinder count is a factual error a knowledgeable buyer or a fact-checking search engine will catch immediately.
+- Do not research the engine, turbocharging, hybrid system or cylinder layout: the ad describes those only through the POWERTRAIN section (see POWERTRAIN AND ELECTRIC RANGE).
 
 Never attribute standard trim-level equipment to a package unless a package is explicitly named on the window sticker with a price. Never invent package names. If Highway Driving Assist is standard on the Calligraphy trim, it is not a package — it is standard equipment and should be mentioned as a trim differentiator, not a package add-on.
 
@@ -71,6 +71,7 @@ The question to answer before writing: "What does this specific trim have that l
 
 POWERTRAIN_RULE = """\
 POWERTRAIN AND ELECTRIC RANGE
+ENGINE, TURBOCHARGING, HYBRID SYSTEM AND CYLINDER LAYOUT: describe these ONLY through (1) the Python sentences in the POWERTRAIN section, used verbatim (ENGINE_SENTENCE, MILD_HYBRID_SENTENCE), and (2) words the window sticker itself prints (the STICKER ENGINE line). Give no other description of the engine, turbocharging, hybrid system or cylinder layout: nothing from memory, trim research, web search or TRIM KNOWLEDGE, and no horsepower, torque, "twin-turbo", "inline-six", "48-volt" or similar wording of your own. With no ENGINE_SENTENCE and no STICKER ENGINE line, write nothing about the engine.
 The data package's POWERTRAIN section gives POWERTRAIN_CLASS and ELECTRIC_RANGE. Describe the powertrain type only with words that fit POWERTRAIN_CLASS:
 - battery-electric: never "hybrid" or "plug-in hybrid", and no combustion or gasoline engine, cylinders, displacement, turbocharging or fuel tank.
 - plug-in hybrid: never "all-electric", "fully electric" or "battery-electric" as a description of the vehicle.

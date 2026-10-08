@@ -36,6 +36,21 @@ class CarfaxRequired(unittest.TestCase):
         out = A.insert_required_sentences(AD, req, ["carfax_sentence"], status_code=10)
         self.assertIn(PROV + " " + cf2, out)
 
+    def test_models_split_copy_is_replaced_not_duplicated(self):
+        # V23385A, 10/8: the model wrote "Clean vehicle history. Averaging ..." for the
+        # required "Clean vehicle history, averaging ...": insert, don't duplicate.
+        cf = "Clean vehicle history, averaging 8,352 miles per year against the national average of roughly 15,000."
+        p1 = ("Hendrick Affordable 2016 Mercedes-Benz GLE 350 with 83,352 miles. " + PROV +
+              " Clean vehicle history. Averaging 8,352 miles per year against the national average of roughly 15,000."
+              " This vehicle is currently undergoing pre-sale inspection.")
+        ad = "\n\n".join([p1, "Paragraph two.", "Paragraph three.", "Paragraph four."])
+        req = {"provenance_sentence": PROV, "carfax_sentence": cf}
+        out = A.insert_required_sentences(ad, req, A.missing_required_sentences(ad, req), status_code=12)
+        got = A.split_ad_paragraphs(out)["paragraph_one"]
+        self.assertEqual(got.count("Clean vehicle history"), 1)
+        self.assertEqual(got.count("miles per year"), 1)
+        self.assertIn(PROV + " " + cf + " This vehicle is currently undergoing", got)
+
 
 if __name__ == "__main__":
     unittest.main()

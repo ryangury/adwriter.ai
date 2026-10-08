@@ -921,6 +921,8 @@ def _research_instructions(needs_lookup: list[dict]) -> str:
         "<engine description: configuration, cylinder count, displacement, "
         "horsepower, torque — verified via search, not memory> :: <source URL>\n"
         "===END RESEARCH===\n\n"
+        "The engine field of a TRIM line is stored only: the ad never uses it (engine, "
+        "turbocharging, hybrid and cylinder wording comes only from the POWERTRAIN section).\n\n"
         "Then one blank line, then the ad starting at paragraph one. Do not "
         "repeat or mention the findings block inside the ad."
     )
@@ -1554,7 +1556,9 @@ def format_data_package(pkg: dict) -> tuple[str, list[dict]]:
             if engine_problems(tk["engine_description"], pt.get("engine")):
                 lines.append("  Engine: (cached research contradicts STICKER ENGINE — use the sticker's engine line only)")
             else:
-                lines.append(f"  Engine: {tk['engine_description']}")
+                # Stored for reference only: engine, turbo, hybrid and cylinder wording comes
+                # from ENGINE_SENTENCE / MILD_HYBRID_SENTENCE / the sticker's own words.
+                lines.append("  Engine: (not for ad wording: describe the engine only through ENGINE_SENTENCE and the STICKER ENGINE line)")
         else:
             lines.append("  (none cached yet — search required, see FEATURES REQUIRING RESEARCH below)")
             needs_lookup.append({
@@ -2005,6 +2009,15 @@ def _units(paragraph: str, keep: list[str]) -> list[str]:
     return [u.strip() for u in units if u.strip()]
 
 
+# A paragraph-one sentence that is the model's version of the CARFAX SENTENCE: a
+# clean-history claim, or the miles-per-year comparison.
+_CARFAX_COPY_RE = re.compile(
+    r"clean (?:vehicle |carfax )?history|clean carfax|no accidents|"
+    r"miles per year against the national average",
+    re.IGNORECASE,
+)
+
+
 def insert_required_sentences(
     ad_text: str, required: dict[str, str], missing: list[str], *, status_code=None, stock: str = ""
 ) -> str:
@@ -2035,6 +2048,13 @@ def insert_required_sentences(
     if "carfax_sentence" in missing:
         prov = required.get("provenance_sentence")
         units = _units(paras["paragraph_one"], [s for s in (prov,) if s])
+        # The model often writes its own near-copy ("Clean vehicle history. Averaging
+        # 8,352 miles per year ..." for "Clean vehicle history, averaging ..."): those
+        # sentences are dropped so the verbatim one doesn't stand beside a duplicate.
+        mine = [i for i, u in enumerate(units) if _ws(u) != _ws(prov or "") and _CARFAX_COPY_RE.search(u)]
+        for i in reversed(mine):
+            print(f"{tag} replaced the model's own history sentence: {units[i]}", file=sys.stderr)
+            del units[i]
         at = next((i + 1 for i, u in enumerate(units) if prov and _ws(u) == _ws(prov)), min(2, len(units)))
         units.insert(at, required["carfax_sentence"])
         paras["paragraph_one"] = " ".join(units)
