@@ -40,6 +40,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--result")
     ap.add_argument("--progress")
     ap.add_argument("--skip", default="")
+    ap.add_argument("--done", default="", help="stocks an earlier attempt already finished (not read again)")
     ap.add_argument("--trace-after", type=float, default=0,
                     help="dump every thread's stack to stderr after this many seconds (and every N s after): "
                          "shows where a hang sits")
@@ -56,6 +57,7 @@ def main(argv: list[str]) -> int:
 
     progress = ProgressWriter(args.progress)
     skip = {s.strip() for s in args.skip.split(",") if s.strip()}
+    already = {s.strip() for s in args.done.split(",") if s.strip()}
     errors: list[dict[str, Any]] = []
     result: dict[str, Any] = {"counts": None, "errors": errors, "aborted": None}
     try:
@@ -74,13 +76,13 @@ def main(argv: list[str]) -> int:
                 result["counts"] = capture_durham_ctr(
                     ax, data.get("retail") or [], ad_history=load_ad_history(),
                     aggregated_ctr=data.get("aggregated_ctr") or {}, errors=errors,
-                    streak=FailureStreak("ctr"), skip=skip, progress=progress,
+                    streak=FailureStreak("ctr"), skip=skip, already=already, progress=progress,
                 )
                 if result["counts"].get("aborted"):
                     result["aborted"] = result["counts"]["aborted"]
             else:
                 result["counts"] = capture_benchmark_ctr(ax, errors=errors, stores=[args.store], skip=skip,
-                                                         progress=progress)
+                                                         already=already, progress=progress)
                 # Never leave the account on another store.
                 ax.require_durham(f"after the {args.store} benchmark")
     except AcvMaxRunAbort as exc:

@@ -22,6 +22,7 @@ CHILD = textwrap.dedent('''
     from step_watchdog import ProgressWriter
     mode, progress, out = sys.argv[1], sys.argv[2], sys.argv[3]
     skip = set(sys.argv[4].split(",")) if len(sys.argv) > 4 and sys.argv[4] else set()
+    done_before = set(sys.argv[5].split(",")) if len(sys.argv) > 5 and sys.argv[5] else set()
     p = ProgressWriter(progress)
     if mode == "silent":
         # a grandchild that would outlive us if only this process were killed
@@ -31,9 +32,11 @@ CHILD = textwrap.dedent('''
         time.sleep(600)
     elif mode == "slow-vehicle":
         done = []
+        p.set_total(3)
         for v in ("V1", "V2", "V3"):
-            if v in skip:
+            if v in skip or v in done_before:
                 continue
+            open(out + ".started", "a").write(v + "\\n")
             p.start(v)
             if v == "V2":
                 time.sleep(600)  # stuck on one vehicle
@@ -41,9 +44,13 @@ CHILD = textwrap.dedent('''
             p.done()
         open(out, "w").write(json.dumps({"done": done}))
     elif mode == "busy":
+        p.set_total(10)
+        i = 0
         while True:
-            p.beat("still going")
+            i += 1
+            p.start(f"V{i}")
             time.sleep(0.2)
+            p.done()
 ''').replace("ROOT", repr(str(ROOT)))
 
 
@@ -62,8 +69,8 @@ class Watchdog(unittest.TestCase):
         self.logs = []
 
     def argv(self, mode):
-        return lambda skipped: [sys.executable, str(self.script), mode, str(self.progress), str(self.out),
-                                ",".join(skipped)]
+        return lambda skipped, done: [sys.executable, str(self.script), mode, str(self.progress), str(self.out),
+                                      ",".join(skipped), ",".join(done)]
 
     def run_w(self, mode, **kw):
         return W.run_watched(self.argv(mode), step="test step", progress_path=self.progress, poll_s=0.2,
@@ -73,7 +80,8 @@ class Watchdog(unittest.TestCase):
         t0 = time.time()
         res = self.run_w("silent", idle_s=2, budget_s=60, item_s=60)
         self.assertEqual(res["status"], "hung")
-        self.assertIn("no progress", res["reason"])
+        self.assertIn("hung: no progress for", res["reason"])
+        self.assertNotIn("ran out of time", res["reason"])
         self.assertLess(time.time() - t0, 30)
         grandchild = json.loads(self.out.read_text())["grandchild"]
         time.sleep(1)
@@ -84,12 +92,18 @@ class Watchdog(unittest.TestCase):
         self.assertEqual(res["status"], "ok")
         self.assertEqual(res["skipped"], ["V2"])
         self.assertEqual(res["restarts"], 1)
-        self.assertEqual(json.loads(self.out.read_text())["done"], ["V1", "V3"])
+        self.assertEqual(json.loads(self.out.read_text())["done"], ["V3"], "V1 was finished before the restart")
+        started = Path(str(self.out) + ".started").read_text().split()
+        self.assertEqual(started, ["V1", "V2", "V3"], "no vehicle is read twice across the restart")
+        self.assertEqual(res["progress"]["done"], 2)  # V1 (first attempt) + V3 (second)
 
     def test_budget(self):
         res = self.run_w("busy", idle_s=60, budget_s=2, item_s=60)
-        self.assertEqual(res["status"], "budget")
-        self.assertIn("budget", res["reason"])
+        self.assertEqual(res["status"], "budget", "still making progress: ran out of time, not hung")
+        self.assertRegex(res["reason"], r"ran out of time after \d+ of 10 vehicles")
+        self.assertNotIn("hung", res["reason"])
+        self.assertGreater(res["progress"]["done"], 0)
+        self.assertEqual(res["progress"]["total"], 10)
 
     def test_progress_writer(self):
         p = W.ProgressWriter(self.progress, clock=lambda: 100.0)

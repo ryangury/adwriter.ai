@@ -68,6 +68,7 @@ def capture_durham_ctr(
     errors: list[dict[str, Any]] | None = None,
     streak: FailureStreak | None = None,
     skip: set[str] | None = None,
+    already: set[str] | None = None,
     progress: Any = None,
 ) -> dict[str, Any]:
     """Durham retail CTR capture for every vehicle in `retail`. `acv` must
@@ -89,13 +90,19 @@ def capture_durham_ctr(
         errors = []
     counts: dict[str, Any] = {"attempted": 0, "recorded": 0, "failed": 0, "aborted": None}
     total = len(retail)
+    if progress is not None:
+        progress.set_total(total)
     for i, v in enumerate(retail, 1):
         stock = v.get("stock_number")
+        if already and stock in already:
+            continue  # finished by an earlier attempt of this step
         counts["attempted"] += 1
         if skip and stock in skip:
             counts["failed"] += 1
             errors.append({"stock": stock, "phase": "ctr", "error": "skipped: over the per-vehicle time limit"})
             print(f"[ctr] {i} of {total} — {stock}: skipped (over the per-vehicle time limit on an earlier attempt)")
+            if progress is not None:
+                progress.done(stock)
             continue
         if progress is not None:
             progress.start(stock)
@@ -108,7 +115,7 @@ def capture_durham_ctr(
                 raise  # ACV MAX itself is unusable - stop, don't fail every vehicle
             except Exception as exc:  # noqa: BLE001 - one vehicle must never kill the run
                 if progress is not None:
-                    progress.done()
+                    progress.done(stock)
                 counts["failed"] += 1
                 errors.append({"stock": stock, "phase": "ctr", "error": str(exc)})
                 print(
@@ -127,7 +134,7 @@ def capture_durham_ctr(
         if streak is not None:
             streak.ok()
         if progress is not None:
-            progress.done()
+            progress.done(stock)
         if dry_run:
             print(
                 f"[ctr] {i} of {total} — {stock}: would record "
@@ -168,6 +175,7 @@ def capture_benchmark_ctr(
     errors: list[dict[str, Any]] | None = None,
     stores: list[str] | None = None,
     skip: set[str] | None = None,
+    already: set[str] | None = None,
     progress: Any = None,
 ) -> dict[str, dict[str, int]]:
     """Northlake/Charlotte competitive benchmark CTR capture. `bx` must
@@ -221,7 +229,8 @@ def capture_benchmark_ctr(
             )
 
         try:
-            bx.scrape_benchmark_inventory(dealership_name, skip=skip, progress=progress, on_result=on_result)
+            bx.scrape_benchmark_inventory(dealership_name, skip=skip, already=already, progress=progress,
+                                          on_result=on_result)
         except AcvMaxRunAbort:
             raise
         except Exception as exc:  # noqa: BLE001 - one store must not stop the other

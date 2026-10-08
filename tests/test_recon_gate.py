@@ -7,7 +7,7 @@ from unittest import mock
 sys.path.insert(0, r"C:\adwriter")
 import orchestrator as o  # noqa: E402
 sys.path.insert(0, __import__('os').path.dirname(__file__))
-from _children import fake_run_watched, ok_children  # noqa: E402
+from _children import fake_recorded_today, fake_run_watched, ok_children  # noqa: E402
 import scraper  # noqa: E402
 from playwright.sync_api import TimeoutError as PWTimeout  # noqa: E402
 
@@ -88,6 +88,7 @@ class Harness:
             mock.patch.object(o, "aggregate", side_effect=aggregate),
             mock.patch.object(o, "update_recon", side_effect=scraper.ScraperError("stub update_recon")),
             mock.patch.object(o, "ACVMaxScraper", FakeACV),
+            mock.patch.object(o, "recorded_today", side_effect=fake_recorded_today()),
             mock.patch.object(o, "run_watched", side_effect=fake_run_watched(ok_children)),
             mock.patch.object(o, "run_verification", return_value=([], [], [])),
             mock.patch.object(o, "send_verification_alert"),

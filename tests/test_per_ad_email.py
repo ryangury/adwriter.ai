@@ -9,7 +9,7 @@ sys.path.insert(0, r"C:\adwriter")
 import adwriter as A  # noqa: E402
 import orchestrator as o  # noqa: E402
 sys.path.insert(0, __import__('os').path.dirname(__file__))
-from _children import fake_run_watched, ok_children  # noqa: E402
+from _children import fake_recorded_today, fake_run_watched, ok_children  # noqa: E402
 
 PKG = {
     "stock_number": "CT23308A",
@@ -96,6 +96,7 @@ class OrchestratorWiringTest(unittest.TestCase):
             mock.patch.object(o, "source_status", return_value={}),
             mock.patch.object(o, "_generate_from_package", return_value=(AD, FEEDBACK)),
             mock.patch.object(o, "record_ad"), mock.patch.object(o, "ACVMaxScraper", Fake),
+            mock.patch.object(o, "recorded_today", side_effect=fake_recorded_today()),
             mock.patch.object(o, "run_watched", side_effect=fake_run_watched(ok_children)),
             mock.patch.object(o, "run_verification", return_value=([], [], [])), mock.patch.object(o, "send_verification_alert"),
             mock.patch.object(o, "HendrickCarsScraper", side_effect=RuntimeError("no browser in tests")),

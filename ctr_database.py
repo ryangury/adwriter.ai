@@ -78,6 +78,21 @@ _MIGRATIONS = {
 }
 
 
+def recorded_today(dealership_name: str) -> int:
+    """Rows written to ctr_history.db today for one store. The orchestrator
+    takes the difference around a step, so its run summary shows what was really
+    recorded even when the step's child process was killed before it could
+    report counts."""
+    conn = _connect()
+    try:
+        return conn.execute(
+            "SELECT COUNT(*) FROM ctr_history WHERE date = ? AND dealership_name = ?",
+            (date.today().isoformat(), dealership_name),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+
 def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row

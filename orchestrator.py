@@ -47,7 +47,7 @@ from adwriter import (
     update_recon,
 )
 from aggregator import DEALER_DOC_FEE, ScraperError, aggregate, check_recon
-from ctr_database import BENCHMARK_DEALERSHIPS
+from ctr_database import BENCHMARK_DEALERSHIPS, recorded_today
 from failure_streak import FailureStreak, failure_key
 import list_not_rebuilt
 from verifier import HendrickCarsScraper, run_verification, send_verification_alert
@@ -60,8 +60,8 @@ from inventory_crawler import (
     save_snapshot,
     snapshot_stocks,
 )
-from scraper import ACVMAX_DEALERSHIP, AcvMaxRunAbort, ACVMaxScraper, ReconVisionScraper
-from step_watchdog import STEP_BUDGET_S, python_argv, run_watched
+from scraper import ACVMAX_DEALERSHIP, AcvMaxRunAbort, ACVMaxScraper, ReconVisionScraper, WorkOrderNotFoundError
+from step_watchdog import BENCHMARK_BUDGET_S, STEP_BUDGET_S, python_argv, run_watched
 from run_lock import (
     ORCHESTRATOR_LOCK_PATH,
     ScraperBusyError,
@@ -728,6 +728,24 @@ def _run_inner(
         waiting_recon.append({**v, "note": note})
         print(f"[gate] {stock}: {note} -> waiting")
 
+    def _courtesy_without_work_order(v: dict[str, Any], exc: Exception) -> bool:
+        """A courtesy vehicle (Z-prefix stock or status 16) with no ReconVision
+        work order yet is not an error: the car is usually only days on the lot.
+        It goes to waiting_recon with a note (no error entry, no failure-streak
+        count) and is checked again next run."""
+        stock = str(v.get("stock_number") or "")
+        if not isinstance(exc, WorkOrderNotFoundError):
+            return False
+        if not (stock.upper().startswith("Z") or v.get("status_code") == 16):
+            return False
+        days = v.get("days_on_lot")
+        note = ("no ReconVision work order yet (courtesy vehicle"
+                + (f", {days} days on lot" if days is not None else "")
+                + "); not an error, checked again next run")
+        waiting_recon.append({**v, "note": note})
+        print(f"[gate] {stock}: {note} -> waiting")
+        return True
+
     if reprice_only:
         # Reprices only: no ReconVision session, no build / pre-recon /
         # recon-update queues — just the vehicles whose live ad needs its
@@ -786,6 +804,8 @@ def _run_inner(
                         )
                         continue
                     except ScraperError as exc:
+                        if _courtesy_without_work_order(v, exc):
+                            continue
                         errors.append({"stock": stock, "phase": "recon", "error": str(exc)})
                         print(f"[gate] {stock}: recon check failed — {exc}")
                         continue
@@ -819,6 +839,8 @@ def _run_inner(
                 )
                 continue
             except ScraperError as exc:
+                if _courtesy_without_work_order(v, exc):
+                    continue
                 errors.append({"stock": stock, "phase": "recon", "error": str(exc)})
                 print(f"[gate] {stock}: recon check failed — {exc}")
                 continue
@@ -1138,16 +1160,22 @@ def _run_inner(
     work_dir = Path(tempfile.mkdtemp(prefix="adwriter-ctr-"))
     hang_alerted: list[str] = []
 
-    def _run_ctr_child(step: str, label: str, extra: list[str], budget_s: float = STEP_BUDGET_S) -> dict[str, Any]:
+    def _run_ctr_child(step: str, label: str, extra: list[str], budget_s: float = STEP_BUDGET_S,
+                       store: str | None = None) -> dict[str, Any]:
+        """Run one CTR child under the watchdog. `store`: the ctr_history.db
+        dealership this child records for; its real row count (after minus
+        before) is returned as "recorded", whatever happened to the child."""
         tag = label.lower().replace(" ", "-")
         result_path = work_dir / f"{tag}-result.json"
         progress_path = work_dir / f"{tag}-progress.json"
         result_path.unlink(missing_ok=True)
+        before = recorded_today(store) if store else 0
         watch = run_watched(
-            lambda skipped: python_argv(
+            lambda skipped, done: python_argv(
                 Path(__file__).with_name("ctr_child.py"), step, *extra,
                 "--result", str(result_path), "--progress", str(progress_path),
                 *(["--skip", ",".join(skipped)] if skipped else []),
+                *(["--done", ",".join(done)] if done else []),
             ),
             step=label, progress_path=progress_path, budget_s=budget_s,
         )
@@ -1155,6 +1183,8 @@ def _run_inner(
             child = json.loads(result_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             child = {}
+        recorded = (recorded_today(store) - before) if store else None
+        prog = watch.get("progress") or {}
         errors.extend(child.get("errors") or [])
         for s_ in watch["skipped"]:
             errors.append({"stock": s_, "phase": tag, "error": "over the 90-second per-vehicle limit; skipped"})
@@ -1162,15 +1192,25 @@ def _run_inner(
             errors.append({"stock": "-", "phase": tag, "error": watch["reason"]})
             if not hang_alerted:
                 hang_alerted.append(label)
-                _safe_send(
-                    f"Mercedes-Benz of Durham — benchmark hung {today}",
-                    f"{watch['reason']}.\n\nThe step's child process and its browser were killed. "
-                    f"Vehicles read before that are recorded; the run continues to verification and "
-                    f"the final emails.\n",
-                )
+                what = "benchmark" if step == "benchmark" else label
+                if watch["status"] == "hung":
+                    subject = f"Mercedes-Benz of Durham — {what} hung {today}"
+                    body = (f"{watch['reason']}.\n\nNo progress for 10 minutes, so the step's child process and "
+                            f"its browser were killed.")
+                else:
+                    subject = f"Mercedes-Benz of Durham — {what} ran out of time {today}"
+                    body = (f"{watch['reason']}.\n\nIt had not hung; the step's child process and its browser were "
+                            f"killed at the time limit.")
+                if recorded is not None:
+                    body += f" {recorded} vehicle(s) were recorded to ctr_history.db"
+                    if prog.get("total"):
+                        body += f"; {max(0, prog['total'] - prog.get('done', 0))} of {prog['total']} were not read"
+                    body += "."
+                body += "\n\nThe run continues to the next steps and the final emails.\n"
+                _safe_send(subject, body)
         if child.get("aborted"):
             _stop_acv(AcvMaxRunAbort(child["aborted"]), label)
-        return {"watch": watch, "child": child}
+        return {"watch": watch, "child": child, "recorded": recorded, "progress": prog}
 
     print(f"\n=== 5. DURHAM CTR CAPTURE ({len(retail)} vehicle(s)) ===")
     ctr_records = 0
@@ -1182,9 +1222,9 @@ def _run_inner(
         input_path = work_dir / "durham-input.json"
         input_path.write_text(json.dumps({"retail": retail, "aggregated_ctr": aggregated_ctr}, default=str),
                               encoding="utf-8")
-        out = _run_ctr_child("durham", "Durham CTR", ["--input", str(input_path)])
+        out = _run_ctr_child("durham", "Durham CTR", ["--input", str(input_path)], store=ACVMAX_DEALERSHIP)
         counts = out["child"].get("counts") or {}
-        ctr_records = counts.get("recorded", 0)
+        ctr_records = out["recorded"]
         if counts.get("aborted"):
             errors.append({"stock": "-", "phase": "ctr", "error": f"CTR loop stopped: {counts['aborted']}"})
             _alert_once(counts["aborted"])
@@ -1206,8 +1246,11 @@ def _run_inner(
             if stopped:
                 print(f"[benchmark] {store}: skipped — ACV Max work stopped")
                 continue
-            out = _run_ctr_child("benchmark", f"Benchmark {store.split()[-1]}", ["--store", store])
-            benchmark_counts.update(out["child"].get("counts") or {})
+            out = _run_ctr_child("benchmark", f"Benchmark {store.split()[-1]}", ["--store", store],
+                                 budget_s=BENCHMARK_BUDGET_S, store=store)
+            benchmark_counts[store] = {"recorded": out["recorded"],
+                                       "attempted": out["progress"].get("total") or out["recorded"],
+                                       "done": out["progress"].get("done", 0)}
             if out["watch"]["status"] in ("hung", "budget", "failed"):
                 # Killed (or died) mid-store: the account may still be on that
                 # store. Switch it back to Durham before anything else uses it.
@@ -1378,14 +1421,10 @@ def _run_inner(
     print(f"  Needs certification assigned:  {len(needs_cert)}")
     print(f"  Unmapped status (skipped):     {len(skipped_status)}")
     print(f"  CTR records written:           {ctr_records}")
-    print(
-        f"  Benchmark CTR — Northlake:     "
-        f"{benchmark_counts.get('Mercedes-Benz of Northlake', {}).get('recorded', 0)} vehicles"
-    )
-    print(
-        f"  Benchmark CTR — Charlotte:     "
-        f"{benchmark_counts.get('Hendrick Motors of Charlotte', {}).get('recorded', 0)} vehicles"
-    )
+    for _label, _store in (("Northlake:", "Mercedes-Benz of Northlake"), ("Charlotte:", "Hendrick Motors of Charlotte")):
+        _c = benchmark_counts.get(_store, {})
+        _rec, _att = _c.get("recorded", 0), _c.get("attempted")
+        print(f"  Benchmark CTR — {_label:<15s}{_rec}" + (f" of {_att}" if _att and _att != _rec else "") + " vehicles")
     print(
         f"  Verification checks run: {verification_checks_run} | "
         f"Not posted: {len(needs_posting)} | Outdated: {len(needs_update)}"

@@ -9,7 +9,7 @@ from unittest import mock
 sys.path.insert(0, r"C:\adwriter")
 import orchestrator as o  # noqa: E402
 sys.path.insert(0, __import__('os').path.dirname(__file__))
-from _children import fake_run_watched, ok_children  # noqa: E402
+from _children import fake_recorded_today, fake_run_watched, ok_children  # noqa: E402
 import scraper  # noqa: E402
 
 FRAME = "Merchandising iframe (merchandising/PricingAnalysis) for {} never attached with a usable URL."
@@ -20,7 +20,8 @@ def retail(n, with_ads=False):
 
 
 class Harness:
-    def __init__(self, vehicles, history, aggregate, ctr=None, require_durham=None, child_status=None):
+    def __init__(self, vehicles, history, aggregate, ctr=None, require_durham=None, child_status=None,
+                 check_recon=None):
         self.sent = []
         self.released = 0
         self.acv_logins = 0
@@ -73,12 +74,14 @@ class Harness:
             mock.patch.object(o, "_load_reprice_queue", return_value=[]),
             mock.patch.object(o, "_save_reprice_queue"),
             mock.patch.object(o, "ReconVisionScraper", FakeRV),
-            mock.patch.object(o, "check_recon", return_value={"recon_complete": True}),
+            mock.patch.object(o, "check_recon", side_effect=check_recon or (lambda *a, **k: {"recon_complete": True})),
             mock.patch.object(o, "aggregate", side_effect=aggregate),
             mock.patch.object(o, "ACVMaxScraper", FakeACV),
+            mock.patch.object(o, "recorded_today", side_effect=fake_recorded_today()),
             mock.patch.object(o, "run_watched", side_effect=self.children),
             mock.patch.object(o, "run_verification", new=self.verify),
             mock.patch.object(o, "_carfax_leftovers", return_value=[]),
+            mock.patch.object(o.list_not_rebuilt, "report", return_value=[]),
             mock.patch.object(o, "send_verification_alert"),
             mock.patch.object(o, "_send_gmail", side_effect=lambda s, b: self.sent.append((s, b))),
         ]
@@ -158,6 +161,61 @@ class StopTests(unittest.TestCase):
         self.assertTrue(h.verify.called, "verification still runs")
         self.assertEqual(len(has(subj, "Mercedes-Benz of Durham — Build Summary")), 1)
         self.assertEqual(len(has(subj, "Mercedes-Benz of Durham — Action Required")), 1)
+
+
+    def test_benchmark_ran_out_of_time_is_not_called_hung_and_counts_are_real(self):
+        import io
+
+        hist = {f"S{i}": {"current_ad_text": "x", "recon_pending": False} for i in range(3)}
+        h = Harness(retail(3), hist, aggregate=AssertionError("no builds expected"), child_status="budget")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = h.run()
+        subj = h.subjects()
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(has(subj, "Mercedes-Benz of Durham — benchmark ran out of time")), 1)
+        self.assertEqual(len(has(subj, "Mercedes-Benz of Durham — benchmark hung")), 0)
+        body = dict(h.sent)[has(subj, "Mercedes-Benz of Durham — benchmark ran out of time")[0]]
+        self.assertIn("ran out of time after 126 of 136 vehicles", body)
+        self.assertIn("126 vehicle(s) were recorded", body)
+        self.assertIn("It had not hung", body)
+        self.assertNotIn("No progress for 10 minutes", body)
+        out = buf.getvalue()
+        self.assertIn("Benchmark CTR — Northlake:     126 of 136 vehicles", out)
+        self.assertIn("Benchmark CTR — Charlotte:     126 of 136 vehicles", out)
+
+    def test_benchmark_hung_email_says_no_progress(self):
+        hist = {f"S{i}": {"current_ad_text": "x", "recon_pending": False} for i in range(3)}
+        h = Harness(retail(3), hist, aggregate=AssertionError("no builds expected"), child_status="hung")
+        h.run()
+        body = dict(h.sent)[has(h.subjects(), "Mercedes-Benz of Durham — benchmark hung")[0]]
+        self.assertIn("No progress for 10 minutes", body)
+        self.assertNotIn("ran out of time", body)
+
+
+    def test_courtesy_vehicle_without_a_work_order_is_not_an_error(self):
+        def check_recon(stock, rv=None):
+            raise scraper.WorkOrderNotFoundError(f"Stock #{stock}: no work order found. See x/ for a snapshot.")
+
+        vehicles = [
+            {"stock_number": "ZT1", "status_code": 16, "days_on_lot": 2, "vin": "V1", "year_make_model": "2026 Mercedes-Benz GLB"},
+            {"stock_number": "ZT2", "status_code": 10, "days_on_lot": 3, "vin": "V2", "year_make_model": "2026 Mercedes-Benz GLC"},
+            {"stock_number": "P9", "status_code": 16, "days_on_lot": 1, "vin": "V3", "year_make_model": "2025 Mercedes-Benz GLE"},
+            {"stock_number": "P7", "status_code": 10, "days_on_lot": 1, "vin": "V4", "year_make_model": "2025 Mercedes-Benz GLE"},
+        ]
+        h = Harness(vehicles, {}, aggregate=AssertionError("no builds expected"), check_recon=check_recon)
+        rc = h.run()
+        body = dict(h.sent)[has(h.subjects(), "Mercedes-Benz of Durham — Action Required")[0]]
+        self.assertEqual(rc, 0)
+        # Z-prefix (ZT1, ZT2) and status 16 (P9): waiting, with a note, not errors
+        for stock in ("ZT1", "ZT2", "P9"):
+            self.assertRegex(body, rf"\[{stock}\].*\n\s+no ReconVision work order yet \(courtesy vehicle")
+        self.assertIn("WAITING ON RECON (3)", body)
+        # P7 is an ordinary car: a missing work order is still a scraper error
+        self.assertIn("SCRAPER ERRORS (1)", body)
+        self.assertRegex(body, r"\[P7\]\s+recon\s+—\s+Stock #P7: no work order found")
+        for stock in ("ZT1", "ZT2", "P9"):
+            self.assertNotRegex(body, rf"\[{stock}\]\s+recon\s+—")
 
 
 if __name__ == "__main__":

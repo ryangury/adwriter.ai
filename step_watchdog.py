@@ -29,7 +29,8 @@ from typing import Any, Callable
 
 ITEM_LIMIT_S = 90
 IDLE_LIMIT_S = 10 * 60
-STEP_BUDGET_S = 45 * 60
+STEP_BUDGET_S = 45 * 60            # Durham CTR (76 vehicles took 30 minutes on 10/8)
+BENCHMARK_BUDGET_S = 65 * 60       # per benchmark store (Northlake 44 min, Charlotte about 50 on 10/8)
 MAX_RESTARTS = 5
 
 
@@ -42,7 +43,7 @@ class ProgressWriter:
         self.path = Path(path) if path else None
         self.clock = clock
         self.state: dict[str, Any] = {"pid": os.getpid(), "current": None, "current_started": None,
-                                      "done": 0, "updated_at": clock()}
+                                      "done": 0, "total": None, "done_labels": [], "updated_at": clock()}
         self._write()
 
     def _write(self) -> None:
@@ -58,7 +59,19 @@ class ProgressWriter:
         self._write()
 
     def done(self, label: str | None = None) -> None:
+        """A vehicle finished (read or failed). Its label goes in done_labels so a
+        restarted child can skip it instead of reading it again."""
+        labels = self.state["done_labels"]
+        if label is None:
+            label = self.state.get("current")
+        if label and label not in labels:
+            labels.append(label)
         self.state.update(current=None, current_started=None, done=self.state["done"] + 1)
+        self._write()
+
+    def set_total(self, n: int) -> None:
+        """How many vehicles this child will go through (known once the crawl is done)."""
+        self.state["total"] = n
         self._write()
 
     def beat(self, note: str | None = None) -> None:
@@ -106,15 +119,23 @@ def run_watched(
     log: Callable[[str], None] = lambda m: print(m, flush=True),
     env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Run make_argv(skipped_labels) as a child until it exits, restarting it
-    past a vehicle that overruns item_s. Returns {"status": "ok" | "failed" |
-    "hung" | "budget", "returncode", "restarts", "skipped": [labels], "reason"}."""
+    """Run make_argv(skipped, done) as a child until it exits, restarting it
+    past a vehicle that overruns item_s. `skipped`: vehicles that overran;
+    `done`: vehicles an earlier attempt already finished, so a restart never
+    reads (or records) them twice. Returns {"status": "ok" | "failed" | "hung" |
+    "budget", "returncode", "restarts", "skipped": [labels], "reason",
+    "progress": {"done", "total", "current"}} - progress is what the child had
+    finished when it ended or was killed, across restarts.
+
+    "hung": no progress for idle_s (the child stopped). "budget": over budget_s
+    while still making progress (it simply ran out of time)."""
     started = clock()
     skipped: list[str] = []
+    done_labels: list[str] = []
     restarts = 0
     while True:
         Path(progress_path).unlink(missing_ok=True)
-        argv = make_argv(skipped)
+        argv = make_argv(skipped, list(done_labels))
         kw: dict[str, Any] = {"env": env}
         if os.name != "nt":  # pragma: no cover
             kw["start_new_session"] = True
@@ -124,45 +145,63 @@ def run_watched(
         log(f"[watchdog] {step}: child PID {proc.pid} started" + (f" (skipping {', '.join(skipped)})" if skipped else ""))
         while True:
             rc = proc.poll()
+            prog = read_progress(progress_path) or {}
+            summary = _progress_summary(prog, done_labels)
             if rc is not None:
                 status = "ok" if rc == 0 else "failed"
                 log(f"[watchdog] {step}: child exited with code {rc}")
                 return {"status": status, "returncode": rc, "restarts": restarts, "skipped": skipped,
-                        "reason": None if rc == 0 else f"{step} child exited with code {rc}"}
+                        "reason": None if rc == 0 else f"{step} child exited with code {rc}", "progress": summary}
             now = clock()
-            prog = read_progress(progress_path) or {}
             seen = (prog.get("updated_at"), prog.get("current"), prog.get("done"))
             if seen != last_seen:
                 last_seen, last_beat = seen, now
             cur, cur_t = prog.get("current"), prog.get("current_started")
-            if now - started > budget_s:
-                reason = f"{step} over its {int(budget_s // 60)}-minute budget" + (f" (on {cur})" if cur else "")
-                return _killed(proc, "budget", reason, restarts, skipped, log)
             if now - last_beat > idle_s:
                 reason = f"{step} hung: no progress for {int(idle_s // 60)} minutes" + (f" (on {cur})" if cur else "")
-                return _killed(proc, "hung", reason, restarts, skipped, log)
+                return _killed(proc, "hung", reason, restarts, skipped, log, summary)
+            if now - started > budget_s:
+                reason = (f"{step} ran out of time after {summary['done']}"
+                          + (f" of {summary['total']}" if summary["total"] else "")
+                          + f" vehicles ({int(budget_s // 60)}-minute budget; it was still making progress)")
+                return _killed(proc, "budget", reason, restarts, skipped, log, summary)
             if cur and cur_t and now - cur_t > item_s:
                 log(f"[watchdog] {step}: {cur} over the {int(item_s)}-second per-vehicle limit — killing the child, "
                     f"skipping it and restarting")
                 kill_tree(proc.pid)
                 proc.wait(timeout=30)
                 skipped.append(cur)
+                for lab in prog.get("done_labels") or []:
+                    if lab not in done_labels:
+                        done_labels.append(lab)
                 restarts += 1
                 if restarts > max_restarts:
                     return {"status": "hung", "returncode": None, "restarts": restarts, "skipped": skipped,
-                            "reason": f"{step}: more than {max_restarts} vehicles over the per-vehicle limit"}
+                            "reason": f"{step}: more than {max_restarts} vehicles over the per-vehicle limit",
+                            "progress": _progress_summary({}, done_labels, prog.get("total"))}
                 break
             sleep(poll_s)
 
 
-def _killed(proc, status, reason, restarts, skipped, log) -> dict[str, Any]:
+def _progress_summary(prog: dict[str, Any], carried: list[str], total: int | None = None) -> dict[str, Any]:
+    """{"done", "total", "current"}: vehicles finished across every attempt
+    (earlier attempts' done_labels plus this child's own)."""
+    labels = list(carried)
+    for lab in prog.get("done_labels") or []:
+        if lab not in labels:
+            labels.append(lab)
+    return {"done": len(labels), "total": prog.get("total") or total, "current": prog.get("current")}
+
+
+def _killed(proc, status, reason, restarts, skipped, log, progress=None) -> dict[str, Any]:
     log(f"[watchdog] {reason} — killing child PID {proc.pid} and its browser")
     kill_tree(proc.pid)
     try:
         proc.wait(timeout=30)
     except subprocess.TimeoutExpired:
         pass
-    return {"status": status, "returncode": None, "restarts": restarts, "skipped": skipped, "reason": reason}
+    return {"status": status, "returncode": None, "restarts": restarts, "skipped": skipped, "reason": reason,
+            "progress": progress or {"done": 0, "total": None, "current": None}}
 
 
 def python_argv(script: str | Path, *args: str) -> list[str]:

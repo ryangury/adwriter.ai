@@ -5341,6 +5341,7 @@ class ACVMaxScraper(_BrowserSession):
         dealership_name: str,
         *,
         skip: set[str] | None = None,
+        already: set[str] | None = None,
         progress: Any = None,
         on_result: Any = None,
     ) -> list[dict[str, Any]]:
@@ -5356,7 +5357,9 @@ class ACVMaxScraper(_BrowserSession):
         attaching, which happens occasionally at Charlotte.
 
         Watchdog hooks (ctr_child.py): `skip` stock numbers are not read (an
-        earlier attempt overran the per-vehicle limit on them); `progress` (a
+        earlier attempt overran the per-vehicle limit on them); `already` stock
+        numbers were finished by an earlier attempt and are passed over silently
+        (never read or recorded twice); `progress` (a
         step_watchdog.ProgressWriter) gets a beat per crawl page and a
         start / done per vehicle; `on_result(row, ok)` is called as each
         vehicle finishes, so the caller can record it at once instead of
@@ -5419,17 +5422,24 @@ class ACVMaxScraper(_BrowserSession):
             )
 
             skip = skip or set()
+            already = already or set()
+            if progress is not None:
+                progress.set_total(len([v for v in retail if v.get("vehicle_id")]))
             for v in retail:
                 vid = v.get("vehicle_id")
                 if not vid:
                     continue
                 stock = v.get("stock_number")
+                if stock in already:
+                    continue
                 if stock in skip:
                     fail = {"stock_number": stock, "vin": v.get("vin"),
                             "error": "skipped: over the per-vehicle time limit on an earlier attempt"}
                     failures.append(fail)
                     if on_result is not None:
                         on_result(fail, False)
+                    if progress is not None:
+                        progress.done(stock)
                     continue
                 if progress is not None:
                     progress.start(stock or str(vid))
@@ -5451,7 +5461,7 @@ class ACVMaxScraper(_BrowserSession):
                     if on_result is not None:
                         on_result(failures[-1], False)
                     if progress is not None:
-                        progress.done()
+                        progress.done(stock)
                     continue
                 out.append(
                     {
@@ -5470,7 +5480,7 @@ class ACVMaxScraper(_BrowserSession):
                 if on_result is not None:
                     on_result(out[-1], True)
                 if progress is not None:
-                    progress.done()
+                    progress.done(stock)
             return out, failures
         finally:
             try:
