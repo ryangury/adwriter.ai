@@ -38,7 +38,7 @@ import re
 import shutil
 import sqlite3
 import sys
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import adwriter as A
@@ -281,6 +281,8 @@ def _parse(argv: list[str]) -> argparse.Namespace:
                          "add --run to spend)")
     ap.add_argument("--relookup", default="", help="STOCK[,...]: with --lookup-stocks, ignore the cached result")
     ap.add_argument("--run", action="store_true", help="with --lookup-stocks: run the lookups")
+    ap.add_argument("--detach", action="store_true",
+                    help="with --run / --lookup: start the job detached (its own process, log in tow_logs/) and return")
     ap.add_argument("--only", default="", help="STOCK[,STOCK...]")
     ap.add_argument("--group", default="", help="comma list of: " + ", ".join(GROUPS))
     args = ap.parse_args(argv)
@@ -322,8 +324,9 @@ def lookup_stocks(stocks: list[str], relookup: set[str], run: bool) -> int:
     lo, hi = LOOKUP_COST_RANGE
     cost = len(todo) * LOOKUP_COST_TYPICAL
     print(f"lookups to run: {len(todo)} configuration(s), expected about ${cost:.2f} "
-          f"(range ${len(todo) * lo:.2f}-${len(todo) * hi:.2f}); limits: {T.TOW_REQUEST_TIMEOUT_S}s per request, "
-          f"{T.TOW_REQUEST_RETRIES} retry, {T.TOW_CONFIG_BUDGET_S // 60} min per configuration")
+          f"(range ${len(todo) * lo:.2f}-${len(todo) * hi:.2f}); limits per configuration: streamed, aborted after "
+          f"{T.TOW_SILENCE_S}s of silence, {T.TOW_CONFIG_BUDGET_S // 60}-minute budget, at most "
+          f"{T.TOW_MAX_REQUESTS} billed requests")
     for cfg, (s, _v, re_) in todo.items():
         print(f"  - [{s}] {cfg}{'  (re-lookup: cached result ignored)' if re_ else ''}")
     if cost > MAX_LOOKUP_SPEND:
@@ -342,7 +345,30 @@ def lookup_stocks(stocks: list[str], relookup: set[str], run: bool) -> int:
     return 0
 
 
+def detach(argv: list[str]) -> int:
+    """Re-launch this script (without --detach) as a detached background job: no
+    console, its own process group, output in tow_logs/. Returns at once."""
+    import subprocess
+
+    log_dir = Path(__file__).resolve().parent / "tow_logs"
+    log_dir.mkdir(exist_ok=True)
+    log = log_dir / f"tow_lookup_{datetime.now():%Y%m%d_%H%M%S}.log"
+    rest = [a for a in argv if a != "--detach"]
+    DETACHED_PROCESS, CREATE_NEW_PROCESS_GROUP = 0x00000008, 0x00000200
+    with open(log, "ab") as out:
+        proc = subprocess.Popen([sys.executable, "-u", str(Path(__file__).resolve()), *rest], stdout=out, stderr=out,
+                                stdin=subprocess.DEVNULL, close_fds=True,
+                                creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
+    print(f"detached tow lookup job: PID {proc.pid}, log {log}")
+    return 0
+
+
 def main(argv: list[str]) -> int:
+    if "--detach" in argv:
+        if not ({"--run", "--lookup"} & set(argv)):
+            print("--detach needs --run (with --lookup-stocks) or --lookup; nothing started")
+            return 2
+        return detach(argv)
     args = _parse(argv)
     if args.lookup_stocks:
         return lookup_stocks([x.strip().upper() for x in args.lookup_stocks.split(",") if x.strip()],

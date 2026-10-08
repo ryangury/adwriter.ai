@@ -399,8 +399,8 @@ def parse_reply(text: str, cfg: dict[str, Any], domains: list[str], seen_urls: s
 
 
 # Limits on one configuration's lookup (the build path and tow_refresh alike).
-TOW_REQUEST_TIMEOUT_S = 120
-TOW_REQUEST_RETRIES = 1
+TOW_SILENCE_S = 120          # a streamed request is aborted after this long with no data
+TOW_MAX_REQUESTS = 4         # billed requests per configuration, retries included
 TOW_CONFIG_BUDGET_S = 8 * 60
 _clock = time.monotonic
 
@@ -446,40 +446,33 @@ def lookup(cfg: dict[str, Any]) -> dict[str, Any]:
         f"TOW :: <pounds, digits only, or NONE> :: <model year> :: <make> :: <model and body style> :: {engine_field} :: "
         "<drivetrain> :: <cab or n/a> :: <bed length or n/a> :: <package the rating requires, or none> :: <page URL>"
     )
-    # Bounded: each request times out after TOW_REQUEST_TIMEOUT_S with one
-    # retry, and the whole configuration (pause_turn rounds included) gets
-    # TOW_CONFIG_BUDGET_S. Over budget: TowLookupUnavailable, nothing cached, so
-    # the next run (or tow_refresh --lookup) tries this configuration again.
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=TOW_REQUEST_TIMEOUT_S,
-                                 max_retries=TOW_REQUEST_RETRIES)
+    # Streamed and bounded (bounded_search.run_search): a request is aborted after
+    # TOW_SILENCE_S without any data (no total timeout on a request that keeps
+    # streaming), the configuration has TOW_CONFIG_BUDGET_S, and at most
+    # TOW_MAX_REQUESTS billed requests. Any stop: TowLookupUnavailable, nothing
+    # cached, so tow_refresh tries this configuration again next time.
+    from bounded_search import SearchUnavailable, run_search
+
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, max_retries=0)
     messages: list[Any] = [{"role": "user", "content": ask}]
-    deadline = _clock() + TOW_CONFIG_BUDGET_S
     try:
-        response = None
-        for _ in range(4):
-            remaining = deadline - _clock()
-            if remaining <= 5:
-                raise TowLookupUnavailable(
-                    f"tow lookup over its {TOW_CONFIG_BUDGET_S // 60}-minute budget for {describe(cfg)}; skipped")
-            response = client.messages.create(
-                model=MANUFACTURER_SEARCH_MODEL,
-                max_tokens=16000,
-                tools=[{
+        response = run_search(
+            client,
+            kwargs={
+                "model": MANUFACTURER_SEARCH_MODEL,
+                "max_tokens": 16000,
+                "tools": [{
                     "type": "web_search_20260209", "name": "web_search",
                     "allowed_domains": domains, "max_uses": TOW_LOOKUP_MAX_USES,
                 }],
-                messages=messages,
-                timeout=min(TOW_REQUEST_TIMEOUT_S, remaining),
-            )
-            if response.stop_reason != "pause_turn":
-                break
-            messages.append({"role": "assistant", "content": response.content})
-        else:
-            if response is not None and response.stop_reason == "pause_turn":
-                raise TowLookupUnavailable(f"tow lookup still paused after 4 rounds for {describe(cfg)}; skipped")
-    except (anthropic.APIConnectionError, anthropic.RateLimitError, anthropic.APIStatusError) as exc:
-        # APITimeoutError is an APIConnectionError: a request over 120 s (after its retry) lands here.
-        raise TowLookupUnavailable(f"tow lookup failed: {exc}") from exc
+            },
+            messages=messages,
+            label=f"tow lookup {describe(cfg)}",
+            silence_s=TOW_SILENCE_S, budget_s=TOW_CONFIG_BUDGET_S, max_requests=TOW_MAX_REQUESTS,
+            clock=_clock,
+        )
+    except SearchUnavailable as exc:
+        raise TowLookupUnavailable(f"tow lookup stopped ({exc.reason}): {exc}") from exc
     if response is None or response.stop_reason == "refusal":
         return {"lbs": None, "note": "tow lookup declined"}
     seen: set[str] = set()

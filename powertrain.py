@@ -799,7 +799,9 @@ def manufacturer_search(
     import anthropic
     from credentials import ANTHROPIC_API_KEY
 
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    from bounded_search import SearchUnavailable, run_search
+
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, max_retries=0)
     ask = (
         f"Find the manufacturer-published electric driving range for the {year} {make} {model} "
         f"{trim or ''} ({CLASS_LABELS[cls]}). Use web search; only the manufacturer's own pages "
@@ -811,23 +813,24 @@ def manufacturer_search(
         "<trim name exactly as the page prints it> :: <page URL>"
     )
     messages: list[Any] = [{"role": "user", "content": ask}]
+    # Streamed and bounded: aborted after 120 s of silence, a 5-minute budget,
+    # at most 4 billed requests (the 10/8 build sat 28 minutes on one of these).
     try:
-        response = None
-        for _ in range(4):
-            response = client.messages.create(
-                model=MANUFACTURER_SEARCH_MODEL,
-                max_tokens=16000,
-                tools=[{
+        response = run_search(
+            client,
+            kwargs={
+                "model": MANUFACTURER_SEARCH_MODEL,
+                "max_tokens": 16000,
+                "tools": [{
                     "type": "web_search_20260209", "name": "web_search",
                     "allowed_domains": domains, "max_uses": 6,
                 }],
-                messages=messages,
-            )
-            if response.stop_reason != "pause_turn":
-                break
-            messages.append({"role": "assistant", "content": response.content})
-    except (anthropic.APIConnectionError, anthropic.RateLimitError, anthropic.APIStatusError) as exc:
-        raise RangeLookupUnavailable(f"manufacturer search failed: {exc}") from exc
+            },
+            messages=messages,
+            label=f"electric range {year} {make} {model} {trim or ''}".strip(),
+        )
+    except SearchUnavailable as exc:
+        raise RangeLookupUnavailable(f"manufacturer search stopped ({exc.reason}): {exc}") from exc
     if response is None or response.stop_reason == "refusal":
         return {"miles": None, "note": "manufacturer search declined"}
     seen_urls: set[str] = set()
@@ -1175,7 +1178,7 @@ def data_package_lines(pt: dict[str, Any]) -> list[str]:
         lines.append(f"ELECTRIC_RANGE: {rng['phrase']}")
         lines.append("  (state it only with exactly this phrase; never another range figure)")
     else:
-        lines.append("ELECTRIC_RANGE: (omit — state no electric range in any form)")
+        lines.append("ELECTRIC_RANGE: (omit — range unavailable, state none: no electric range in any form)")
     return lines
 
 

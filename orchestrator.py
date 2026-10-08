@@ -187,8 +187,10 @@ def _format_action_email(
     odometer_flags: list[dict[str, Any]] | None = None,
     towing_review: list[dict[str, Any]] | None = None,
     not_rebuilt: list[dict[str, Any]] | None = None,
+    waiting_price: list[dict[str, Any]] | None = None,
 ) -> str:
     not_rebuilt = not_rebuilt or []
+    waiting_price = waiting_price or []
     pre_recon_watching = pre_recon_watching or []
     new_listings_pricing = new_listings_pricing or []
     odometer_flags = odometer_flags or []
@@ -256,6 +258,20 @@ def _format_action_email(
             f"  —  {_fmt_price(c.get('old_price'))} -> {_fmt_price(c.get('new_price'))}"
             f"  ({sign}${abs(delta):,.0f})  —  {state}"
         )
+    out += ["", ""]
+
+    section("WAITING ON PRICE (priced at or above every benchmark; no ad until it is below one)", len(waiting_price))
+    if not waiting_price:
+        out.append("(none)")
+    for v in waiting_price:
+        out.append(f"  [{v.get('stock_number')}]  {v.get('year_make_model') or 'unknown'}  —  {_dol(v)}")
+        nb = v.get("nearest_benchmark")
+        if nb and nb.get("gap") is not None:
+            bp = f" (benchmark ${nb['benchmark_price']:,.0f})" if nb.get("benchmark_price") else ""
+            out.append(f"      nearest benchmark: {nb.get('label') or 'unknown'}{bp}; the price is ${nb['gap']:,.0f} "
+                       f"{nb.get('direction') or 'above'} it, so it must come down by more than ${nb['gap']:,.0f}")
+        else:
+            out.append("      no benchmark gap was read from ACV Max")
     out += ["", ""]
 
     section("NEW LISTINGS, PRICING NOT READY (will retry tomorrow)", len(new_listings_pricing))
@@ -865,6 +881,7 @@ def _run_inner(
     print(f"\n=== 4. AD GENERATION ({n_queued} vehicle(s)) ===")
     ads_generated: list[dict[str, Any]] = []
     new_listings_pricing: list[dict[str, Any]] = []
+    waiting_price: list[dict[str, Any]] = []
     odometer_flags: list[dict[str, Any]] = []
     aggregated_ctr: dict[str, Any] = {}
     price_by_stock = {
@@ -920,6 +937,14 @@ def _run_inner(
                     f"[{tag}] {stock}: new listing ({v.get('days_on_lot')} days on lot), "
                     f"ACV Max price is 0 — pricing not ready, will retry tomorrow"
                 )
+                return
+            if pkg.get("failed_sources") == ["no_favorable_proof_point"]:
+                # Priced at or above every benchmark: a rule, not a failure. Listed
+                # under WAITING ON PRICE with the gap; no scraper error.
+                waiting_price.append({**v, "nearest_benchmark": pkg.get("nearest_benchmark")})
+                nb = pkg.get("nearest_benchmark") or {}
+                print(f"[{tag}] {stock}: waiting on price - {nb.get('label')}: ${nb.get('gap')} "
+                      f"{nb.get('direction') or 'above'} the nearest benchmark")
                 return
             errors.append({"stock": stock, "phase": "sources", "error": gate_msg})
             print(f"[{tag}] {stock}: {gate_msg}")
@@ -1363,7 +1388,7 @@ def _run_inner(
     rewritten = {a["stock"] for a in ads_generated}
     if reprice_only:
         print("[email] --reprice-only — Action Required email not sent")
-    elif waiting_recon or needs_cert or price_changes or errors or pre_recon_watching or new_listings_pricing or odometer_flags or towing_review or not_rebuilt:
+    elif waiting_recon or needs_cert or price_changes or errors or pre_recon_watching or new_listings_pricing or odometer_flags or towing_review or not_rebuilt or waiting_price:
         _safe_send(
             f"Mercedes-Benz of Durham — Action Required {today}",
             _format_action_email(
@@ -1377,6 +1402,7 @@ def _run_inner(
                 odometer_flags,
                 towing_review,
                 not_rebuilt,
+                waiting_price,
             ),
         )
     else:

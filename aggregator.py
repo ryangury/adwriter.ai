@@ -3808,7 +3808,18 @@ def _mb_cpo_data_gate(
         failures.append(("autoipacket_sticker", "window sticker missing"))
 
     message = "MB CPO data gate failed — " + "; ".join(m for _, m in failures)
+    # How far the price is from becoming favorable: the nearest benchmark (the
+    # smallest gap above one). Not a data failure; the orchestrator lists it
+    # under WAITING ON PRICE with this gap.
+    nearest = None
+    if price_ok and not has_below:
+        above = [p for p in proof_points if isinstance(p.get("gap"), (int, float))]
+        if above:
+            n = min(above, key=lambda p: p["gap"])
+            nearest = {"label": n.get("label"), "benchmark_price": n.get("benchmark_price"),
+                       "gap": n["gap"], "direction": n.get("direction")}
     return {
+        "nearest_benchmark": nearest,
         "recon_complete": True,
         "data_gate_passed": False,
         "reason": "incomplete_data",

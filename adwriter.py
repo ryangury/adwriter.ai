@@ -483,6 +483,8 @@ WEB_SEARCH_TOOL = {"type": "web_search_20260209", "name": "web_search"}
 # YouTube and content farms out. OFF until approved: with it on, third-party
 # feature pages (Bose, SiriusXM, ...) can no longer be searched.
 GENERATE_SEARCH_ALLOWLIST = False
+GENERATE_SEARCH_SILENCE_S = 120   # the research search is aborted after this long with no data
+GENERATE_SEARCH_BUDGET_S = 5 * 60  # and after this long in total
 GENERATE_SEARCH_COMMON_DOMAINS = ["fueleconomy.gov", "nhtsa.gov", "iihs.org"]
 
 
@@ -834,7 +836,11 @@ def set_towing_review(entry: dict, tow: dict | None) -> None:
     Required); removed once a verified rating exists or nothing triggers."""
     tow = tow or {}
     if tow.get("triggered") and not tow.get("rating"):
-        entry["towing_review"] = f"{tow.get('config_text')}: {tow.get('note')}"
+        note = tow.get("note")
+        if note == "not looked up yet":
+            note = ("not in the tow cache yet (a build makes no live lookup); "
+                    "run: python tow_refresh.py --lookup-stocks <stock> --run --detach")
+        entry["towing_review"] = f"{tow.get('config_text')}: {note}"
     else:
         entry.pop("towing_review", None)
 
@@ -856,9 +862,13 @@ def towing_for_package(pkg: dict) -> dict:
         if not pclass and vin:
             st, rc = cached_texts(vin)
             pclass = classify(vin, ymm, trim, sticker_text=st, recon_text=rc)["class"]
+        # Cache only: a build or reprice never makes a live tow lookup (they ran 4+
+        # minutes each and timed out on 10/8). A miss comes back "not looked up
+        # yet" and is flagged needs-review at once; tow_refresh --lookup-stocks
+        # fills the cache.
         return towing_for(
             ymm, trim, snap.get("body_style"), raw, names,
-            vin=vin, powertrain_class=pclass, force=bool(pkg.get("_tow_force")),
+            vin=vin, powertrain_class=pclass, force=bool(pkg.get("_tow_force")), allow_lookup=False,
         )
     except Exception as exc:  # noqa: BLE001 - a tow lookup must never sink a build
         print(f"[towing] {stock}: lookup failed — {exc}", file=sys.stderr)
@@ -894,7 +904,8 @@ def _research_instructions(needs_lookup: list[dict]) -> str:
         "want it. Use those descriptions when you write the ad. (A STANDARD "
         "EQUIPMENT AND ENGINE SPECS item is answered with its own line format "
         "below instead of a description. Never research a towing rating: the "
-        "data package's TOWING CAPACITY line is the only tow figure allowed.)\n\n"
+        "data package's TOWING CAPACITY line is the only tow figure allowed, and "
+        "never research an electric range either: ELECTRIC_RANGE is the only range allowed.)\n\n"
         "When research is done you MUST output the findings block below BEFORE "
         "the ad. This block is the ONLY text allowed before paragraph one — do "
         "not write any sentence, preamble, or status note ('Now I have "
@@ -1067,11 +1078,26 @@ def generate_ad(
 
     messages: list[dict] = [{"role": "user", "content": user_content}]
     response = None
-    for _ in range(4):
-        response = client.messages.create(messages=messages, **kwargs)
-        if response.stop_reason != "pause_turn":
-            break
-        messages.append({"role": "assistant", "content": response.content})
+    if needs_lookup:
+        # The research search is bounded (bounded_search.run_search: aborted after
+        # 120 s of silence, 5-minute budget, 4 billed requests; slow searches are
+        # logged). If it stops, the ad is written without search: features are
+        # named plainly and nothing is cached, so the next build researches them.
+        from bounded_search import SearchUnavailable, run_search
+
+        try:
+            response = run_search(client, kwargs=kwargs, messages=messages, label=f"ad research {stock or ''}".strip(),
+                                  budget_s=GENERATE_SEARCH_BUDGET_S, silence_s=GENERATE_SEARCH_SILENCE_S)
+        except SearchUnavailable as exc:
+            print(f"[adwriter] {stock}: web search stopped ({exc.reason}) - writing the ad without search: {exc}",
+                  file=sys.stderr)
+            return generate_ad(client, vehicle_data, system_prompt, needs_lookup=[], stock=stock, make=make)
+    else:
+        for _ in range(4):
+            response = client.messages.create(messages=messages, **kwargs)
+            if response.stop_reason != "pause_turn":
+                break
+            messages.append({"role": "assistant", "content": response.content})
 
     if response.stop_reason == "refusal":
         detail = getattr(response, "stop_details", None)

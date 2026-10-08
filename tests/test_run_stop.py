@@ -218,5 +218,39 @@ class StopTests(unittest.TestCase):
             self.assertNotRegex(body, rf"\[{stock}\]\s+recon\s+—")
 
 
+    def test_price_gate_and_new_listings_are_not_scraper_errors(self):
+        from aggregator import _mb_cpo_data_gate
+
+        # the real gate's package for "priced above every benchmark"
+        proof = [
+            {"label": "J.D. Power Retail", "benchmark_price": 57000.0, "gap": 1920.0, "direction": "above"},
+            {"label": "KBB Retail", "benchmark_price": 55000.0, "gap": 3920.0, "direction": "above"},
+        ]
+        gate = _mb_cpo_data_gate("P1", "P1", 10, {"current_internet_price": 58920.0, "pricing_proof_points": proof},
+                                 {"total_msrp": 70000, "source": "autoipacket"})
+        self.assertEqual(gate["failed_sources"], ["no_favorable_proof_point"])
+        self.assertEqual(gate["nearest_benchmark"]["label"], "J.D. Power Retail")
+        self.assertEqual(gate["nearest_benchmark"]["gap"], 1920.0)
+
+        new_listing = {"reason": "incomplete_data", "failed_source": "acvmax_pricing", "failed_sources": ["acvmax_pricing"],
+                       "message": "MB CPO data gate failed - ACV Max pricing unavailable", "current_internet_price": 0}
+        vehicles = [
+            {"stock_number": "P1", "status_code": 10, "days_on_lot": 2, "current_price": 58920.0, "vin": "V1",
+             "year_make_model": "2026 Mercedes-Benz GLC"},
+            {"stock_number": "P2", "status_code": 10, "days_on_lot": 2, "current_price": 0.0, "vin": "V2",
+             "year_make_model": "2025 Mercedes-Benz AMG GT"},
+        ]
+        h = Harness(vehicles, {}, aggregate=lambda stock, skip_recon=False: gate if stock == "P1" else new_listing)
+        rc = h.run()
+        body = dict(h.sent)[has(h.subjects(), "Mercedes-Benz of Durham — Action Required")[0]]
+        self.assertEqual(rc, 0)
+        self.assertIn("WAITING ON PRICE", body)
+        self.assertIn("[P1]", body)
+        self.assertIn("nearest benchmark: J.D. Power Retail (benchmark $57,000)", body)
+        self.assertIn("$1,920 above it", body)
+        self.assertIn("NEW LISTINGS, PRICING NOT READY (will retry tomorrow)", body)
+        self.assertIn("SCRAPER ERRORS (0)", body)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
