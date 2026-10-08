@@ -1,71 +1,100 @@
 {% extends "layout.html" %}
-{% block title %}Spending — Mercedes-Benz of Durham{% endblock %}
+{% block title %}Spending | Mercedes-Benz of Durham{% endblock %}
 {% block head %}
 <style>
   .cost-tiles { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 24px; }
   .cost-tile {
     border: 1px solid var(--line); border-radius: 10px; padding: 16px 20px;
-    min-width: 180px; background: var(--card);
+    min-width: 160px; background: var(--card);
   }
   .cost-tile .k { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
   .cost-tile .v { font-size: 1.6rem; font-weight: 650; color: var(--accent); margin-top: 4px; }
   .cost-tile .v.small { font-size: 1.1rem; }
   .cost-estimate { margin: 4px 0 24px; color: var(--muted); font-size: 0.88rem; }
+  .cost-error { margin: 0 0 20px; padding: 12px 16px; border: 1px solid var(--fail, #b91c1c); border-radius: 8px;
+                color: var(--fail, #b91c1c); font-size: 0.92rem; }
   .cost-table td.num, .cost-table th.num { text-align: right; }
+  .cost-table tr.total td { font-weight: 650; border-top: 2px solid var(--line); }
 </style>
 {% endblock %}
 {% block content %}
 <div class="wrap-wide">
   <h1 class="page-title">Spending</h1>
-  <p class="page-sub">Anthropic API cost for {{ month_label }} &middot; cached up to 1 hour</p>
+  <p class="page-sub">
+    Anthropic API cost for {{ month_label }} (days are UTC)
+    {% if data_age %}&middot; data fetched {{ data_age }}{% endif %}
+    &middot; successful fetches are reused for up to 1 hour; failures are never saved
+  </p>
 
   {% if error %}
-  <div class="inv-wrap"><div class="empty-note">{{ error }}</div></div>
-  {% else %}
+  <div class="cost-error">{{ error }}{% if data %} Showing the last successful fetch ({{ data_age }}).{% endif %}</div>
+  {% endif %}
+
+  {% if data %}
+  {% set f = data.by_family %}
   <div class="cost-tiles">
     <div class="cost-tile">
       <div class="k">Month-to-date total</div>
-      <div class="v">${{ '%.2f' % mtd_total }}</div>
+      <div class="v">${{ '%.2f' % data.total }}</div>
     </div>
     <div class="cost-tile">
-      <div class="k">Sonnet spend</div>
-      <div class="v small">${{ '%.2f' % split.sonnet }}</div>
+      <div class="k">Sonnet</div>
+      <div class="v small">${{ '%.2f' % f['sonnet'] }}</div>
     </div>
     <div class="cost-tile">
-      <div class="k">Haiku spend</div>
-      <div class="v small">${{ '%.2f' % split.haiku }}</div>
+      <div class="k">Haiku</div>
+      <div class="v small">${{ '%.2f' % f['haiku'] }}</div>
     </div>
-    {% if split.other and split.other > 0.005 %}
     <div class="cost-tile">
-      <div class="k">Other models</div>
-      <div class="v small">${{ '%.2f' % split.other }}</div>
+      <div class="k">Web search</div>
+      <div class="v small">${{ '%.2f' % f['web search'] }}</div>
+    </div>
+    {% if f['other'] > 0.005 %}
+    <div class="cost-tile">
+      <div class="k">Other</div>
+      <div class="v small">${{ '%.2f' % f['other'] }}</div>
     </div>
     {% endif %}
   </div>
 
   <p class="cost-estimate">
     {% if est_cost_per_ad is number %}
-    Est. cost per fresh ad: <strong>${{ '%.2f' % est_cost_per_ad }}</strong>
-    (Sonnet spend &divide; {{ ad_count }} fresh ad{{ '' if ad_count == 1 else 's' }} built this month) &mdash;
-    rough estimate, not precise accounting. Reprices and recon updates aren't counted in the denominator.
+    Cost per fresh ad: <strong>${{ '%.2f' % est_cost_per_ad }}</strong>
+    &mdash; rough estimate, includes testing
+    (Sonnet dollars &divide; {{ ad_count }} fresh ad{{ '' if ad_count == 1 else 's' }} built this month;
+    every test and experiment on this key is in the numerator, and reprices and recon updates are not in the denominator).
     {% else %}
-    Est. cost per fresh ad: not enough data yet (no fresh ads recorded this month).
+    Cost per fresh ad: not enough data yet (no fresh ads recorded this month).
     {% endif %}
-    Sonnet/Haiku split is an estimate too, proportional to each model's token share this month &mdash;
-    the Admin cost report isn't broken out by model, only usage (tokens) is.
+    Per-model dollars come straight from Anthropic's cost report. The current UTC day only appears once it has ended,
+    so today's spending is not in these numbers yet.
   </p>
 
   <div class="inv-wrap">
     <table class="inv-table cost-table">
       <thead>
-        <tr><th>Date</th><th class="num">Cost</th></tr>
+        <tr><th>Day (UTC)</th><th class="num">Sonnet</th><th class="num">Haiku</th><th class="num">Web search</th>
+            {% if f['other'] > 0.005 %}<th class="num">Other</th>{% endif %}<th class="num">Total</th></tr>
       </thead>
       <tbody>
-        {% for day, amount in daily_rows %}
-        <tr><td>{{ day }}</td><td class="num">${{ '%.2f' % amount }}</td></tr>
+        {% for d in data.days %}
+        <tr><td>{{ d.day }}</td>
+            <td class="num">${{ '%.2f' % d['sonnet'] }}</td>
+            <td class="num">${{ '%.2f' % d['haiku'] }}</td>
+            <td class="num">${{ '%.2f' % d['web search'] }}</td>
+            {% if f['other'] > 0.005 %}<td class="num">${{ '%.2f' % d['other'] }}</td>{% endif %}
+            <td class="num">${{ '%.2f' % d.total }}</td></tr>
         {% else %}
-        <tr><td colspan="2">No cost data returned for this month yet.</td></tr>
+        <tr><td colspan="6">No cost data returned for this month yet.</td></tr>
         {% endfor %}
+        {% if data.days %}
+        <tr class="total"><td>Month to date</td>
+            <td class="num">${{ '%.2f' % f['sonnet'] }}</td>
+            <td class="num">${{ '%.2f' % f['haiku'] }}</td>
+            <td class="num">${{ '%.2f' % f['web search'] }}</td>
+            {% if f['other'] > 0.005 %}<td class="num">${{ '%.2f' % f['other'] }}</td>{% endif %}
+            <td class="num">${{ '%.2f' % data.total }}</td></tr>
+        {% endif %}
       </tbody>
     </table>
   </div>
