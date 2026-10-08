@@ -101,6 +101,18 @@ def _connect() -> sqlite3.Connection:
     for col, ddl in _MIGRATIONS.items():
         if col not in have:
             conn.execute(ddl)
+    # One row per (day, store, stock): a restarted step that reads a vehicle again
+    # replaces its row (record_ctr upserts) instead of adding a second. An old
+    # database that still holds duplicates can't take the index until
+    # ctr_dedupe.py --apply has run; it opens fine and record_ctr falls back to
+    # a plain insert.
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_ctr_history_day_store_stock "
+            "ON ctr_history (date, dealership_name, stock_number)"
+        )
+    except sqlite3.IntegrityError:
+        pass
     conn.commit()
     return conn
 
@@ -245,18 +257,25 @@ def record_ctr(
         mileage,
         objective,
     )
+    cols = ("date, stock_number, vin, year_make_model, current_price, days_on_lot, autotrader_ctr, "
+            "cargurus_ctr, average_ctr, ad_written, ad_written_date, scraped_at, dealership_name, "
+            "dealership_role, certification_tier, status_code, mileage, objective")
+    insert = f"INSERT INTO ctr_history ({cols}) VALUES ({', '.join('?' * 18)})"
+    update_cols = [c.strip() for c in cols.split(",")][1:]
+    # Upsert on the day/store/stock unique index: the newest read of the day wins.
+    upsert = (insert + " ON CONFLICT(date, dealership_name, stock_number) DO UPDATE SET "
+              + ", ".join(f"{c} = excluded.{c}" for c in update_cols if c not in ("dealership_name", "stock_number")))
     with _connect() as conn:
-        cur = conn.execute(
-            "INSERT INTO ctr_history ("
-            "date, stock_number, vin, year_make_model, current_price, "
-            "days_on_lot, autotrader_ctr, cargurus_ctr, average_ctr, ad_written, "
-            "ad_written_date, scraped_at, dealership_name, dealership_role, "
-            "certification_tier, status_code, mileage, objective"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            row,
-        )
+        try:
+            cur = conn.execute(upsert, row)
+        except sqlite3.OperationalError:  # no matching unique index yet (duplicates not removed)
+            cur = conn.execute(insert, row)
         conn.commit()
-        return int(cur.lastrowid)
+        if cur.lastrowid:
+            return int(cur.lastrowid)
+        r = conn.execute("SELECT id FROM ctr_history WHERE date = ? AND dealership_name = ? AND stock_number = ?",
+                         (row[0], row[12], row[1])).fetchone()
+        return int(r[0]) if r else 0
 
 
 def get_ctr_history(
