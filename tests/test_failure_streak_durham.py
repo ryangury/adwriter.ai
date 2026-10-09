@@ -3,7 +3,7 @@ import sys
 import unittest
 from unittest import mock
 
-sys.path.insert(0, r"C:\adwriter")
+import _paths  # noqa: F401  (repo root first on sys.path)
 import ctr_warmup  # noqa: E402
 import orchestrator  # noqa: E402
 import scraper  # noqa: E402

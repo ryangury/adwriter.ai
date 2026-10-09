@@ -4,7 +4,7 @@ import time
 import unittest
 from unittest import mock
 
-sys.path.insert(0, r"C:\adwriter")
+import _paths  # noqa: F401  (repo root first on sys.path)
 import scraper  # noqa: E402
 from scraper import (  # noqa: E402
     AcvMaxRunAbort,

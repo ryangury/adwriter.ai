@@ -7,7 +7,9 @@ import sqlite3
 import sys
 from datetime import date, timedelta
 
-WT = r"C:\adwriter"
+import _paths
+WT = str(_paths.ROOT)
+DATA = str(_paths.DATA)
 sys.path.insert(0, WT)
 import adwriter as A  # noqa: E402
 import aggregator as AG  # noqa: E402
@@ -126,8 +128,8 @@ html = cl.get("/inventory").get_data(as_text=True)
 check("inventory: note at 31 days, not at 29", html.count("(over 30 days); reprice to refresh") == 1, html.count("over 30 days"))
 
 # the five cars ----------------------------------------------------------------------
-snap = {v["stock_number"]: v for v in json.load(open(WT + r"\last_inventory_snapshot.json"))["vehicles"]}
-con = sqlite3.connect(f"file:{WT.replace(chr(92), '/')}/vehicle_cache.db?mode=ro", uri=True)
+snap = {v["stock_number"]: v for v in json.load(open(DATA + r"\last_inventory_snapshot.json"))["vehicles"]}
+con = sqlite3.connect(f"file:{DATA.replace(chr(92), '/')}/vehicle_cache.db?mode=ro", uri=True)
 
 
 def cf_for(stock):

@@ -11,19 +11,19 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, r"C:\adwriter")
+import _paths  # noqa: F401  (repo root first on sys.path)
 import adwriter as A  # noqa: E402
 import tow_refresh as R  # noqa: E402
 import towing as T  # noqa: E402
 
-DB = sqlite3.connect(r"C:\adwriter\vehicle_cache.db")
-SNAP = {v["stock_number"]: v for v in json.load(open(r"C:\adwriter\last_inventory_snapshot.json", encoding="utf-8"))["vehicles"]}
-HIST = json.load(open(r"C:\adwriter\ad_history.json", encoding="utf-8"))
+DB = sqlite3.connect(str(_paths.DATA / "vehicle_cache.db"))
+SNAP = {v["stock_number"]: v for v in json.load(open(str(_paths.DATA / "last_inventory_snapshot.json"), encoding="utf-8"))["vehicles"]}
+HIST = json.load(open(str(_paths.DATA / "ad_history.json"), encoding="utf-8"))
 # X58848 may be deleted for a rebuild: fall back to its archived entry.
 if "X58848" not in HIST:
     import glob
 
-    for _p in sorted(glob.glob(r"C:\adwriter\ad_history_removed_*.json"), reverse=True):
+    for _p in sorted(glob.glob(str(_paths.DATA / "ad_history_removed_*.json")), reverse=True):
         _a = json.load(open(_p, encoding="utf-8"))
         if "X58848" in _a:
             HIST["X58848"] = _a["X58848"]

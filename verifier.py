@@ -847,7 +847,13 @@ def send_verification_alert(
     needs_posting: list[dict], needs_update: list[dict], *, send: bool = True
 ) -> str | None:
     """Email the posting alert. Sends only if there is at least one vehicle in
-    either bucket. Returns the email body (or None if nothing to send)."""
+    either bucket, and only while email_config.EMAIL_POSTING_ALERT is on.
+    Returns the email body (or None if nothing to send)."""
+    from email_config import EMAIL_POSTING_ALERT
+
+    if not EMAIL_POSTING_ALERT:
+        print("[verify] Ad Posting Alert is off (email_config.EMAIL_POSTING_ALERT) - no email.")
+        return None
     if not needs_posting and not needs_update:
         print("[verify] nothing needs posting or updating — no alert sent.")
         return None

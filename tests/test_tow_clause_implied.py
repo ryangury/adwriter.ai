@@ -3,7 +3,7 @@ for single-body trucks (Jeep Gladiator). Offline; nothing saved."""
 import sys
 import unittest
 
-sys.path.insert(0, r"C:\adwriter")
+import _paths  # noqa: F401  (repo root first on sys.path)
 import tow_refresh as R  # noqa: E402
 import towing as T  # noqa: E402
 

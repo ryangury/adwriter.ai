@@ -8,11 +8,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, r"C:\adwriter")
+import _paths  # noqa: F401  (repo root first on sys.path)
 import inventory_crawler as ic  # noqa: E402
 import scraper  # noqa: E402
 
-REAL_SNAPSHOT = json.loads(Path(r"C:\adwriter\last_inventory_snapshot.json").read_text(encoding="utf-8"))
+REAL_SNAPSHOT = json.loads(Path(str(_paths.DATA / "last_inventory_snapshot.json")).read_text(encoding="utf-8"))
 
 
 def fake_scraper_cls(store):

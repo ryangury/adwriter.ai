@@ -6,13 +6,13 @@ import sys
 import unittest
 from unittest import mock
 
-sys.path.insert(0, r"C:\adwriter")
+import _paths  # noqa: F401  (repo root first on sys.path)
 import adwriter  # noqa: E402
 import aggregator  # noqa: E402
 from aggregator import _RECON_PENDING_FALLBACK, _filter_recon, build_recon_sentence  # noqa: E402
 
 MR = "manufacturer-recommended"
-REAL_HISTORY = json.load(open(r"C:\adwriter\ad_history.json", encoding="utf-8"))
+REAL_HISTORY = json.load(open(str(_paths.DATA / "ad_history.json"), encoding="utf-8"))
 
 
 def li(desc, section="Mechanical Repairs"):
@@ -72,7 +72,7 @@ def _pending_cases():
     finishes). A tier with no pending ad borrows one whose pending sentence is
     the same (12 and 13 share theirs; 16 uses 10's)."""
     snap = {v["stock_number"]: v.get("status_code") for v in json.load(
-        open(r"C:\adwriter\last_inventory_snapshot.json", encoding="utf-8"))["vehicles"]}
+        open(str(_paths.DATA / "last_inventory_snapshot.json"), encoding="utf-8"))["vehicles"]}
     by_tier = {}
     for s, e in REAL_HISTORY.items():
         sc = snap.get(s)

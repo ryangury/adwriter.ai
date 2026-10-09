@@ -5,7 +5,7 @@ raw_text shape (newline-separated fields). Offline; nothing saved."""
 import sys
 import unittest
 
-sys.path.insert(0, r"C:\adwriter")
+import _paths  # noqa: F401  (repo root first on sys.path)
 import carfax_history as H  # noqa: E402
 from aggregator import build_carfax_sentence  # noqa: E402
 

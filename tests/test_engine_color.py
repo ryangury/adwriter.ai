@@ -9,15 +9,15 @@ import sys
 import unittest
 from unittest import mock
 
-sys.path.insert(0, r"C:\adwriter")
+import _paths  # noqa: F401  (repo root first on sys.path)
 import adwriter as A  # noqa: E402
 import aggregator as AG  # noqa: E402
 import powertrain as P  # noqa: E402
 from scraper import sticker_header_color  # noqa: E402
 
-DB = sqlite3.connect(r"C:\adwriter\vehicle_cache.db")
-SNAP = {v["stock_number"]: v for v in json.load(open(r"C:\adwriter\last_inventory_snapshot.json", encoding="utf-8"))["vehicles"]}
-HIST = json.load(open(r"C:\adwriter\ad_history.json", encoding="utf-8"))
+DB = sqlite3.connect(str(_paths.DATA / "vehicle_cache.db"))
+SNAP = {v["stock_number"]: v for v in json.load(open(str(_paths.DATA / "last_inventory_snapshot.json"), encoding="utf-8"))["vehicles"]}
+HIST = json.load(open(str(_paths.DATA / "ad_history.json"), encoding="utf-8"))
 
 
 def sticker(stock):

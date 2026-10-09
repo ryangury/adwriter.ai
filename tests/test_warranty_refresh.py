@@ -10,7 +10,9 @@ import sys
 import tempfile
 from pathlib import Path
 
-WT = r"C:\adwriter"
+import _paths
+WT = str(_paths.ROOT)
+DATA = str(_paths.DATA)
 os.chdir(WT)
 sys.path.insert(0, WT)
 import adwriter as A  # noqa: E402

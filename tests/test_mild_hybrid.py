@@ -5,11 +5,11 @@ import json
 import re
 import sys
 
-sys.path.insert(0, r"C:\adwriter")
+import _paths  # noqa: F401  (repo root first on sys.path)
 import powertrain as P  # noqa: E402
 
-snap = {v["stock_number"]: v for v in json.load(open(r"C:\adwriter\last_inventory_snapshot.json"))["vehicles"]}
-hist = json.load(open(r"C:\adwriter\ad_history.json", encoding="utf-8"))
+snap = {v["stock_number"]: v for v in json.load(open(str(_paths.DATA / "last_inventory_snapshot.json")))["vehicles"]}
+hist = json.load(open(str(_paths.DATA / "ad_history.json"), encoding="utf-8"))
 
 
 def info_for(stock):

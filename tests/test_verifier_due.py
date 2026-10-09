@@ -11,7 +11,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import _paths  # noqa: F401  (repo root first on sys.path)
 import adwriter  # noqa: E402
 import carfax_refresh  # noqa: E402
 import tow_refresh  # noqa: E402

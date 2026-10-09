@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import _paths  # noqa: F401  (repo root first on sys.path)
 import ctr_database as C  # noqa: E402
 import ctr_dedupe as D  # noqa: E402
 
@@ -45,7 +45,7 @@ class Guard(unittest.TestCase):
         C.record_ctr(V, ctr(1.0))
         C.record_ctr(V, ctr(2.0), dealership_name="Mercedes-Benz of Northlake", dealership_role="benchmark")
         with mock.patch.object(C, "date") as d:
-            d.today.return_value = __import__("datetime").date(2026, 10, 9)
+            d.today.return_value = __import__("datetime").date.today() + __import__("datetime").timedelta(days=1)   # never "today"
             C.record_ctr(V, ctr(3.0))
         self.assertEqual(len(self.rows()), 3)
 

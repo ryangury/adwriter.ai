@@ -3830,7 +3830,10 @@ def run_daily_report(
 
     if buckets[1]:
         result["ads_ready"] = _format_ads_ready_email(buckets[1])
-        _safe_send(f"Mercedes-Benz of Durham — Ads Ready {today}", result["ads_ready"])
+        if EMAIL_ADS_READY:
+            _safe_send(f"Mercedes-Benz of Durham — Ads Ready {today}", result["ads_ready"])
+        else:
+            print("[email] Ads Ready is off (email_config.EMAIL_ADS_READY) - not sent")
 
     if any(buckets[s] for s in (2, 3, 4, 5)):
         result["action_required"] = _format_action_required_email(buckets)

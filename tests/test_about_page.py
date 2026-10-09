@@ -6,7 +6,8 @@ import sys
 import unittest
 from pathlib import Path
 
-ROOT = Path(r"C:\adwriter")
+import _paths
+ROOT = _paths.ROOT
 sys.path.insert(0, str(ROOT))
 import app as adapp  # noqa: E402
 

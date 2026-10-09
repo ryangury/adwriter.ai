@@ -7,7 +7,7 @@ import sys
 import unittest
 import urllib.request
 
-sys.path.insert(0, r"C:\adwriter")
+import _paths  # noqa: F401  (repo root first on sys.path)
 
 
 class NetguardTests(unittest.TestCase):

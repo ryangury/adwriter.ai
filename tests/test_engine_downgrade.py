@@ -6,7 +6,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, r"C:\adwriter")
+import _paths  # noqa: F401  (repo root first on sys.path)
 import adwriter  # noqa: E402
 adwriter_mod = sys.modules['adwriter']; adwriter_mod.towing_for_package = lambda pkg: {'triggered': False}  # offline: no live tow lookups
 import aggregator as AG  # noqa: E402
@@ -22,7 +22,7 @@ def check(name, cond, detail=""):
         FAIL.append(name)
 
 
-snap = {v["stock_number"]: v for v in json.load(open(r"C:\adwriter\last_inventory_snapshot.json"))["vehicles"]}
+snap = {v["stock_number"]: v for v in json.load(open(str(_paths.DATA / "last_inventory_snapshot.json")))["vehicles"]}
 
 
 def pt_for(stock):
@@ -100,7 +100,7 @@ check("trim research is told the sticker engine is authoritative", "DURAMAX 3.0L
 
 print("\n=== recon downgrade ===")
 TMP = Path(tempfile.mkdtemp(prefix="gate_", dir=Path(__file__).parent))
-shutil.copy(r"C:\adwriter\recon_gate_state.json", TMP / "state.json")
+shutil.copy(str(_paths.DATA / "recon_gate_state.json"), TMP / "state.json")
 AG.RECON_GATE_STATE_PATH = TMP / "state.json"
 DOWN = []
 AG.downgrade_recon = lambda vin: DOWN.append(vin) or True

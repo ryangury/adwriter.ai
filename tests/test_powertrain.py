@@ -9,12 +9,12 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, r"C:\adwriter")
+import _paths  # noqa: F401  (repo root first on sys.path)
 import feature_cache  # noqa: E402
 import powertrain as P  # noqa: E402
 
 TMP = Path(tempfile.mkdtemp(prefix="pt_test_", dir=Path(__file__).parent))
-shutil.copy(r"C:\adwriter\feature_cache.db", TMP / "feature_cache.db")
+shutil.copy(str(_paths.DATA / "feature_cache.db"), TMP / "feature_cache.db")
 feature_cache.DB_PATH = TMP / "feature_cache.db"
 P.OVERRIDES_PATH = TMP / "powertrain_overrides.json"
 feature_cache._connect().execute("DELETE FROM electric_range").connection.commit()
@@ -107,7 +107,7 @@ def no_search(*a, **k):
 # --------------------------------------------------------------------------- #
 # 1. classification of the seven named cars (real cached sticker / recon text)
 # --------------------------------------------------------------------------- #
-snap = {v["stock_number"]: v for v in json.load(open(r"C:\adwriter\last_inventory_snapshot.json"))["vehicles"]}
+snap = {v["stock_number"]: v for v in json.load(open(str(_paths.DATA / "last_inventory_snapshot.json")))["vehicles"]}
 expect = {
     "V23409A": P.PHEV,   # Volvo S60 Recharge
     "PM98154": P.PHEV,   # GLC 350e

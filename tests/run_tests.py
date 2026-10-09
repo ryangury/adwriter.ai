@@ -17,6 +17,7 @@ check-style "FAIL ..." line. Exit status 1 if any test failed.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -28,6 +29,29 @@ ROOT = TESTS.parent
 GUARD = TESTS / "_netguard"
 TIMEOUT_S = 300
 
+sys.path.insert(0, str(TESTS))
+import _paths  # noqa: E402
+
+# Live files the code under test reads from beside its own modules. A git
+# worktree has none of them, so a missing one is copied in from the main
+# checkout (never the other way round, never over a non-empty file).
+DATA_FILES = ("*.db", "ad_history.json", "last_inventory_snapshot.json", "ad_history_removed_*.json",
+              "recon_gate_state.json", "powertrain_overrides.json", "ad_timeline.json")
+
+
+def seed_worktree_data() -> list[str]:
+    if _paths.DATA == ROOT:
+        return []
+    copied = []
+    for pattern in DATA_FILES:
+        for src in sorted(_paths.DATA.glob(pattern)):
+            dst = ROOT / src.name
+            # a missing file, or the schema-only stub sqlite3.connect leaves behind
+            if not dst.exists() or (dst.stat().st_size <= 16384 and src.stat().st_size > dst.stat().st_size):
+                shutil.copy2(src, dst)
+                copied.append(src.name)
+    return copied
+
 
 def run_one(path: Path) -> tuple[bool, str]:
     src = path.read_text(encoding="utf-8")
@@ -37,7 +61,8 @@ def run_one(path: Path) -> tuple[bool, str]:
         log = Path(tmp) / "netguard.log"
         env = dict(os.environ)
         env.update({
-            "PYTHONPATH": os.pathsep.join(filter(None, [str(GUARD), env.get("PYTHONPATH")])),
+            "PYTHONPATH": os.pathsep.join(filter(None, [
+                str(GUARD), env.get("PYTHONPATH"), str(_paths.DATA) if _paths.DATA != ROOT else None])),
             "PYTHONUTF8": "1",
             "ADWRITER_NETGUARD": "1",
             "ADWRITER_NETGUARD_LOG": str(log),
@@ -81,6 +106,9 @@ def run_one(path: Path) -> tuple[bool, str]:
 
 def main(argv: list[str]) -> int:
     pattern = argv[0] if argv else ""
+    copied = seed_worktree_data()
+    if copied:
+        print(f"worktree: copied {len(copied)} live data file(s) from {_paths.DATA}: {', '.join(copied)}")
     files = sorted(p for p in TESTS.glob("test_*.py") if pattern in p.name)
     results = [run_one(p) for p in files]
     for ok, line in results:

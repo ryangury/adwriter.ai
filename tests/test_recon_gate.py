@@ -4,7 +4,7 @@ import sys
 import unittest
 from unittest import mock
 
-sys.path.insert(0, r"C:\adwriter")
+import _paths  # noqa: F401  (repo root first on sys.path)
 import orchestrator as o  # noqa: E402
 sys.path.insert(0, __import__('os').path.dirname(__file__))
 from _children import fake_recorded_today, fake_run_watched, ok_children  # noqa: E402
