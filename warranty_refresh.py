@@ -42,8 +42,7 @@ from vehicle_cache import get_vehicle
 HERE = Path(__file__).resolve().parent
 SNAPSHOT_PATH = HERE / "last_inventory_snapshot.json"
 LEAVE_UNCHANGED = {"ZT22912A": "Carfax has no odometer reading, Ryan to decide"}
-VERIFICATION_FIELDS = ("verification_verdict", "match_score", "last_verified", "price_mismatch",
-                       "identity_confirmed", "verification_note")
+VERIFICATION_FIELDS = A.VERIFICATION_FIELDS    # one list, defined where the text is stored
 
 # Every factory-warranty-remaining wording an ad may carry: the old CPO sentence
 # ("This vehicle carries an estimated N months and M miles of remaining factory
@@ -168,13 +167,12 @@ def apply(changes: list[dict]) -> None:
     for c in changes:
         e = history[c["stock"]]
         e.update(c["after"])
-        e["current_ad_text"] = "\n\n".join(p for p in c["after"].values() if p)
+        A.set_current_ad_text(e, "\n\n".join(p for p in c["after"].values() if p))
         if c["new"]:
             e["warranty_sentence_date"] = today
         else:
             e.pop("warranty_sentence_date", None)
-        for f in VERIFICATION_FIELDS:
-            e[f] = None
+        A.clear_verification(e)    # the edit changed the text even if the join came out equal
         stale = list(e.get("stale_phrases") or [])
         e["stale_phrases"] = stale + [r for r in c["removed"] if r not in stale]
     A.save_ad_history(history)

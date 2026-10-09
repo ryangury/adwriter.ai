@@ -45,8 +45,7 @@ from run_lock import ORCHESTRATOR_LOCK_PATH, lock_blocks_edit
 
 HERE = Path(__file__).resolve().parent
 SNAPSHOT_PATH = HERE / "last_inventory_snapshot.json"
-VERIFICATION_FIELDS = ("verification_verdict", "match_score", "last_verified", "price_mismatch",
-                       "identity_confirmed", "verification_note")
+VERIFICATION_FIELDS = A.VERIFICATION_FIELDS    # one list, defined where the text is stored
 GROUPS = ("accident", "damage", "unparsed", "service")
 KEYS = ("paragraph_one", "paragraph_two", "paragraph_three", "paragraph_four")
 # Ads also changed by the 2026-10-05 warranty refresh: repost once, with both changes.
@@ -112,9 +111,8 @@ def apply(rows: list[dict]) -> int:
     for r in changing:
         e = history[r["stock"]]
         e.update(r["after"])
-        e["current_ad_text"] = "\n\n".join(r["after"][k] for k in KEYS if r["after"][k])
-        for f in VERIFICATION_FIELDS:
-            e[f] = None
+        A.set_current_ad_text(e, "\n\n".join(r["after"][k] for k in KEYS if r["after"][k]))
+        A.clear_verification(e)    # the edit changed the text even if the join came out equal
         stale = list(e.get("stale_phrases") or [])
         e["stale_phrases"] = stale + [s for s in r["removed"] if s not in stale]
         e["carfax_refresh_date"] = date.today().isoformat()

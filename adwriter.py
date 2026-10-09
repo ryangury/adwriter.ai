@@ -2566,6 +2566,32 @@ def stamp_mild_sentence(entry: dict, today: str | None = None) -> None:
         entry["mild_hybrid_sentence_first_date"] = today or date.today().isoformat()
 
 
+# Fields that describe whether the LIVE listing matches the stored ad text. Any
+# change to current_ad_text makes them stale, so every writer of that text goes
+# through set_current_ad_text() (or clear_verification()) and the verifier then
+# sees an entry with no verdict, which it checks on every pass.
+VERIFICATION_FIELDS = (
+    "verification_verdict", "match_score", "last_verified", "price_mismatch",
+    "identity_confirmed", "verification_note",
+)
+
+
+def clear_verification(entry: dict) -> None:
+    """Forget the last live check (the site shows "unverified" until the next one)."""
+    for f in VERIFICATION_FIELDS:
+        entry[f] = None
+
+
+def set_current_ad_text(entry: dict, text: str) -> bool:
+    """The one way to store a new current_ad_text. If the text differs from what
+    was stored, the verification fields are cleared. Returns True if it changed."""
+    changed = (entry.get("current_ad_text") or "") != (text or "")
+    entry["current_ad_text"] = text
+    if changed:
+        clear_verification(entry)
+    return changed
+
+
 def record_ad(
     history: dict,
     stock: str,
@@ -2598,14 +2624,9 @@ def record_ad(
     entry["lifecycle_stage"] = lifecycle_stage
     entry["last_feedback"] = last_feedback
     # a fresh ad body has not been verified against hendrickcars.com yet
-    entry["last_verified"] = None
-    entry["verification_verdict"] = None
-    entry["match_score"] = None
-    entry["price_mismatch"] = None
-    entry["identity_confirmed"] = None
-    # a regenerated ad starts clean: no removed-sentence tracking, no old note
+    clear_verification(entry)
+    # a regenerated ad starts clean: no removed-sentence tracking
     entry.pop("stale_phrases", None)
-    entry["verification_note"] = None
     entry.pop("generation_flag", None)
     stamp_mild_sentence(entry, today)
     # warranty_sentence_date: the day this ad's factory-warranty sentence was built.
@@ -3031,7 +3052,7 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
     entry["paragraph_two"] = new_p2
     entry["paragraph_three"] = p3
     entry["paragraph_four"] = p4
-    entry["current_ad_text"] = full
+    set_current_ad_text(entry, full)
     entry["last_price_at_write"] = current_price
     entry["last_advertised_price"] = _advertised_at_write(current_price)
     entry["last_ad_date"] = date.today().isoformat()
@@ -3039,12 +3060,7 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
     # The live listing still shows the pre-reprice copy until it's re-posted, so
     # a verdict from before this rewrite no longer describes anything: clear it
     # (the site shows "unverified") and let the next verifier run re-check.
-    entry["verification_verdict"] = None
-    entry["match_score"] = None
-    entry["last_verified"] = None
-    entry["price_mismatch"] = None
-    entry["identity_confirmed"] = None
-    entry["verification_note"] = None
+    clear_verification(entry)    # a reprice always re-checks, even if the words came out the same
     entry.pop("generation_flag", None)    # a completed rewrite clears an earlier failure flag
     stamp_mild_sentence(entry)
     history[stock] = entry
@@ -3149,10 +3165,13 @@ def _topup_powertrain_check(stock: str, entry: dict) -> None:
     notes: list[str] = []
     for key in ("paragraph_one", "paragraph_two", "paragraph_three", "paragraph_four", "current_ad_text"):
         if entry.get(key):
-            entry[key], n = strip_powertrain_claims(
+            new, n = strip_powertrain_claims(
                 entry[key], pt, stock=stock, label="update_recon", existing=True
             )
-            if key != "current_ad_text":
+            if key == "current_ad_text":
+                set_current_ad_text(entry, new)
+            else:
+                entry[key] = new
                 notes.extend(n)
     if notes or pt.get("flags"):
         entry["powertrain_flags"] = list(pt.get("flags") or []) + notes
@@ -3177,7 +3196,7 @@ def _topup_carfax_check(stock: str, entry: dict) -> None:
                 entry[key], changed = new, True
                 notes.extend(n)
     if changed:
-        entry["current_ad_text"] = "\n\n".join(entry[k] for k in keys if entry.get(k))
+        set_current_ad_text(entry, "\n\n".join(entry[k] for k in keys if entry.get(k)))
         entry["powertrain_flags"] = list(entry.get("powertrain_flags") or []) + notes
 
 
@@ -3241,9 +3260,9 @@ def update_recon(stock_number: str, status_code: int | None = None) -> str:
                 new_p1, status_code, ymm, stock=stock, label="update_recon"
             )
         if new_full is not None:
-            entry["current_ad_text"] = scrub_non_mb_tire_wording(
+            set_current_ad_text(entry, scrub_non_mb_tire_wording(
                 new_full, status_code, ymm, stock=stock, label="update_recon"
-            )
+            ))
         if new_p1 is None and new_full is None:
             print(
                 f"[update_recon] {stock}: no includeable recon, but the pending "
@@ -3272,7 +3291,7 @@ def update_recon(stock_number: str, status_code: int | None = None) -> str:
     entry["paragraph_two"] = p2
     entry["paragraph_three"] = p3
     entry["paragraph_four"] = p4
-    entry["current_ad_text"] = full
+    set_current_ad_text(entry, full)
     _topup_powertrain_check(stock, entry)
     entry["recon_included"] = True
     entry["recon_pending"] = False

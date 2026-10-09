@@ -549,43 +549,73 @@ def _as_date(value: Any) -> date | None:
         return None
 
 
-def _verification_due(entry: dict[str, Any], today: date) -> bool:
+# Why an entry is checked this pass. The first three are "unconfirmed": the ad
+# was posted this morning (or is about to be) and the answer is wanted now, so
+# they are checked on EVERY pass. "drift" is the slow background rotation for
+# ads already confirmed live.
+UNCONFIRMED_REASONS = frozenset({"new", "changed", "unposted"})
+REASONS = ("new", "changed", "unposted", "drift")
+
+
+def _is_confirmed_current(entry: dict[str, Any]) -> bool:
+    return (
+        entry.get("verification_verdict") == "current"
+        and bool(entry.get("identity_confirmed"))
+        and not entry.get("price_mismatch")
+    )
+
+
+def _due_reason(entry: dict[str, Any], today: date) -> str | None:
+    """None if the entry is not due, else one of REASONS.
+
+      new       no verdict, and the ad has never been rewritten
+      changed   no verdict, and the stored text was changed (reprice, recon
+                update, regeneration, a refresh script): the edit cleared the
+                verdict, and the live listing may still carry the old text
+      unposted  a verdict of outdated / not_found / not_posted, identity not
+                confirmed, or a price mismatch, within VERIFY_INTERVAL_DAYS of
+                last_ad_date: re-checked every pass while it is being posted
+      drift     everything else, every VERIFY_INTERVAL_DAYS since last_verified
+    """
     if not entry.get("current_ad_text"):
-        return False
+        return None
     # Flagged absent by the orchestrator's crawl (sold / wholesale / ...): the
     # vehicle is gone, so never spend a verifier cycle on it.
     if entry.get("absent_since"):
-        return False
+        return None
+
+    if entry.get("verification_verdict") is None:
+        rewritten = (
+            int(entry.get("ad_count") or 1) > 1
+            or bool(entry.get("stale_phrases"))
+            or entry.get("lifecycle_stage") in ("repriced", "recon_updated")
+            or (entry.get("last_ad_date") or entry.get("first_ad_date")) != entry.get("first_ad_date")
+        )
+        return "changed" if rewritten else "new"
+
     first = _as_date(entry.get("first_ad_date"))
     last_ad = _as_date(entry.get("last_ad_date")) or first
+    if not _is_confirmed_current(entry):
+        if last_ad is None or (today - last_ad).days <= VERIFY_INTERVAL_DAYS:
+            return "unposted"
+
     last_verified = _as_date(entry.get("last_verified"))
+    if last_verified is None or (today - last_verified).days >= VERIFY_INTERVAL_DAYS:
+        return "drift"
+    return None
 
-    # A: initial ad is >3 days old and we haven't verified in the last 3 days
-    if first and (today - first).days > VERIFY_INTERVAL_DAYS:
-        if last_verified is None or (today - last_verified).days >= VERIFY_INTERVAL_DAYS:
-            return True
 
-    # B: a reprice landed >3 days ago and hasn't been verified since
-    if entry.get("lifecycle_stage") == "repriced" and last_ad:
-        if (today - last_ad).days > VERIFY_INTERVAL_DAYS and (
-            last_verified is None or last_verified < last_ad
-        ):
-            return True
+def _verification_due(entry: dict[str, Any], today: date) -> bool:
+    return _due_reason(entry, today) is not None
 
-    # C: a reprice cleared the verdict (reprice_ad() sets it to None so the
-    # site shows "unverified" until re-checked) but the ad is too young for
-    # A or B to fire yet — that same-day re-check is the whole point of
-    # clearing the verdict, so don't make it wait out the 3-day age gates.
-    if entry.get("lifecycle_stage") == "repriced" and entry.get("verification_verdict") is None:
-        return True
 
-    # D: sentences were removed from the stored ad after it was posted and the
-    # verdict was cleared - re-check at once so a listing still carrying the old
-    # text is caught, not left unverified until the 3-day gates fire.
-    if entry.get("stale_phrases") and entry.get("verification_verdict") is None:
-        return True
-
-    return False
+def due_counts(history: dict[str, Any], today: date) -> dict[str, int]:
+    counts = {r: 0 for r in REASONS}
+    for entry in history.values():
+        reason = _due_reason(entry, today)
+        if reason:
+            counts[reason] += 1
+    return counts
 
 
 def _ymm_from_entry(entry: dict[str, Any]) -> str:
@@ -608,10 +638,19 @@ _MAX_CONSECUTIVE_BLOCKS = 3
 
 
 def run_verification(
-    ad_history: dict[str, Any] | None = None, *, headless: bool = True
+    ad_history: dict[str, Any] | None = None,
+    *,
+    headless: bool = True,
+    reasons: frozenset[str] | set[str] | None = None,
+    check=None,
+    today: date | None = None,
 ) -> tuple[list[dict], list[dict], list[dict]]:
     """Verify every vehicle that's due, update ad_history.json in place, and
     return (current, needs_posting, needs_update).
+
+    reasons: only check entries due for one of these reasons (the posting check
+    passes UNCONFIRMED_REASONS; None means every due entry, drift included).
+    check / today: test seams (default check_hendrickcars, date.today()).
 
       current       — verdict "current", no action
       needs_posting — verdict "not_posted" or "not_found"
@@ -620,7 +659,15 @@ def run_verification(
     from adwriter import load_ad_history, save_ad_history
 
     history = ad_history if ad_history is not None else load_ad_history()
-    today = date.today()
+    today = today or date.today()
+    check = check or check_hendrickcars
+    counts = due_counts(history, today)
+    print(
+        "[verify] due: "
+        f"new {counts['new']} | changed {counts['changed']} | "
+        f"unposted recheck {counts['unposted']} | drift {counts['drift']}"
+        + (f"  (this pass: {', '.join(sorted(reasons))})" if reasons is not None else "")
+    )
     # Stocks currently in inventory. A stock absent from the snapshot is sold /
     # removed: it is still verified (history is unchanged) but never reported as
     # an action item. None (snapshot missing/empty) means don't filter at all —
@@ -636,12 +683,13 @@ def run_verification(
 
     blocked_in_a_row = 0
     for stock, entry in history.items():
-        if not _verification_due(entry, today):
+        reason = _due_reason(entry, today)
+        if reason is None or (reasons is not None and reason not in reasons):
             continue
 
-        print(f"[verify] {stock}: due — checking hendrickcars.com ...")
+        print(f"[verify] {stock}: due ({reason}) — checking hendrickcars.com ...")
         try:
-            live = check_hendrickcars(stock, headless=headless)
+            live = check(stock, headless=headless)
         except Exception as exc:  # noqa: BLE001
             print(f"[verify] {stock}: scrape failed — {exc}", file=sys.stderr)
             continue

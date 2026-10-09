@@ -49,8 +49,7 @@ from vehicle_cache import get_window_sticker
 
 HERE = Path(__file__).resolve().parent
 SNAPSHOT_PATH = HERE / "last_inventory_snapshot.json"
-VERIFICATION_FIELDS = ("verification_verdict", "match_score", "last_verified", "price_mismatch",
-                       "identity_confirmed", "verification_note")
+VERIFICATION_FIELDS = A.VERIFICATION_FIELDS    # one list, defined where the text is stored
 GROUPS = ("overstated", "understated", "unverifiable", "matches", "gaps")
 
 # One lookup = up to TOW_LOOKUP_MAX_USES web searches ($10 / 1,000) plus the
@@ -258,9 +257,8 @@ def apply(rows: list[dict]) -> int:
     for r in changing:
         e = history[r["stock"]]
         e.update(r["after"])
-        e["current_ad_text"] = "\n\n".join(p for p in r["after"].values() if p)
-        for f in VERIFICATION_FIELDS:
-            e[f] = None
+        A.set_current_ad_text(e, "\n\n".join(p for p in r["after"].values() if p))
+        A.clear_verification(e)    # the edit changed the text even if the join came out equal
         stale = list(e.get("stale_phrases") or [])
         e["stale_phrases"] = stale + [s for s in r["removed"] if s not in stale]
         e["tow_refresh_date"] = date.today().isoformat()
