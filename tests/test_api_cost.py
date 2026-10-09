@@ -460,6 +460,20 @@ class KeyClass(DBCase):
         self.assertIn("sticker_warmup", api_cost.PURPOSES)
         self.assertIn("vision_processor", api_cost.PURPOSES)
 
+    def test_a_stubbed_generate_writes_exactly_one_row_and_uses_the_production_class_after_the_entry_point_declares_it(self):
+        import adwriter as A
+
+        client = SimpleNamespace(messages=SimpleNamespace(create=mock.Mock(return_value=resp(text="<ad>Hello.</ad>", i=2000, o=300))))
+        with self.creds("DEV-KEY-VALUE"), contextlib.redirect_stderr(io.StringIO()) as err:
+            api_cost.use_production_key()                    # what orchestrator.main() does first
+            self.assertEqual(api_cost.api_key(), "PROD-KEY-VALUE")
+            A.generate_ad(client, "data", stock="P1", make="Mercedes-Benz")
+        self.assertIn("key class: PRODUCTION", err.getvalue())
+        (row,) = self.rows()
+        self.assertEqual((row["purpose"], row["stock"], row["key_class"], row["model"]),
+                         ("generate", "P1", "production", "claude-sonnet-4-6"))
+        self.assertAlmostEqual(row["cost_usd"], (2000 * 3 + 300 * 15) / 1e6)
+
     def test_harness_environment_is_dev_and_test(self):
         # tests/_paths.py (imported by every test) sets these
         self.assertEqual(os.environ.get("ADWRITER_KEY_CLASS") or "dev", "dev")
