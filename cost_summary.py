@@ -87,7 +87,7 @@ def summarize(rows: Iterable[Any], console_total: float | None = None, now: date
         p["cache_tokens"] += int(_get(r, "cache_creation_tokens") or 0) + int(_get(r, "cache_read_tokens") or 0)
         p["searches"] += int(_get(r, "web_search_requests") or 0)
         p["retries"] += 1 if _get(r, "retry") else 0
-        p["aborted"] += 1 if str(_get(r, "stop_reason") or "").startswith(("aborted", "error", "guard")) else 0
+        p["aborted"] += 1 if str(_get(r, "stop_reason") or "").startswith(("aborted", "error", "degraded", "capped")) else 0
 
     logged_total = sum(_cost(r) for r in rows)
     complete = [r for r in rows if _day(_get(r, "ts")) < today]

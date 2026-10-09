@@ -826,7 +826,7 @@ def manufacturer_search(
             },
             messages=messages,
             label=f"electric range {year} {make} {model} {trim or ''}".strip(),
-            purpose="range_lookup",
+            purpose="range_lookup", max_cost_usd=api_cost.LOOKUP_COST_CAP_USD,
         )
     except SearchUnavailable as exc:
         raise RangeLookupUnavailable(f"manufacturer search stopped ({exc.reason}): {exc}") from exc

@@ -468,7 +468,7 @@ def lookup(cfg: dict[str, Any]) -> dict[str, Any]:
             messages=messages,
             label=f"tow lookup {describe(cfg)}",
             silence_s=TOW_SILENCE_S, budget_s=TOW_CONFIG_BUDGET_S, max_requests=TOW_MAX_REQUESTS,
-            purpose="tow_lookup", clock=_clock,
+            purpose="tow_lookup", max_cost_usd=api_cost.LOOKUP_COST_CAP_USD, clock=_clock,
         )
     except SearchUnavailable as exc:
         raise TowLookupUnavailable(f"tow lookup stopped ({exc.reason}): {exc}") from exc

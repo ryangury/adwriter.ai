@@ -1057,8 +1057,9 @@ def generate_ad(
 
     Every request is logged to api_cost_log (purpose research_search when the
     web-search tool is on, otherwise generate). With api_cost.GENERATE_GUARD_ENABLED
-    the call is aborted, and an existing ad flagged, when it goes over
-    api_cost.GENERATE_BUDGET_USD or GENERATE_MAX_SEARCHES.
+    the search is cut short (never the ad) at 6 searches or when the per-call /
+    per-ad budget is near: the tool is dropped and the ad is written from the
+    data package; each such degrade is logged.
 
     `ad_copy` is the clean four-paragraph ad, ready to post. `feedback_block` is
     the internal ===FEEDBACK===...===END FEEDBACK=== body (without the fences),
@@ -1098,12 +1099,11 @@ def generate_ad(
         try:
             response = run_search(client, kwargs=kwargs, messages=messages, label=f"ad research {stock or ''}".strip(),
                                   budget_s=GENERATE_SEARCH_BUDGET_S, silence_s=GENERATE_SEARCH_SILENCE_S,
-                                  purpose="research_search", stock=stock, guard=api_cost.generate_guard())
-        except api_cost.GuardTripped as exc:
-            print(f"[adwriter] {stock}: generate call stopped by the cost guard ({exc.reason}): {exc}", file=sys.stderr)
-            if stock:
-                flag_generation_problem(stock, f"generate_over_{exc.reason}", str(exc))
-            raise
+                                  purpose="research_search", stock=stock, guard=api_cost.generate_guard(stock))
+        except api_cost.SearchDegrade as exc:
+            print(f"[adwriter] {stock}: cost guard degrade ({exc.reason}) - writing the ad without search: {exc}",
+                  file=sys.stderr)
+            return generate_ad(client, vehicle_data, system_prompt, needs_lookup=[], stock=stock, make=make, _retry=True)
         except SearchUnavailable as exc:
             print(f"[adwriter] {stock}: web search stopped ({exc.reason}) - writing the ad without search: {exc}",
                   file=sys.stderr)
@@ -2233,6 +2233,7 @@ def _generate_from_package(pkg: dict) -> tuple[str, str | None]:
     vehicle), and a required sentence still missing is inserted at its normal
     position and logged."""
     stock = pkg.get("stock_number")
+    api_cost.begin_ad(stock)       # per-ad spend (every retry of this build) restarts here
     vehicle = pkg.get("vehicle") or {}
     pt = pkg.get("powertrain") or powertrain_for_package(pkg)
     pkg["powertrain"] = pt

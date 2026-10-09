@@ -438,7 +438,7 @@ def _run(
 def main(argv: list[str] | None = None) -> int:
     import api_cost
 
-    api_cost.use_production_key()    # a production job: the production key (prints the class)
+    api_cost.use_production_key(purpose="sticker_warmup")    # a production job: the production key (prints the class)
     parser = argparse.ArgumentParser(
         description="Fetch real OEM window stickers for non-MB inventory"
     )

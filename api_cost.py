@@ -46,18 +46,45 @@ CACHE_READ_MULT = 0.10
 WEB_SEARCH_USD = 0.01     # $10 per 1,000 searches
 
 PURPOSES = ("generate", "reprice", "recon_update", "tow_lookup", "range_lookup",
-            "research_search", "vision", "test", "other")
+            "research_search", "vision", "sticker_warmup", "vision_processor", "test", "other")
 
 # --------------------------------------------------------------------------- #
-# Per-call guard for the ad-writing call (OFF until enabled; see the report)
+# Spend limits
+#
+# 1. The ad-writing call (generate_ad with web search) - the DEGRADE guard, OFF
+#    until enabled. Per call $0.75, per ad $1.50 counting every retry. At 6 web
+#    searches, or when either budget is near (GUARD_NEAR_FRACTION of it), the
+#    search tool is dropped from what is left of the ad: the model writes from
+#    the data package alone. It never fails the ad and never saves a partial;
+#    every degrade is logged (a zero-cost api_cost_log row, stop_reason
+#    "degraded: ...", and a stderr line).
+# 2. Tow and range lookups - an ABORT cap by actual logged cost per
+#    configuration (LOOKUP_COST_CAP_USD), always on. Nothing is cached on an abort.
 # --------------------------------------------------------------------------- #
 GENERATE_GUARD_ENABLED = False
-GENERATE_BUDGET_USD = 0.75
-GENERATE_MAX_SEARCHES = 4
+GENERATE_CALL_BUDGET_USD = 0.75
+GENERATE_AD_BUDGET_USD = 1.50
+GENERATE_MAX_SEARCHES = 6
+GUARD_NEAR_FRACTION = 0.80
+LOOKUP_COST_CAP_USD = 0.40
+
+AD_SPENT: dict[str, float] = {}
+AD_PURPOSES = ("generate", "research_search")
 
 
-class GuardTripped(RuntimeError):
-    """A generate call went over its budget or search count and was aborted."""
+def begin_ad(stock: str | None) -> None:
+    """A new build of this stock starts: its per-ad spend restarts at zero."""
+    if stock:
+        AD_SPENT[stock] = 0.0
+
+
+def ad_spent(stock: str | None) -> float:
+    return AD_SPENT.get(stock or "", 0.0)
+
+
+class SearchDegrade(Exception):
+    """Not an error: the search conversation stops here and the caller writes
+    the ad from the data package without the search tool."""
 
     def __init__(self, reason: str, message: str):
         self.reason = reason
@@ -65,10 +92,13 @@ class GuardTripped(RuntimeError):
 
 
 class Guard:
-    """Running total of one generate call (every request of its conversation)."""
+    """Running totals of one generate call's search conversation."""
 
-    def __init__(self, budget_usd: float = GENERATE_BUDGET_USD, max_searches: int = GENERATE_MAX_SEARCHES):
-        self.budget_usd, self.max_searches = budget_usd, max_searches
+    def __init__(self, stock: str | None = None, call_budget: float = GENERATE_CALL_BUDGET_USD,
+                 ad_budget: float = GENERATE_AD_BUDGET_USD, max_searches: int = GENERATE_MAX_SEARCHES,
+                 near: float = GUARD_NEAR_FRACTION):
+        self.call_budget, self.ad_budget, self.max_searches, self.near = call_budget, ad_budget, max_searches, near
+        self.ad_before = ad_spent(stock)
         self.cost = 0.0
         self.searches = 0
 
@@ -76,15 +106,23 @@ class Guard:
         self.cost += cost or 0.0
         self.searches += searches
 
-    def check(self, label: str = "") -> None:
-        if self.searches > self.max_searches:
-            raise GuardTripped("searches", f"{label}: {self.searches} web searches (limit {self.max_searches}); aborted")
-        if self.cost > self.budget_usd:
-            raise GuardTripped("cost", f"{label}: ${self.cost:.2f} spent (limit ${self.budget_usd:.2f}); aborted")
+    def tool_max_uses(self, base: int | None = None) -> int:
+        """max_uses for the next request: never more than the searches left."""
+        left = max(1, self.max_searches - self.searches)
+        return left if base is None else min(base, left)
+
+    def degrade_reason(self) -> str | None:
+        if self.searches >= self.max_searches:
+            return "searches"
+        if self.cost >= self.near * self.call_budget:
+            return "call budget"
+        if self.ad_before + self.cost >= self.near * self.ad_budget:
+            return "ad budget"
+        return None
 
 
-def generate_guard() -> Guard | None:
-    return Guard() if GENERATE_GUARD_ENABLED else None
+def generate_guard(stock: str | None = None) -> Guard | None:
+    return Guard(stock) if GENERATE_GUARD_ENABLED else None
 
 
 # --------------------------------------------------------------------------- #
@@ -168,7 +206,7 @@ def record(response: Any = None, *, purpose: str, stock: str | None = None, mode
     call that produced no response (an aborted or failed request: tokens 0, the
     reason in stop_reason). Never raises."""
     try:
-        purpose = os.environ.get("ADWRITER_COST_PURPOSE") or purpose
+        purpose = os.environ.get("ADWRITER_COST_PURPOSE") or _process_purpose or purpose
         if purpose not in PURPOSES:
             purpose = "other"
         u = usage_of(response)
@@ -178,6 +216,8 @@ def record(response: Any = None, *, purpose: str, stock: str | None = None, mode
         cost = cost_usd(model, u["input_tokens"], u["output_tokens"], u["cache_creation_tokens"],
                         u["cache_read_tokens"], u["web_search_requests"])
         stop = stop_reason or getattr(response, "stop_reason", None)
+        if stock and purpose in AD_PURPOSES and cost:
+            AD_SPENT[stock] = AD_SPENT.get(stock, 0.0) + cost
         with contextlib.closing(_connect()) as conn, conn:
             conn.execute(
                 "INSERT INTO api_cost_log (ts, purpose, stock, model, input_tokens, output_tokens, "
@@ -253,6 +293,7 @@ def create(client: Any, *, purpose: str, stock: str | None = None, retry: bool =
 # --------------------------------------------------------------------------- #
 PRODUCTION, DEV = "production", "dev"
 _declared: str | None = None
+_process_purpose: str | None = None       # a job's own cost-log label (sticker_warmup, vision_processor)
 _announced: set[str] = set()
 
 
@@ -267,10 +308,12 @@ def _announce(key_class: str) -> None:
         print(msg, file=sys.stderr, flush=True)
 
 
-def use_production_key() -> None:
-    """Called at start by the production entry points. Prints the class."""
-    global _declared
+def use_production_key(purpose: str | None = None) -> None:
+    """Called at start by the production entry points. Prints the class. With
+    `purpose`, every call this process logs carries that label."""
+    global _declared, _process_purpose
     _declared = PRODUCTION
+    _process_purpose = purpose
     _announce(current_key_class())
 
 

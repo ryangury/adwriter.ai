@@ -40,6 +40,8 @@ class DBCase(unittest.TestCase):
                                                 "ADWRITER_COST_PURPOSE": "", "ADWRITER_KEY_CLASS": ""})
         self.env.start()
         self.addCleanup(self.env.stop)
+        api_cost.AD_SPENT.clear()
+        self.addCleanup(api_cost.AD_SPENT.clear)
 
     def rows(self):
         c = sqlite3.connect(os.environ["ADWRITER_COST_DB"])
@@ -148,34 +150,13 @@ class SearchLogging(DBCase):
         self.assertEqual(rows[0]["input_tokens"], 0)
         self.assertAlmostEqual(sum(r["cost_usd"] for r in rows), (300 * 3 + 30 * 15) / 1e6 + 0.03)
 
-    def test_guard_aborts_on_searches_counted_live_and_logs_the_partial_request(self):
-        global client
-        ev = SimpleNamespace(type="content_block_start", content_block=SimpleNamespace(type="server_tool_use"))
+    # ---- the degrade guard (OFF by default) --------------------------------------
 
-        class S:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                return False
-
-            def __iter__(self):
-                return iter([ev] * 6)
-
-            def get_final_message(self):
-                raise AssertionError("must not finish")
-
-        client = SimpleNamespace(messages=SimpleNamespace(stream=lambda **kw: S()), with_options=lambda **k: client)
-        guard = api_cost.Guard(budget_usd=0.75, max_searches=4)
-        with self.assertRaises(api_cost.GuardTripped) as cm:
-            B.run_search(client, kwargs={"model": SONNET, "max_tokens": 5}, messages=[], label="ad research P1",
-                         purpose="research_search", stock="P1", guard=guard, log=lambda m: None)
-        self.assertEqual(cm.exception.reason, "searches")
-        (row,) = self.rows()
-        self.assertEqual((row["stock"], row["stop_reason"], row["web_search_requests"]), ("P1", "guard: searches", 5))
-
-    def test_guard_aborts_on_cost_between_requests(self):
-        global client
+    @staticmethod
+    def scripted(*responses):
+        """A client whose streams return `responses` in turn; .tools holds the tools of each request."""
+        queue = list(responses)
+        seen = []
 
         class S:
             def __init__(self, r):
@@ -193,20 +174,117 @@ class SearchLogging(DBCase):
             def get_final_message(self):
                 return self.r
 
-        client = SimpleNamespace(messages=SimpleNamespace(stream=lambda **kw: S(resp("pause_turn", i=300_000))),
-                                 with_options=lambda **k: client)       # $0.90 in one request
-        with self.assertRaises(api_cost.GuardTripped) as cm:
-            B.run_search(client, kwargs={"model": SONNET, "max_tokens": 5}, messages=[], label="x", purpose="generate",
-                         guard=api_cost.Guard(0.75, 4), log=lambda m: None)
-        self.assertEqual(cm.exception.reason, "cost")
-        self.assertEqual(len(self.rows()), 1, "the request that went over is logged")
+        def stream(**kw):
+            seen.append(kw)
+            return S(queue.pop(0))
+
+        c = SimpleNamespace(messages=SimpleNamespace(stream=stream), with_options=lambda **k: c, tools=seen)
+        return c
+
+    WEB = {"type": "web_search_20260209", "name": "web_search"}
+
+    def search(self, client, guard, stock="P1", **kw):
+        return B.run_search(client, kwargs={"model": SONNET, "max_tokens": 5, "tools": [dict(self.WEB)]},
+                            messages=[{"role": "user", "content": "q"}], label="ad research P1",
+                            purpose="research_search", stock=stock, guard=guard, log=lambda m: None, **kw)
 
     def test_guard_is_off_by_default(self):
         self.assertFalse(api_cost.GENERATE_GUARD_ENABLED)
-        self.assertIsNone(api_cost.generate_guard())
+        self.assertIsNone(api_cost.generate_guard("P1"))
         with mock.patch.object(api_cost, "GENERATE_GUARD_ENABLED", True):
-            g = api_cost.generate_guard()
-            self.assertEqual((g.budget_usd, g.max_searches), (0.75, 4))
+            g = api_cost.generate_guard("P1")
+            self.assertEqual((g.call_budget, g.ad_budget, g.max_searches), (0.75, 1.50, 6))
+
+    def test_each_request_may_only_use_the_searches_that_are_left(self):
+        c = self.scripted(resp("pause_turn", s=4, i=1000), resp("end_turn", s=2, i=1000))
+        self.search(c, api_cost.Guard("P1"))
+        self.assertEqual([r["tools"][0]["max_uses"] for r in c.tools], [6, 2], "6 searches in all, never more")
+
+    def test_degrades_at_six_searches_when_the_turn_was_paused(self):
+        c = self.scripted(resp("pause_turn", s=6, i=1000))
+        with self.assertRaises(api_cost.SearchDegrade) as cm, contextlib.redirect_stderr(io.StringIO()):
+            self.search(c, api_cost.Guard("P1"))
+        self.assertEqual(cm.exception.reason, "searches")
+        self.assertEqual(len(c.tools), 1, "no further request was made with the tool")
+        rows = self.rows()
+        self.assertEqual([r["stop_reason"] for r in rows], ["pause_turn", "degraded: searches"])
+        self.assertEqual(rows[1]["cost_usd"], 0.0)
+
+    def test_degrades_when_the_call_budget_is_near(self):
+        c = self.scripted(resp("pause_turn", i=200_000, s=1))          # $0.61 of the $0.75 (80% = $0.60)
+        with self.assertRaises(api_cost.SearchDegrade) as cm, contextlib.redirect_stderr(io.StringIO()):
+            self.search(c, api_cost.Guard("P1"))
+        self.assertEqual(cm.exception.reason, "call budget")
+
+    def test_degrades_before_any_request_when_the_ad_budget_is_already_near(self):
+        api_cost.begin_ad("P1")
+        api_cost.AD_SPENT["P1"] = 1.25                               # earlier attempts of this ad; 80% of $1.50 = $1.20
+        c = self.scripted()
+        with self.assertRaises(api_cost.SearchDegrade) as cm, contextlib.redirect_stderr(io.StringIO()):
+            self.search(c, api_cost.Guard("P1"))
+        self.assertEqual(cm.exception.reason, "ad budget")
+        self.assertEqual(c.tools, [], "no request at all")
+        self.assertEqual([r["stop_reason"] for r in self.rows()], ["degraded: ad budget"])
+
+    def test_a_finished_conversation_is_never_degraded_even_over_budget(self):
+        c = self.scripted(resp("end_turn", i=900_000, s=9, text="the ad"))
+        out = self.search(c, api_cost.Guard("P1"))
+        self.assertEqual(out.stop_reason, "end_turn", "the result is used; the guard only stops a conversation that wants more")
+
+    def test_per_ad_spend_accumulates_across_retries_and_begin_ad_resets_it(self):
+        api_cost.begin_ad("P9")
+        api_cost.record(resp(i=100_000), purpose="research_search", stock="P9")   # $0.30
+        api_cost.record(resp(i=100_000), purpose="generate", stock="P9")           # $0.30
+        api_cost.record(resp(i=100_000), purpose="reprice", stock="P9")            # not an ad build
+        self.assertAlmostEqual(api_cost.ad_spent("P9"), 0.60)
+        api_cost.begin_ad("P9")
+        self.assertEqual(api_cost.ad_spent("P9"), 0.0)
+
+    def test_generate_ad_never_fails_when_the_guard_degrades_and_logs_every_step(self):
+        import adwriter as A
+
+        text = "<ad>Hello there.</ad>"
+        paused = resp("pause_turn", s=6, i=1000, text="searching")
+        stream_client = self.scripted(paused)
+        create = mock.Mock(return_value=resp(text=text, i=10, o=5))
+        client = SimpleNamespace(messages=SimpleNamespace(stream=stream_client.messages.stream, create=create),
+                                 with_options=lambda **k: client)
+        with mock.patch.object(api_cost, "GENERATE_GUARD_ENABLED", True), \
+             mock.patch.object(A, "_research_instructions", return_value=""), \
+             contextlib.redirect_stderr(io.StringIO()) as err:
+            ad, fb = A.generate_ad(client, "data", needs_lookup=[{"x": 1}], stock="P1", make="Mercedes-Benz")
+        self.assertIn("Hello there.", ad)
+        self.assertIn("DEGRADE", err.getvalue())
+        kwargs = create.call_args.kwargs
+        self.assertNotIn("tools", kwargs, "the fallback request has no search tool")
+        self.assertEqual([(r["purpose"], r["stop_reason"], r["retry"]) for r in self.rows()],
+                         [("research_search", "pause_turn", 0), ("research_search", "degraded: searches", 0), ("generate", "end_turn", 1)])
+
+    def test_guard_off_means_the_search_runs_exactly_as_before(self):
+        c = self.scripted(resp("pause_turn", s=9, i=900_000), resp("end_turn", s=1, i=10))
+        out = self.search(c, None)
+        self.assertEqual(out.stop_reason, "end_turn")
+        self.assertNotIn("max_uses", c.tools[0]["tools"][0])
+
+    # ---- the tow / range lookup cap, by ACTUAL logged cost ------------------------
+
+    def test_lookup_stops_when_its_logged_cost_reaches_the_cap_and_more_is_needed(self):
+        c = self.scripted(resp("pause_turn", i=140_000, s=2))              # $0.42 > $0.40
+        with self.assertRaises(B.SearchUnavailable) as cm:
+            self.search(c, None, max_cost_usd=api_cost.LOOKUP_COST_CAP_USD)
+        self.assertEqual(cm.exception.reason, "cost")
+        self.assertEqual(len(c.tools), 1)
+        self.assertTrue(self.rows()[-1]["stop_reason"].startswith("capped: $0.4"))
+
+    def test_lookup_below_the_cap_continues_and_a_finished_one_is_kept_even_over_it(self):
+        c = self.scripted(resp("pause_turn", i=50_000, s=1), resp("end_turn", i=200_000, s=1))     # $0.15 then $0.60
+        out = self.search(c, None, max_cost_usd=0.40)
+        self.assertEqual(out.stop_reason, "end_turn")
+
+    def test_tow_and_range_lookups_pass_the_cap(self):
+        for name in ("towing.py", "powertrain.py"):
+            self.assertIn("max_cost_usd=api_cost.LOOKUP_COST_CAP_USD", (Path(_paths.ROOT) / name).read_text(encoding="utf-8"), name)
+        self.assertEqual(api_cost.LOOKUP_COST_CAP_USD, 0.40)
 
 
 class CallSites(DBCase):
@@ -223,21 +301,22 @@ class CallSites(DBCase):
             A.generate_ad(client, "data", stock="P2", make="Mercedes-Benz", _retry=True)
         self.assertEqual(self.rows()[-1]["retry"], 1)
 
-    def test_generate_ad_with_search_logs_research_search_and_flags_on_a_guard_stop(self):
+    def test_generate_ad_with_search_logs_research_search_and_passes_the_stock(self):
         import adwriter as A
 
-        def run_search(c, **kw):
-            self.assertEqual((kw["purpose"], kw["stock"]), ("research_search", "P1"))
-            raise api_cost.GuardTripped("cost", "ad research P1: $0.90 spent (limit $0.75); aborted")
+        seen = {}
 
-        flagged = []
+        def run_search(c, **kw):
+            seen.update(kw)
+            raise B.SearchUnavailable("error", "stop")
+
+        client = SimpleNamespace(messages=SimpleNamespace(create=mock.Mock(return_value=resp(text="<ad>Hi.</ad>"))))
         with mock.patch("bounded_search.run_search", run_search), \
-             mock.patch.object(A, "flag_generation_problem", side_effect=lambda *a: flagged.append(a)), \
              mock.patch.object(A, "_research_instructions", return_value=""), \
-             contextlib.redirect_stderr(io.StringIO()):
-            with self.assertRaises(api_cost.GuardTripped):
-                A.generate_ad(SimpleNamespace(), "data", needs_lookup=[{"x": 1}], stock="P1", make="Mercedes-Benz")
-        self.assertEqual(flagged[0][:2], ("P1", "generate_over_cost"))
+             contextlib.redirect_stderr(io.StringIO()), contextlib.suppress(Exception):
+            A.generate_ad(client, "data", needs_lookup=[{"x": 1}], stock="P1", make="Mercedes-Benz")
+        self.assertEqual((seen["purpose"], seen["stock"]), ("research_search", "P1"))
+        self.assertIsNone(seen["guard"], "off by default")
 
     def test_capped_completion_logs_reprice_and_the_second_attempt_is_a_retry(self):
         import adwriter as A
@@ -310,6 +389,7 @@ class KeyClass(DBCase):
     def reset(self):
         api_cost._announced.clear()
         api_cost._declared = None
+        api_cost._process_purpose = None
 
     def test_dev_is_the_default_class_and_it_is_printed_never_the_key(self):
         err = io.StringIO()
@@ -360,10 +440,25 @@ class KeyClass(DBCase):
         import re
 
         declared = sorted(p.name for p in Path(_paths.ROOT).glob("*.py")
-                          if p.name != "api_cost.py" and "use_production_key()" in p.read_text(encoding="utf-8"))
+                          if p.name != "api_cost.py" and "use_production_key(" in p.read_text(encoding="utf-8"))
         self.assertEqual(declared, ["app.py", "orchestrator.py", "sticker_warmup.py", "vision_processor.py"])
         for name in ("tow_refresh.py", "allowlist_trial.py"):
             self.assertIn("api_cost.use_dev_key()", (Path(_paths.ROOT) / name).read_text(encoding="utf-8"), name)
+
+    def test_sticker_warmup_and_vision_processor_log_under_their_own_labels_on_the_production_key(self):
+        for name, label in (("sticker_warmup.py", "sticker_warmup"), ("vision_processor.py", "vision_processor")):
+            self.assertIn(f'api_cost.use_production_key(purpose="{label}")',
+                          (Path(_paths.ROOT) / name).read_text(encoding="utf-8"), name)
+        with self.creds("DEV-KEY-VALUE"), contextlib.redirect_stderr(io.StringIO()):
+            api_cost.use_production_key(purpose="sticker_warmup")
+            self.assertEqual(api_cost.api_key(), "PROD-KEY-VALUE")
+            api_cost.record(resp(model=HAIKU, i=10), purpose="vision")
+            api_cost.record(resp(i=10), purpose="generate")
+        api_cost._process_purpose = None
+        self.assertEqual([(r["purpose"], r["key_class"]) for r in self.rows()],
+                         [("sticker_warmup", "production"), ("sticker_warmup", "production")])
+        self.assertIn("sticker_warmup", api_cost.PURPOSES)
+        self.assertIn("vision_processor", api_cost.PURPOSES)
 
     def test_harness_environment_is_dev_and_test(self):
         # tests/_paths.py (imported by every test) sets these
