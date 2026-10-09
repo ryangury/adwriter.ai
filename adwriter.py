@@ -25,6 +25,7 @@ import anthropic
 
 import credentials
 from credentials import ANTHROPIC_API_KEY
+from email_config import EMAIL_ADS_READY
 from aggregator import (
     _RECON_DONE_FALLBACK,
     _RECON_PENDING_FALLBACK,

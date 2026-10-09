@@ -209,5 +209,26 @@ class RefreshScripts(unittest.TestCase):
         self.assertEqual(verifier._due_reason(e, TODAY), "changed")
 
 
+class LegacyDailyReport(unittest.TestCase):
+    """adwriter.run_daily_report (the old CLI path) gates its Ads Ready email on
+    email_config.EMAIL_ADS_READY; the name was once used without being imported."""
+
+    def run_report(self, flag):
+        sent = []
+        with mock.patch.object(adwriter, "_classify_stock", return_value={"section": 1, "stock": "S1"}),              mock.patch.object(adwriter, "_format_ads_ready_email", return_value="ADS BODY"),              mock.patch.object(adwriter, "_send_gmail", side_effect=lambda s, b: sent.append(s)),              mock.patch.object(adwriter, "EMAIL_ADS_READY", flag),              mock.patch("builtins.print"):
+            result = adwriter.run_daily_report(["S1"])
+        return result, sent
+
+    def test_ads_ready_is_built_but_not_sent_while_off(self):
+        result, sent = self.run_report(False)
+        self.assertEqual(result["ads_ready"], "ADS BODY")
+        self.assertEqual(sent, [])
+
+    def test_ads_ready_is_sent_when_on(self):
+        _, sent = self.run_report(True)
+        self.assertEqual(len(sent), 1)
+        self.assertIn("Ads Ready", sent[0])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
