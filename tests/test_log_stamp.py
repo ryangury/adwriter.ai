@@ -1,6 +1,7 @@
 """log_stamp: every line gets HH:MM:SS once, partial writes are stamped when the
 line starts, install() is idempotent, and the orchestrator / tow_refresh /
 ctr_child entry points install it. Offline."""
+import _paths  # noqa: F401  (repo root first on sys.path; temp cost log)
 import io
 import sys
 import unittest

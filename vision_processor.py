@@ -172,6 +172,9 @@ def _process_sticker(vin: str, image_path: Path) -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
+    import api_cost
+
+    api_cost.use_production_key()    # a production job: the production key (prints the class)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--limit", type=int, default=None,

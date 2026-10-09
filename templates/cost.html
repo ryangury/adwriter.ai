@@ -59,12 +59,12 @@
 
   <p class="cost-estimate">
     {% if est_cost_per_ad is number %}
-    Cost per fresh ad: <strong>${{ '%.2f' % est_cost_per_ad }}</strong>
-    &mdash; rough estimate, includes testing
-    (Sonnet dollars &divide; {{ ad_count }} fresh ad{{ '' if ad_count == 1 else 's' }} built this month;
-    every test and experiment on this key is in the numerator, and reprices and recon updates are not in the denominator).
+    Cost per fresh ad (Production workspace only): <strong>${{ '%.2f' % est_cost_per_ad }}</strong>
+    &mdash; rough estimate
+    (Production Sonnet dollars &divide; {{ ad_count }} fresh ad{{ '' if ad_count == 1 else 's' }} built this month;
+    the Dev workspace &mdash; tests, tow lookups, ad-hoc scripts &mdash; is not in the numerator, and reprices and recon updates are not in the denominator).
     {% else %}
-    Cost per fresh ad: not enough data yet (no fresh ads recorded this month).
+    Cost per fresh ad (Production workspace only): not enough data yet (no fresh ads recorded this month, or the report has no Production workspace).
     {% endif %}
     Per-model dollars come straight from Anthropic's cost report. The current UTC day only appears once it has ended,
     so today's spending is not in these numbers yet.
@@ -98,6 +98,108 @@
       </tbody>
     </table>
   </div>
+
+  {% for w in workspaces %}
+  <h2 class="page-title" style="font-size:1.15rem;margin-top:32px">{{ w.label }} workspace</h2>
+  <div class="cost-tiles">
+    <div class="cost-tile"><div class="k">{{ w.label }} month to date</div><div class="v">${{ '%.2f' % w.total }}</div></div>
+    <div class="cost-tile"><div class="k">Sonnet</div><div class="v small">${{ '%.2f' % w.by_family['sonnet'] }}</div></div>
+    <div class="cost-tile"><div class="k">Haiku</div><div class="v small">${{ '%.2f' % w.by_family['haiku'] }}</div></div>
+    <div class="cost-tile"><div class="k">Web search</div><div class="v small">${{ '%.2f' % w.by_family['web search'] }}</div></div>
+  </div>
+  <div class="inv-wrap">
+    <table class="inv-table cost-table">
+      <thead><tr><th>Day (UTC)</th><th class="num">Sonnet</th><th class="num">Haiku</th><th class="num">Web search</th><th class="num">Total</th></tr></thead>
+      <tbody>
+        {% for d in w.days %}
+        <tr><td>{{ d.day }}</td><td class="num">${{ '%.2f' % d['sonnet'] }}</td><td class="num">${{ '%.2f' % d['haiku'] }}</td>
+            <td class="num">${{ '%.2f' % d['web search'] }}</td><td class="num">${{ '%.2f' % d.total }}</td></tr>
+        {% else %}
+        <tr><td colspan="5">No cost data returned for this month yet.</td></tr>
+        {% endfor %}
+        {% if w.days %}
+        <tr class="total"><td>Month to date</td><td class="num">${{ '%.2f' % w.by_family['sonnet'] }}</td><td class="num">${{ '%.2f' % w.by_family['haiku'] }}</td>
+            <td class="num">${{ '%.2f' % w.by_family['web search'] }}</td><td class="num">${{ '%.2f' % w.total }}</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+  {% endfor %}
+  {% endif %}
+
+  {% if own %}
+  <h2 class="page-title" style="font-size:1.15rem;margin-top:32px">From our own call log &mdash; Production</h2>
+  <p class="page-sub">
+    Every model call is written to <code>api_cost_log</code> and priced from one table (days are UTC).
+    {{ own.calls }} Production call{{ '' if own.calls == 1 else 's' }} logged this month, ${{ '%.2f' % own.logged_total }}
+    {% if own_dev %}&middot; Dev: {{ own_dev.calls }} call{{ '' if own_dev.calls == 1 else 's' }}, ${{ '%.2f' % own_dev.logged_total }}
+    {% if own_dev.unlogged is number %}(Dev Console ${{ '%.2f' % own_dev.console_total }}, unlogged ${{ '%.2f' % own_dev.unlogged }}){% endif %}{% endif %}.
+    {% if own.unpriced_calls %}<strong>{{ own.unpriced_calls }} call{{ '' if own.unpriced_calls == 1 else 's' }} used a model that is not in the price table (cost not counted).</strong>{% endif %}
+  </p>
+  <div class="cost-tiles">
+    <div class="cost-tile">
+      <div class="k">Cost per ad built</div>
+      <div class="v">{% if own.builds.each is number %}${{ '%.2f' % own.builds.each }}{% else %}&ndash;{% endif %}</div>
+      <div class="cost-estimate" style="margin:4px 0 0">{{ own.builds.count }} build{{ '' if own.builds.count == 1 else 's' }}, ${{ '%.2f' % own.builds.total }}</div>
+    </div>
+    <div class="cost-tile">
+      <div class="k">Cost per reprice</div>
+      <div class="v">{% if own.reprices.each is number %}${{ '%.3f' % own.reprices.each }}{% else %}&ndash;{% endif %}</div>
+      <div class="cost-estimate" style="margin:4px 0 0">{{ own.reprices.count }} reprice{{ '' if own.reprices.count == 1 else 's' }}, ${{ '%.2f' % own.reprices.total }}</div>
+    </div>
+    <div class="cost-tile">
+      <div class="k">Cost per recon update</div>
+      <div class="v">{% if own.recon_updates.each is number %}${{ '%.3f' % own.recon_updates.each }}{% else %}$0{% endif %}</div>
+      <div class="cost-estimate" style="margin:4px 0 0">{% if own.recon_updates.count %}{{ own.recon_updates.count }} update{{ '' if own.recon_updates.count == 1 else 's' }}{% else %}no model call (deterministic){% endif %}</div>
+    </div>
+    <div class="cost-tile">
+      <div class="k">Unlogged</div>
+      <div class="v">{% if own.unlogged is number %}${{ '%.2f' % own.unlogged }}{% else %}&ndash;{% endif %}</div>
+      <div class="cost-estimate" style="margin:4px 0 0">
+        {% if own.unlogged is number %}Console ${{ '%.2f' % own.console_total }} &minus; logged ${{ '%.2f' % own.logged_complete_days }} (finished days){% else %}needs the Console total above{% endif %}
+      </div>
+    </div>
+  </div>
+  <p class="cost-estimate">
+    A build is one stock on one generation date, counting its web searches, retries and the no-search fallback; a rebuild on another day is another build
+    (<code>first_ad_date</code> is not used). Unlogged is spending the log does not hold: calls made before logging started, other keys or tools, and anything
+    that did not go through the wrapper.{% if own.today_logged > 0.005 %} Today's ${{ '%.2f' % own.today_logged }} is logged but not in the Console yet.{% endif %}
+  </p>
+
+  <div class="inv-wrap">
+    <table class="inv-table cost-table">
+      <thead>
+        <tr><th>Purpose (month)</th><th class="num">Calls</th><th class="num">Searches</th><th class="num">Input tok</th>
+            <th class="num">Output tok</th><th class="num">Cache tok</th><th class="num">Retries</th><th class="num">Aborted</th><th class="num">Cost</th></tr>
+      </thead>
+      <tbody>
+        {% for p in own.by_purpose %}
+        <tr><td>{{ p.purpose }}</td><td class="num">{{ p.calls }}</td><td class="num">{{ p.searches }}</td>
+            <td class="num">{{ '{:,}'.format(p.input_tokens) }}</td><td class="num">{{ '{:,}'.format(p.output_tokens) }}</td>
+            <td class="num">{{ '{:,}'.format(p.cache_tokens) }}</td><td class="num">{{ p.retries }}</td><td class="num">{{ p.aborted }}</td>
+            <td class="num">${{ '%.2f' % p.cost }}</td></tr>
+        {% else %}
+        <tr><td colspan="9">No calls logged yet this month.</td></tr>
+        {% endfor %}
+        {% if own.by_purpose %}
+        <tr class="total"><td>Total logged</td><td class="num" colspan="7"></td><td class="num">${{ '%.2f' % own.logged_total }}</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if own.builds.top %}
+  <div class="inv-wrap" style="margin-top:20px">
+    <table class="inv-table cost-table">
+      <thead><tr><th>Most expensive builds (month)</th><th>Date (UTC)</th><th class="num">Cost</th></tr></thead>
+      <tbody>
+        {% for b in own.builds.top %}
+        <tr><td>{{ b.stock }}</td><td>{{ b.day }}</td><td class="num">${{ '%.2f' % b.cost }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
   {% endif %}
 </div>
 {% endblock %}

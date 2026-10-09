@@ -1,6 +1,7 @@
 """The early Build Summary email (sent after the build step, before CTR):
 built ads by kind, the not-rebuilt list with restore commands, errors so far,
 and Carfax-refresh leftovers. Offline; nothing sent."""
+import _paths  # noqa: F401  (repo root first on sys.path; temp cost log)
 import sys
 import unittest
 from pathlib import Path

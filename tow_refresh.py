@@ -368,6 +368,10 @@ def main(argv: list[str]) -> int:
             return 2
         return detach(argv)
     args = _parse(argv)
+    if args.lookup or (args.lookup_stocks and args.run):
+        import api_cost
+
+        api_cost.use_dev_key()    # paid lookups use ANTHROPIC_API_KEY_DEV when credentials.py has one
     if args.lookup_stocks:
         return lookup_stocks([x.strip().upper() for x in args.lookup_stocks.split(",") if x.strip()],
                              {x.strip().upper() for x in args.relookup.split(",") if x.strip()}, args.run)

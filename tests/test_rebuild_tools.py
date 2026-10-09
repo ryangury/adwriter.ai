@@ -1,6 +1,7 @@
 """Delete-and-rebuild tools: list_not_rebuilt reasons, copy_dates (earliest
 archived first_ad_date, last_ad_date untouched), restore_removed (only when no
 current entry), and run_lock.lock_blocks_edit. Temp files only; offline."""
+import _paths  # noqa: F401  (repo root first on sys.path; temp cost log)
 import json
 import os
 import sys

@@ -1466,6 +1466,9 @@ def _run_inner(
 
 
 def main(argv: list[str] | None = None) -> int:
+    import api_cost
+
+    api_cost.use_production_key()    # a production job: the production key (prints the class)
     parser = argparse.ArgumentParser(description="Daily ad-pipeline orchestrator")
     parser.add_argument(
         "--limit", type=int, default=None,

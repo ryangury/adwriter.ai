@@ -411,8 +411,7 @@ class TowLookupUnavailable(RuntimeError):
 
 def lookup(cfg: dict[str, Any]) -> dict[str, Any]:
     """One web search limited to allowed_domains(make) for this configuration."""
-    import anthropic
-    from credentials import ANTHROPIC_API_KEY
+    import api_cost
 
     domains = allowed_domains(cfg["make"])
     if not domains:
@@ -453,7 +452,7 @@ def lookup(cfg: dict[str, Any]) -> dict[str, Any]:
     # cached, so tow_refresh tries this configuration again next time.
     from bounded_search import SearchUnavailable, run_search
 
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, max_retries=0)
+    client = api_cost.make_client(max_retries=0)
     messages: list[Any] = [{"role": "user", "content": ask}]
     try:
         response = run_search(
@@ -469,7 +468,7 @@ def lookup(cfg: dict[str, Any]) -> dict[str, Any]:
             messages=messages,
             label=f"tow lookup {describe(cfg)}",
             silence_s=TOW_SILENCE_S, budget_s=TOW_CONFIG_BUDGET_S, max_requests=TOW_MAX_REQUESTS,
-            clock=_clock,
+            purpose="tow_lookup", clock=_clock,
         )
     except SearchUnavailable as exc:
         raise TowLookupUnavailable(f"tow lookup stopped ({exc.reason}): {exc}") from exc

@@ -13,6 +13,7 @@ modules (credentials.py) come from it.
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -35,6 +36,13 @@ def _data_dir() -> Path:
 
 
 DATA = _data_dir()
+
+# A test never writes to the live cost log and never asks for the main key:
+# its model calls (all stubbed or network-blocked anyway) are logged to a temp
+# database as purpose 'test' with the dev key class.
+os.environ.setdefault("ADWRITER_COST_DB", str(Path(tempfile.mkdtemp(prefix="api_cost_test_")) / "api_cost.db"))
+os.environ.setdefault("ADWRITER_COST_PURPOSE", "test")
+os.environ.setdefault("ADWRITER_KEY_CLASS", "dev")
 
 if str(ROOT) not in sys.path[:1]:
     sys.path.insert(0, str(ROOT))

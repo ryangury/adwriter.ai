@@ -2,6 +2,7 @@
 network) that stop making progress, overrun one vehicle, or run past the
 budget; the parent must kill the whole process tree (grandchild included),
 skip-and-restart past a slow vehicle, and return so the run can continue."""
+import _paths  # noqa: F401  (repo root first on sys.path; temp cost log)
 import json
 import os
 import subprocess

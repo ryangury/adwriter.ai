@@ -1,5 +1,6 @@
 """Offline tests: per-ad emails carry DATA SUMMARY + TOOL FEEDBACK from the
 Ads Ready builders (compact for reprices); the Ads Ready email still renders."""
+import _paths  # noqa: F401  (repo root first on sys.path; temp cost log)
 import contextlib
 import sys
 import unittest

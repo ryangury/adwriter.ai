@@ -4,6 +4,7 @@ counted), one retry after silence; the tow lookup and electric-range lookup
 turn a stop into 'unavailable' with nothing cached; the ad-writing call falls
 back to writing without search; the build path never makes a live tow lookup.
 The Anthropic client is a stub; offline."""
+import _paths  # noqa: F401  (repo root first on sys.path; temp cost log)
 import sys
 import unittest
 from pathlib import Path

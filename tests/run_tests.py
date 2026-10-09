@@ -64,6 +64,9 @@ def run_one(path: Path) -> tuple[bool, str]:
             "PYTHONPATH": os.pathsep.join(filter(None, [
                 str(GUARD), env.get("PYTHONPATH"), str(_paths.DATA) if _paths.DATA != ROOT else None])),
             "PYTHONUTF8": "1",
+            "ADWRITER_COST_DB": str(Path(tmp) / "api_cost.db"),
+            "ADWRITER_COST_PURPOSE": "test",
+            "ADWRITER_KEY_CLASS": "dev",
             "ADWRITER_NETGUARD": "1",
             "ADWRITER_NETGUARD_LOG": str(log),
         })

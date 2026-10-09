@@ -128,13 +128,14 @@ def call_claude_vision(image_bytes: bytes, prompt: str) -> dict[str, Any] | None
         print("[vision] call_claude_vision: no image bytes given", file=sys.stderr)
         return None
 
-    from adwriter import API_KEY  # local import — see module docstring
+    import api_cost  # local import — see module docstring
 
     image_bytes = _resize_if_needed(image_bytes)
     encoded = base64.b64encode(image_bytes).decode("ascii")
-    client = anthropic.Anthropic(api_key=API_KEY)
+    client = api_cost.make_client()
     try:
-        resp = client.messages.create(
+        resp = api_cost.create(
+            client, purpose="vision", label="vision parse",
             model=VISION_MODEL,
             max_tokens=VISION_MAX_TOKENS,
             messages=[

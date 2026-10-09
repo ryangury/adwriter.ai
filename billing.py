@@ -26,6 +26,10 @@ PAGE_LIMIT = 31
 MAX_PAGES = 40  # hard cap against a pathological pagination loop
 CACHE_TTL_S = 3600
 FAMILIES = ("sonnet", "haiku", "web search", "other")
+# The two workspaces the keys belong to; anything else is shown under its id.
+PRODUCTION_WORKSPACE = "wrkspc_016aT5EnHT2NwWUqUvrMz7zW"
+DEV_WORKSPACE = "wrkspc_01212Wh4e8d4piQ6EqENibMB"
+WORKSPACE_LABELS = {PRODUCTION_WORKSPACE: "Production", DEV_WORKSPACE: "Dev"}
 _TOKEN_FIELDS = ("uncached_input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
 
 
@@ -81,23 +85,52 @@ def family(model: str | None, cost_type: str | None = None) -> str:
     return "other"
 
 
+def workspace_label(workspace_id: str | None) -> str:
+    if workspace_id in WORKSPACE_LABELS:
+        return WORKSPACE_LABELS[workspace_id]
+    return f"Other ({workspace_id})" if workspace_id else "No workspace (default)"
+
+
 def parse_cost(buckets: list[dict]) -> dict[str, Any]:
-    """{"total", "by_family", "days": [{day (UTC), sonnet, haiku, web search, other, total}]}
-    in DOLLARS (the API's amounts are cents)."""
+    """{"total", "by_family", "days": [{day (UTC), sonnet, haiku, web search, other, total}],
+    "workspaces": {workspace_id: {"label", "total", "by_family", "days": [...]}}}
+    in DOLLARS (the API's amounts are cents). The top-level numbers are the whole
+    organization, as before; "workspaces" splits the same dollars by the
+    workspace_id on each result (Production, Dev, anything else under its id).
+    Every workspace's days list covers every day, so the tables line up."""
     days = []
     by_family = dict.fromkeys(FAMILIES, 0.0)
+    ws_rows: dict[Any, list[dict]] = {}
     for b in buckets:
         row = dict.fromkeys(FAMILIES, 0.0)
+        ws_row: dict[Any, dict] = {}
         for r in b.get("results") or []:
             try:
                 usd = float(r.get("amount")) / 100.0
             except (TypeError, ValueError):
                 continue
-            row[family(r.get("model"), r.get("cost_type"))] += usd
+            fam = family(r.get("model"), r.get("cost_type"))
+            row[fam] += usd
+            ws_row.setdefault(r.get("workspace_id"), dict.fromkeys(FAMILIES, 0.0))[fam] += usd
         for f in FAMILIES:
             by_family[f] += row[f]
-        days.append({"day": (b.get("starting_at") or "")[:10], **row, "total": sum(row.values())})
-    return {"total": sum(by_family.values()), "by_family": by_family, "days": days}
+        day = (b.get("starting_at") or "")[:10]
+        days.append({"day": day, **row, "total": sum(row.values())})
+        for wid, wr in ws_row.items():
+            ws_rows.setdefault(wid, [])
+        for wid in ws_rows:
+            wr = ws_row.get(wid, dict.fromkeys(FAMILIES, 0.0))
+            ws_rows[wid].append({"day": day, **wr, "total": sum(wr.values())})
+    # a workspace first seen on a later day still gets the earlier days (as zeros)
+    for wid, lst in ws_rows.items():
+        if len(lst) < len(days):
+            pad = [{"day": d["day"], **dict.fromkeys(FAMILIES, 0.0), "total": 0.0} for d in days[: len(days) - len(lst)]]
+            ws_rows[wid] = pad + lst
+    workspaces = {}
+    for wid, lst in ws_rows.items():
+        fam_tot = {f: sum(d[f] for d in lst) for f in FAMILIES}
+        workspaces[wid] = {"label": workspace_label(wid), "total": sum(fam_tot.values()), "by_family": fam_tot, "days": lst}
+    return {"total": sum(by_family.values()), "by_family": by_family, "days": days, "workspaces": workspaces}
 
 
 def parse_tokens(buckets: list[dict]) -> dict[str, int]:
@@ -129,7 +162,7 @@ def fetch_month(key: str, now: datetime | None = None, *, get: Callable = reques
     start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     base = [("starting_at", start.strftime("%Y-%m-%dT%H:%M:%SZ")), ("ending_at", now.strftime("%Y-%m-%dT%H:%M:%SZ")),
             ("bucket_width", "1d"), ("limit", PAGE_LIMIT)]
-    cost = parse_cost(fetch_all(COST_URL, base + [("group_by[]", "description")], key, get=get))
+    cost = parse_cost(fetch_all(COST_URL, base + [("group_by[]", "description"), ("group_by[]", "workspace_id")], key, get=get))
     tokens = parse_tokens(fetch_all(USAGE_URL, base + [("group_by[]", "model")], key, get=get))
     return {**cost, "tokens": tokens}
 

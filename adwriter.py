@@ -26,6 +26,7 @@ import anthropic
 import credentials
 from credentials import ANTHROPIC_API_KEY
 from email_config import EMAIL_ADS_READY
+import api_cost
 from aggregator import (
     _RECON_DONE_FALLBACK,
     _RECON_PENDING_FALLBACK,
@@ -1050,8 +1051,14 @@ def generate_ad(
     needs_lookup: list[dict] | None = None,
     stock: str | None = None,
     make: str | None = None,
+    _retry: bool = False,
 ) -> tuple[str, str | None]:
     """Send the vehicle data to Claude and return (ad_copy, feedback_block).
+
+    Every request is logged to api_cost_log (purpose research_search when the
+    web-search tool is on, otherwise generate). With api_cost.GENERATE_GUARD_ENABLED
+    the call is aborted, and an existing ad flagged, when it goes over
+    api_cost.GENERATE_BUDGET_USD or GENERATE_MAX_SEARCHES.
 
     `ad_copy` is the clean four-paragraph ad, ready to post. `feedback_block` is
     the internal ===FEEDBACK===...===END FEEDBACK=== body (without the fences),
@@ -1090,14 +1097,21 @@ def generate_ad(
 
         try:
             response = run_search(client, kwargs=kwargs, messages=messages, label=f"ad research {stock or ''}".strip(),
-                                  budget_s=GENERATE_SEARCH_BUDGET_S, silence_s=GENERATE_SEARCH_SILENCE_S)
+                                  budget_s=GENERATE_SEARCH_BUDGET_S, silence_s=GENERATE_SEARCH_SILENCE_S,
+                                  purpose="research_search", stock=stock, guard=api_cost.generate_guard())
+        except api_cost.GuardTripped as exc:
+            print(f"[adwriter] {stock}: generate call stopped by the cost guard ({exc.reason}): {exc}", file=sys.stderr)
+            if stock:
+                flag_generation_problem(stock, f"generate_over_{exc.reason}", str(exc))
+            raise
         except SearchUnavailable as exc:
             print(f"[adwriter] {stock}: web search stopped ({exc.reason}) - writing the ad without search: {exc}",
                   file=sys.stderr)
-            return generate_ad(client, vehicle_data, system_prompt, needs_lookup=[], stock=stock, make=make)
+            return generate_ad(client, vehicle_data, system_prompt, needs_lookup=[], stock=stock, make=make, _retry=True)
     else:
         for _ in range(4):
-            response = client.messages.create(messages=messages, **kwargs)
+            response = api_cost.create(client, purpose="generate", stock=stock, retry=_retry,
+                                       label=f"ad {stock or ''}".strip(), messages=messages, **kwargs)
             if response.stop_reason != "pause_turn":
                 break
             messages.append({"role": "assistant", "content": response.content})
@@ -2332,7 +2346,7 @@ def _generate_once(pkg: dict) -> tuple[str, str | None]:
     )
     if needs_lookup:
         print(f"[adwriter] {len(needs_lookup)} feature/towing lookup(s) need web search")
-    client = anthropic.Anthropic(api_key=API_KEY)
+    client = api_cost.make_client()
     return generate_ad(
         client,
         formatted,
@@ -2753,7 +2767,9 @@ def _capped_completion(client, *, stock: str, label: str, system: str, user: str
     cap = _output_cap(client, size_text, floor)
     last = None
     for attempt_cap in (cap, cap * 2):
-        resp = client.messages.create(
+        resp = api_cost.create(
+            client, purpose={"reprice": "reprice", "update_recon": "recon_update"}.get(label, "other"),
+            stock=stock, retry=attempt_cap != cap, label=label,
             model=MODEL,
             max_tokens=attempt_cap,
             system=system,
@@ -2949,7 +2965,7 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
         required_sentences=[v for k, v in required.items() if k != "proof_point_sentence"],
     )
 
-    client = anthropic.Anthropic(api_key=API_KEY)
+    client = api_cost.make_client()
 
     def _rewrite() -> str:
         return _capped_completion(
@@ -3854,7 +3870,8 @@ def _run_paste_mode() -> int:
         print("No vehicle data provided. Nothing to do.", file=sys.stderr)
         return 1
 
-    client = anthropic.Anthropic(api_key=API_KEY)
+    api_cost.use_dev_key()    # an ad-hoc paste run: the dev key when credentials.py has one
+    client = api_cost.make_client()
     try:
         ad_copy, feedback = generate_ad(client, vehicle_data)
     except anthropic.AuthenticationError:

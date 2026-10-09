@@ -134,9 +134,11 @@ def run_retries(stocks: list[str]) -> list[dict]:
 
 
 def main(argv: list[str]) -> int:
+    import api_cost
     import log_stamp
 
     log_stamp.install()
+    api_cost.use_dev_key()    # an ad-hoc trial: the dev key when credentials.py has one
     if len(argv) < 2 or argv[0] not in ("trial", "retries"):
         print(__doc__)
         return 2

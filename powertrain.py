@@ -796,12 +796,10 @@ def manufacturer_search(
     Returns {"miles": N or None, "matched_trim", "url", "note"}. The figure
     is accepted only when the stated page is one the search actually
     returned, on the manufacturer's domain, for this model year."""
-    import anthropic
-    from credentials import ANTHROPIC_API_KEY
-
+    import api_cost
     from bounded_search import SearchUnavailable, run_search
 
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, max_retries=0)
+    client = api_cost.make_client(max_retries=0)
     ask = (
         f"Find the manufacturer-published electric driving range for the {year} {make} {model} "
         f"{trim or ''} ({CLASS_LABELS[cls]}). Use web search; only the manufacturer's own pages "
@@ -828,6 +826,7 @@ def manufacturer_search(
             },
             messages=messages,
             label=f"electric range {year} {make} {model} {trim or ''}".strip(),
+            purpose="range_lookup",
         )
     except SearchUnavailable as exc:
         raise RangeLookupUnavailable(f"manufacturer search stopped ({exc.reason}): {exc}") from exc

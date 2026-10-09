@@ -1,5 +1,8 @@
 # Secrets and credentials
 credentials.py
+credentials.py.backup*
+credentials-backups/
+*.backup-*
 *_session.json
 acvmax_session.json
 aip_session.json

@@ -31,8 +31,9 @@ from typing import Any
 # whether app.py is launched directly or as a background task. (Session files and
 # the SQLite DBs are already __file__-anchored, but relative paths / debug dumps
 # and any cwd-sensitive scraper step are not.)
-os.chdir("C:/adwriter")
-sys.path.insert(0, "C:/adwriter")
+_HERE = os.path.dirname(os.path.abspath(__file__))    # C:/adwriter in production; a worktree runs its own code
+os.chdir(_HERE)
+sys.path.insert(0, _HERE)
 
 import anthropic
 import requests
@@ -1158,6 +1159,21 @@ def about():
     return render_template("about.html")
 
 
+def _workspace_tables(data: dict | None) -> list[dict]:
+    """Production, Dev, then any other workspace in the report, each with its
+    month-to-date totals and per-day rows (zeros when it spent nothing)."""
+    if not data:
+        return []
+    ws = dict(data.get("workspaces") or {})
+    empty_days = [{"day": d["day"], **{f: 0.0 for f in billing.FAMILIES}, "total": 0.0} for d in data.get("days") or []]
+    out = []
+    for wid in (billing.PRODUCTION_WORKSPACE, billing.DEV_WORKSPACE, *[w for w in ws if w not in billing.WORKSPACE_LABELS]):
+        w = ws.get(wid) or {"label": billing.workspace_label(wid), "total": 0.0,
+                            "by_family": {f: 0.0 for f in billing.FAMILIES}, "days": empty_days}
+        out.append({"id": wid, **w})
+    return out
+
+
 @app.get("/cost")
 def cost():
     if not session.get("authed"):
@@ -1186,12 +1202,36 @@ def cost():
             if (e.get("first_ad_date") or "")[:7] == month_prefix
             and (e.get("lifecycle_stage") == "active" or e.get("ad_count") == 1)
         )
-        if ad_count > 0:
-            est_cost_per_ad = data["by_family"]["sonnet"] / ad_count
+        # The headline uses PRODUCTION only: the Dev workspace (tests, tow
+        # lookups, ad-hoc scripts) is shown on its own below, not in this figure.
+        prod_ws = (data.get("workspaces") or {}).get(billing.PRODUCTION_WORKSPACE)
+        if ad_count > 0 and prod_ws:
+            est_cost_per_ad = prod_ws["by_family"]["sonnet"] / ad_count
+
+    # Our own api_cost_log (every model call, priced from one table): cost per
+    # ad built / reprice / recon update, by purpose, and "unlogged" = the
+    # Console total minus what the log holds for the same finished UTC days.
+    own = None
+    own_dev = None
+    try:
+        import api_cost
+        import cost_summary
+
+        prod_rows, dev_rows, _other = cost_summary.split_by_workspace(api_cost.rows_since(api_cost.month_bounds()[0]))
+        ws = (data or {}).get("workspaces") or {}
+        prod_total = ws.get(billing.PRODUCTION_WORKSPACE, {}).get("total", 0.0) if data else None
+        dev_total = ws.get(billing.DEV_WORKSPACE, {}).get("total", 0.0) if data else None
+        own = cost_summary.summarize(prod_rows, console_total=prod_total)        # Production only
+        own_dev = cost_summary.summarize(dev_rows, console_total=dev_total)
+    except Exception as exc:  # noqa: BLE001 - the page must never crash
+        print(f"[cost] own cost log unavailable: {type(exc).__name__}: {exc}", file=sys.stderr)
 
     return render_template(
         "cost.html",
         error=error,
+        own=own,
+        own_dev=own_dev,
+        workspaces=_workspace_tables(data),
         data=data,
         data_age=billing.age_text(result["fetched_at"]),
         month_label=date.today().strftime("%B %Y"),
@@ -1561,4 +1601,7 @@ def status():
 
 
 if __name__ == "__main__":
+    import api_cost
+
+    api_cost.use_production_key()    # the website (generate / reprice / recon update): the production key
     app.run(host="0.0.0.0", port=5000, debug=False)

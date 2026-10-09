@@ -1,6 +1,7 @@
 """billing.py with stubbed responses: one page, several pages (has_more /
 next_page), 400, 401, 403, caching of successes only, cents to dollars, the
 group_by[] array form, and the /cost page's error text. No network."""
+import _paths  # noqa: F401  (repo root first on sys.path; temp cost log)
 import sys
 import unittest
 from pathlib import Path
@@ -187,8 +188,74 @@ class Page(unittest.TestCase):
         for needle in ("Day (UTC)", "Web search", "2026-10-06", "2026-10-07", "$22.50"):
             self.assertIn(needle, html)
         # the relabelled cost-per-ad line (shown when this month has fresh ads)
-        self.assertIn("rough estimate, includes testing", (Path(adapp.app.template_folder or "templates") / "cost.html"
+        self.assertIn("Production workspace only", (Path(adapp.app.template_folder or "templates") / "cost.html"
                       if False else Path(__file__).resolve().parents[1] / "templates" / "cost.html").read_text(encoding="utf-8"))
+
+
+PROD, DEV = B.PRODUCTION_WORKSPACE, B.DEV_WORKSPACE
+
+
+def ws_bucket(day, *items):
+    return {"starting_at": f"2026-10-{day:02d}T00:00:00Z", "ending_at": f"2026-10-{day + 1:02d}T00:00:00Z",
+            "results": [{"amount": a, "model": m, "cost_type": t, "workspace_id": w} for a, m, t, w in items]}
+
+
+class Workspaces(unittest.TestCase):
+    def test_cost_is_split_by_workspace_and_the_totals_are_unchanged(self):
+        d = B.parse_cost([
+            ws_bucket(6, ("1000.0", "claude-sonnet-4-6", "tokens", PROD), ("300.0", "claude-sonnet-4-6", "tokens", DEV),
+                      ("50", None, "web_search", PROD)),
+            ws_bucket(7, ("200.0", "claude-haiku-4-5-20251001", "tokens", DEV)),
+            ws_bucket(8, ("100.0", "claude-sonnet-4-6", "tokens", "wrkspc_other")),
+        ])
+        self.assertAlmostEqual(d["total"], 16.5)
+        w = d["workspaces"]
+        self.assertEqual(w[PROD]["label"], "Production")
+        self.assertEqual(w[DEV]["label"], "Dev")
+        self.assertEqual(w["wrkspc_other"]["label"], "Other (wrkspc_other)")
+        self.assertAlmostEqual(w[PROD]["total"], 10.5)
+        self.assertAlmostEqual(w[PROD]["by_family"]["sonnet"], 10.0)
+        self.assertAlmostEqual(w[PROD]["by_family"]["web search"], 0.5)
+        self.assertAlmostEqual(w[DEV]["total"], 5.0)
+        self.assertAlmostEqual(w[DEV]["by_family"]["haiku"], 2.0)
+        self.assertAlmostEqual(sum(x["total"] for x in w.values()), d["total"])
+        for wid in w:     # every workspace has every day, so the tables line up
+            self.assertEqual([x["day"] for x in w[wid]["days"]], ["2026-10-06", "2026-10-07", "2026-10-08"], wid)
+        self.assertEqual([x["total"] for x in w[PROD]["days"]], [10.5, 0.0, 0.0])
+        self.assertEqual(w["wrkspc_other"]["days"][0]["total"], 0.0, "a workspace first seen later gets zero earlier days")
+
+    def test_a_result_without_a_workspace_is_labelled_not_dropped(self):
+        d = B.parse_cost([cost_bucket(6, S)])
+        self.assertEqual(list(d["workspaces"].values())[0]["label"], "No workspace (default)")
+        self.assertAlmostEqual(d["workspaces"][None]["total"], 10.0)
+
+    def test_the_cost_report_is_grouped_by_description_and_workspace_id(self):
+        stub = Stub({B.COST_URL: [resp(200, {"data": [], "has_more": False})],
+                     B.USAGE_URL: [resp(200, {"data": [], "has_more": False})]})
+        B.fetch_month(KEY, get=stub)
+        cost_params = [c for c in stub.calls if c[0] == B.COST_URL][0][1]
+        self.assertIn(("group_by[]", "description"), cost_params)
+        self.assertIn(("group_by[]", "workspace_id"), cost_params)
+
+    def test_page_headline_is_production_only_and_each_workspace_has_tables(self):
+        import app as adapp
+        from unittest import mock
+
+        adapp.app.config["TESTING"] = True
+        c = adapp.app.test_client()
+        with c.session_transaction() as sess:
+            sess["authed"] = True
+        d = B.parse_cost([ws_bucket(6, ("1000.0", "claude-sonnet-4-6", "tokens", PROD),
+                                    ("9000.0", "claude-sonnet-4-6", "tokens", DEV))])
+        ok_ = {"data": {**d, "tokens": {}}, "fetched_at": 1.0, "error": None}
+        month = adapp.date.today().isoformat()[:7]
+        hist = {f"S{i}": {"first_ad_date": month + "-02", "lifecycle_stage": "active", "ad_count": 1} for i in range(4)}
+        with mock.patch.object(adapp.billing, "get_billing", return_value=ok_),              mock.patch.object(adapp, "load_ad_history", return_value=hist):
+            html = c.get("/cost").get_data(as_text=True)
+        self.assertIn("Cost per fresh ad (Production workspace only): <strong>$2.50</strong>", html,
+                      "Production Sonnet $10 / 4 ads; the $90 of Dev is not in it")
+        for needle in ("Production workspace", "Dev workspace", "Production month to date", "Dev month to date", "$100.00"):
+            self.assertIn(needle, html, needle)
 
 
 if __name__ == "__main__":

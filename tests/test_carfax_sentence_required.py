@@ -1,6 +1,7 @@
 """The CARFAX SENTENCE is a required sentence: when the model rewords it (and the
 reasoning filter strips the rewrite, T23151A on 2026-10-07), the verbatim
 sentence goes back in right after the provenance sentence. Offline."""
+import _paths  # noqa: F401  (repo root first on sys.path; temp cost log)
 import sys
 import unittest
 from pathlib import Path
