@@ -1,0 +1,32 @@
+{
+ "X58848": {
+  "vehicle_id": "86957439",
+  "stock_number": "X58848",
+  "vin": "4JGFD5KB6SB458848",
+  "year_make_model": "2025 Mercedes-Benz GLE",
+  "trim": "GLE 450 AWD",
+  "body_style": "SUV",
+  "mileage": 12085,
+  "exterior_color": null,
+  "current_price": 67987.0,
+  "days_on_lot": 77,
+  "status_code": 10,
+  "certified": true,
+  "objective": "Retail"
+ },
+ "DT23358A": {
+  "vehicle_id": "87253756",
+  "stock_number": "DT23358A",
+  "vin": "W1NKM4GB0PU017453",
+  "year_make_model": "2023 Mercedes-Benz GLC",
+  "trim": "GLC 300 RWD",
+  "body_style": "SUV",
+  "mileage": 43011,
+  "exterior_color": null,
+  "current_price": 37987.0,
+  "days_on_lot": 49,
+  "status_code": 10,
+  "certified": true,
+  "objective": "Retail"
+ }
+}

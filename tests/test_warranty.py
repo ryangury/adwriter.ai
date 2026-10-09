@@ -2,6 +2,7 @@
 Reads the worktree's copies of the data; saves nothing; no API call."""
 import copy
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -129,6 +130,11 @@ check("inventory: note at 31 days, not at 29", html.count("(over 30 days); repri
 
 # the five cars ----------------------------------------------------------------------
 snap = {v["stock_number"]: v for v in json.load(open(DATA + r"\last_inventory_snapshot.json"))["vehicles"]}
+# Cars the tests are pinned to that may be sold (and so leave the live snapshot)
+# are read from a saved copy of their snapshot rows instead.
+for _s, _v in json.load(open(os.path.join(WT, "tests", "fixtures", "pinned_vehicles.json"), encoding="utf-8")).items():
+    snap.setdefault(_s, _v)
+
 con = sqlite3.connect(f"file:{DATA.replace(chr(92), '/')}/vehicle_cache.db?mode=ro", uri=True)
 
 
