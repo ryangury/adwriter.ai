@@ -7,9 +7,13 @@ Ties the whole pipeline together in one pass:
   2. Queue price-changed vehicles for an ad rewrite.
   3. Gate every retail vehicle on status code + ReconVision RO status.
   4. Build ads for the build queue (aggregate -> Claude, status-aware prompt).
-  5. Capture CTR for every retail vehicle into ctr_history.db.
-  6. Send the "Ads Ready" and "Action Required" emails.
-  7. Print a completion summary.
+     Send the Build Summary.
+  5. Posting check: verify only the ads not yet confirmed live (new, changed,
+     unposted recheck). Fills the verification fields and the Inventory page.
+  6. Capture CTR (Durham), then the Northlake / Charlotte benchmark (hours).
+  7. Second posting check for anything still unconfirmed.
+  8. Send "Action Required"; print a completion summary.
+     ("Ads Ready" and the posting alert are off - see email_config.py.)
 
     python3 orchestrator.py
 """
@@ -50,7 +54,8 @@ from aggregator import DEALER_DOC_FEE, ScraperError, aggregate, check_recon
 from ctr_database import BENCHMARK_DEALERSHIPS, recorded_today
 from failure_streak import FailureStreak, failure_key
 import list_not_rebuilt
-from verifier import HendrickCarsScraper, run_verification, send_verification_alert
+from email_config import EMAIL_ADS_READY, EMAIL_POSTING_ALERT
+from verifier import UNCONFIRMED_REASONS, HendrickCarsScraper, run_verification, send_verification_alert
 from inventory_crawler import (
     crawl_inventory,
     detect_reprices_needed,
@@ -447,6 +452,30 @@ def _send_scraping_alert(reason: str, *, send_email: bool) -> None:
         print(f"[email] sent: {subject}")
     except Exception as exc:  # noqa: BLE001
         print(f"[email] FAILED to send '{subject}': {exc}", file=sys.stderr)
+
+
+def _posting_check(ad_history, errors, label):
+    """One verifier pass over the ads not yet confirmed live (new, changed, or
+    an unposted recheck). Never fatal. Returns (ad_history, current,
+    needs_posting, needs_update); the history is re-read because
+    run_verification persisted the verdicts."""
+    try:
+        cur, post, upd = run_verification(ad_history, reasons=UNCONFIRMED_REASONS)
+        return load_ad_history(), cur, post, upd
+    except Exception as exc:  # noqa: BLE001 - verification must not sink the run
+        errors.append({"stock": "-", "phase": f"posting check ({label})", "error": str(exc)})
+        print(f"[verify] posting check ({label}) failed — {exc}", file=sys.stderr)
+        return ad_history, [], [], []
+
+
+def _merge_checks(first, second):
+    """Combine two posting-check results. A stock the second check reached takes
+    its second answer; a stock only the first reached (the second was blocked or
+    failed) keeps the first."""
+    seen = {r["stock_number"] for lst in second for r in lst}
+    return tuple(
+        [r for r in a if r["stock_number"] not in seen] + b for a, b in zip(first, second)
+    )
 
 
 def run(
@@ -1173,6 +1202,70 @@ def _run_inner(
     except Exception as exc:  # noqa: BLE001 - the early email must not sink the run
         print(f"[email] Build Summary failed — {exc}", file=sys.stderr)
 
+    # --- POSTING CHECK 1: only ads not yet confirmed live ----------- #
+    # Right after the Build Summary: the morning's new / changed ads are checked
+    # now, so Ads Ready goes out with the first answers while CTR and the
+    # benchmark (hours) are still ahead. Confirmed ads are left to the drift
+    # rotation and the end-of-run check.
+    verif_current: list[dict[str, Any]] = []
+    needs_posting: list[dict[str, Any]] = []
+    needs_update: list[dict[str, Any]] = []
+    print("\n=== POSTING CHECK (unconfirmed ads) ===")
+    if reprice_only:
+        print("[verify] skipped (--reprice-only)")
+    else:
+        ad_history, verif_current, needs_posting, needs_update = _posting_check(ad_history, errors, "after build")
+
+    # --- ADS READY (off: email_config.EMAIL_ADS_READY) ------------- #
+    # The per-ad emails carry the ads. The HendrickCars.com link lookup below
+    # only feeds the Ads Ready email (nothing else reads hendrickcars_url or
+    # hendrickcars_lookup_failed), so it runs only when that email does.
+    if not EMAIL_ADS_READY:
+        print("\n[email] Ads Ready is off (email_config.EMAIL_ADS_READY) - no link lookup, no email")
+    else:
+        # --- HendrickCars.com VDP links for the Ads Ready email ------------ #
+        # One shared browser session for the whole batch (our own public site, no
+        # login, no rate gate — just not one browser launch per vehicle). Never
+        # blocks the email: a failure leaves the entry without a URL.
+        if ads_generated:
+            print("\n=== HENDRICKCARS.COM LINKS ===")
+            try:
+                with HendrickCarsScraper(headless=True) as hc:
+                    urls: dict[str, str | None] = {}
+                    for entry in ads_generated:
+                        stock = entry["stock"]
+                        if stock not in urls:
+                            try:
+                                urls[stock] = hc.find_url(stock)
+                            except Exception as exc:  # noqa: BLE001
+                                print(
+                                    f"[orchestrator] HendrickCars.com lookup failed for "
+                                    f"{stock}: {exc}",
+                                    file=sys.stderr,
+                                )
+                                urls[stock] = None
+                                entry["hendrickcars_lookup_failed"] = True
+                        entry["hendrickcars_url"] = urls[stock]
+                print(
+                    f"[orchestrator] HendrickCars.com: {sum(1 for u in urls.values() if u)} "
+                    f"of {len(urls)} vehicle(s) found"
+                )
+            except Exception as exc:  # noqa: BLE001 - the link is a nicety, never fatal
+                print(
+                    f"[orchestrator] HendrickCars.com session failed: {exc}",
+                    file=sys.stderr,
+                )
+
+        # --- ADS READY ------------------------------------------------ #
+        print("\n=== ADS READY ===")
+        if ads_generated:
+            _safe_send(
+                f"Mercedes-Benz of Durham — Ads Ready {today}",
+                _format_ads_ready_email(ads_generated),
+            )
+        else:
+            print("[email] no ads generated — Ads Ready email not sent")
+
     # --- 5. DURHAM CTR CAPTURE (every retail vehicle) ------------- #
     # Logic lives in ctr_warmup.py (capture_durham_ctr()) so the standalone
     # daily AdWriter-CTR-Capture task and this full-orchestrator run share one
@@ -1285,70 +1378,23 @@ def _run_inner(
                         f"could not confirm ACV Max is back on {ACVMAX_DEALERSHIP} after the {store} benchmark"
                     ), "benchmark")
 
-    # --- 7. AD POSTING VERIFICATION ------------------------------ #
-    print("\n=== 7. AD POSTING VERIFICATION ===")
-    verif_current: list[dict[str, Any]] = []
-    needs_posting: list[dict[str, Any]] = []
-    needs_update: list[dict[str, Any]] = []
+    # --- 7. POSTING CHECK 2 (CTR and the benchmark took hours; anything still unconfirmed) --- #
+    print("\n=== 7. POSTING CHECK (end of run) ===")
     if reprice_only:
         print("[verify] skipped (--reprice-only)")
     else:
-        try:
-            verif_current, needs_posting, needs_update = run_verification(ad_history)
-            ad_history = load_ad_history()  # run_verification persisted verdicts
-        except Exception as exc:  # noqa: BLE001 - verification must not sink the run
-            errors.append({"stock": "-", "phase": "verification", "error": str(exc)})
-            print(f"[verify] verification pass failed — {exc}", file=sys.stderr)
-    verification_checks_run = (
-        len(verif_current) + len(needs_posting) + len(needs_update)
-    )
+        ad_history, c2, p2, u2 = _posting_check(ad_history, errors, "end of run")
+        verif_current, needs_posting, needs_update = _merge_checks(
+            (verif_current, needs_posting, needs_update), (c2, p2, u2)
+        )
+    verification_checks_run = len(verif_current) + len(needs_posting) + len(needs_update)
     print(
         f"[verify] checks run {verification_checks_run} | "
         f"not posted {len(needs_posting)} | outdated {len(needs_update)}"
     )
 
-    # --- HendrickCars.com VDP links for the Ads Ready email ------------ #
-    # One shared browser session for the whole batch (our own public site, no
-    # login, no rate gate — just not one browser launch per vehicle). Never
-    # blocks the email: a failure leaves the entry without a URL.
-    if ads_generated:
-        print("\n=== HENDRICKCARS.COM LINKS ===")
-        try:
-            with HendrickCarsScraper(headless=True) as hc:
-                urls: dict[str, str | None] = {}
-                for entry in ads_generated:
-                    stock = entry["stock"]
-                    if stock not in urls:
-                        try:
-                            urls[stock] = hc.find_url(stock)
-                        except Exception as exc:  # noqa: BLE001
-                            print(
-                                f"[orchestrator] HendrickCars.com lookup failed for "
-                                f"{stock}: {exc}",
-                                file=sys.stderr,
-                            )
-                            urls[stock] = None
-                            entry["hendrickcars_lookup_failed"] = True
-                    entry["hendrickcars_url"] = urls[stock]
-            print(
-                f"[orchestrator] HendrickCars.com: {sum(1 for u in urls.values() if u)} "
-                f"of {len(urls)} vehicle(s) found"
-            )
-        except Exception as exc:  # noqa: BLE001 - the link is a nicety, never fatal
-            print(
-                f"[orchestrator] HendrickCars.com session failed: {exc}",
-                file=sys.stderr,
-            )
-
-    # --- 8. EMAIL REPORTS ---------------------------------------- #
+    # --- 8. EMAIL REPORTS (Ads Ready went out earlier, right after posting check 1) --- #
     print("\n=== 8. EMAIL REPORTS ===")
-    if ads_generated:
-        _safe_send(
-            f"Mercedes-Benz of Durham — Ads Ready {today}",
-            _format_ads_ready_email(ads_generated),
-        )
-    else:
-        print("[email] no ads generated — Ads Ready email not sent")
 
     # Everything still carrying a pre-recon ad (recon_pending), oldest first.
     # Stocks flagged absent (sold / wholesale) are left out.
@@ -1408,8 +1454,10 @@ def _run_inner(
     else:
         print("[email] nothing to action — Action Required email not sent")
 
-    # third email: the ad-posting alert (only if something needs posting/updating)
-    if reprice_only:
+    # the ad-posting alert (off: email_config.EMAIL_POSTING_ALERT; only if something needs posting/updating)
+    if not EMAIL_POSTING_ALERT:
+        print("[email] Ad Posting Alert is off (email_config.EMAIL_POSTING_ALERT)")
+    elif reprice_only:
         print("[email] --reprice-only — Ad Posting Alert not sent")
     elif needs_posting or needs_update:
         if send_email:

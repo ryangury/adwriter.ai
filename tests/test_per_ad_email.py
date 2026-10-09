@@ -5,7 +5,7 @@ import sys
 import unittest
 from unittest import mock
 
-sys.path.insert(0, r"C:\adwriter")
+import _paths  # noqa: F401  (repo root first on sys.path)
 import adwriter as A  # noqa: E402
 import orchestrator as o  # noqa: E402
 sys.path.insert(0, __import__('os').path.dirname(__file__))
@@ -111,7 +111,7 @@ class OrchestratorWiringTest(unittest.TestCase):
         self.assertIn("DATA SUMMARY", per_ad[0])
         self.assertIn("TOOL FEEDBACK", per_ad[0])
         self.assertIn("TOWING RULE triggered", per_ad[0])
-        self.assertTrue([s for s, _ in sent if "Ads Ready" in s], "Ads Ready email still sent")
+        self.assertFalse([s for s, _ in sent if "Ads Ready" in s], "Ads Ready is off (email_config.EMAIL_ADS_READY); the builders are covered above")
 
 
 if __name__ == "__main__":
