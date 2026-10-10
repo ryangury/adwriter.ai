@@ -51,8 +51,8 @@ PURPOSES = ("generate", "reprice", "recon_update", "tow_lookup", "range_lookup",
 # --------------------------------------------------------------------------- #
 # Spend limits
 #
-# 1. The ad-writing call (generate_ad with web search) - the DEGRADE guard, OFF
-#    until enabled. Per call $0.75, per ad $1.50 counting every retry. At 6 web
+# 1. The ad-writing call (generate_ad with web search) - the DEGRADE guard, ON.
+#    Per call $0.75, per ad $1.50 counting every retry. At 6 web
 #    searches, or when either budget is near (GUARD_NEAR_FRACTION of it), the
 #    search tool is dropped from what is left of the ad: the model writes from
 #    the data package alone. It never fails the ad and never saves a partial;
@@ -61,7 +61,7 @@ PURPOSES = ("generate", "reprice", "recon_update", "tow_lookup", "range_lookup",
 # 2. Tow and range lookups - an ABORT cap by actual logged cost per
 #    configuration (LOOKUP_COST_CAP_USD), always on. Nothing is cached on an abort.
 # --------------------------------------------------------------------------- #
-GENERATE_GUARD_ENABLED = False
+GENERATE_GUARD_ENABLED = True       # on since 2026-10-10 (6 searches, $0.75 per call, $1.50 per ad)
 GENERATE_CALL_BUDGET_USD = 0.75
 GENERATE_AD_BUDGET_USD = 1.50
 GENERATE_MAX_SEARCHES = 6

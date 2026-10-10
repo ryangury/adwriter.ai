@@ -188,12 +188,13 @@ class SearchLogging(DBCase):
                             messages=[{"role": "user", "content": "q"}], label="ad research P1",
                             purpose="research_search", stock=stock, guard=guard, log=lambda m: None, **kw)
 
-    def test_guard_is_off_by_default(self):
-        self.assertFalse(api_cost.GENERATE_GUARD_ENABLED)
-        self.assertIsNone(api_cost.generate_guard("P1"))
-        with mock.patch.object(api_cost, "GENERATE_GUARD_ENABLED", True):
-            g = api_cost.generate_guard("P1")
-            self.assertEqual((g.call_budget, g.ad_budget, g.max_searches), (0.75, 1.50, 6))
+    def test_guard_is_on_with_the_agreed_limits(self):
+        self.assertTrue(api_cost.GENERATE_GUARD_ENABLED)
+        g = api_cost.generate_guard("P1")
+        self.assertEqual((g.call_budget, g.ad_budget, g.max_searches, g.near), (0.75, 1.50, 6, 0.80))
+        with mock.patch.object(api_cost, "GENERATE_GUARD_ENABLED", False):
+            self.assertIsNone(api_cost.generate_guard("P1"), "the flag still turns it off")
+        self.assertEqual(api_cost.LOOKUP_COST_CAP_USD, 0.40)
 
     def test_each_request_may_only_use_the_searches_that_are_left(self):
         c = self.scripted(resp("pause_turn", s=4, i=1000), resp("end_turn", s=2, i=1000))
@@ -249,9 +250,8 @@ class SearchLogging(DBCase):
         create = mock.Mock(return_value=resp(text=text, i=10, o=5))
         client = SimpleNamespace(messages=SimpleNamespace(stream=stream_client.messages.stream, create=create),
                                  with_options=lambda **k: client)
-        with mock.patch.object(api_cost, "GENERATE_GUARD_ENABLED", True), \
-             mock.patch.object(A, "_research_instructions", return_value=""), \
-             contextlib.redirect_stderr(io.StringIO()) as err:
+        with mock.patch.object(A, "_research_instructions", return_value=""), \
+             contextlib.redirect_stderr(io.StringIO()) as err:        # default settings: the guard is on
             ad, fb = A.generate_ad(client, "data", needs_lookup=[{"x": 1}], stock="P1", make="Mercedes-Benz")
         self.assertIn("Hello there.", ad)
         self.assertIn("DEGRADE", err.getvalue())
@@ -316,7 +316,7 @@ class CallSites(DBCase):
              contextlib.redirect_stderr(io.StringIO()), contextlib.suppress(Exception):
             A.generate_ad(client, "data", needs_lookup=[{"x": 1}], stock="P1", make="Mercedes-Benz")
         self.assertEqual((seen["purpose"], seen["stock"]), ("research_search", "P1"))
-        self.assertIsNone(seen["guard"], "off by default")
+        self.assertIsInstance(seen["guard"], api_cost.Guard, "on by default")
 
     def test_capped_completion_logs_reprice_and_the_second_attempt_is_a_retry(self):
         import adwriter as A
