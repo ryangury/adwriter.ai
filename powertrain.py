@@ -599,40 +599,64 @@ _MODEL_LETTER_RE = re.compile(r"\bModel\s+([3SXY])\b", re.I)
 
 def designations(text: str) -> set[str]:
     """Model designations in a name: "GLC350e 4matic" -> {"glc350"},
-    "G 580 with EQ Technology" -> {"g580"}, "Model X Long Range" -> {"modelx"}."""
+    "G 580 with EQ Technology" -> {"g580"}, "Model X Long Range" -> {"modelx"}.
+    (Kept for callers that want one; pass 0 no longer needs a designation.)"""
     out = {f"{a.lower()}{b}" for a, b in _DESIG_RE.findall(text or "")}
     out |= {f"model{m.lower()}" for m in _MODEL_LETTER_RE.findall(text or "")}
     return out
 
 
-_BODY_TOKENS = {"suv", "coupe", "convertible", "wagon", "sedan", "cabriolet", "roadster", "van"}
+_BODY_TOKENS = {"suv", "coupe", "convertible", "wagon", "sedan", "cabriolet", "roadster", "van", "hatchback", "station"}
 _AWD_TOKENS = {"4matic", "awd", "4wd", "xdrive", "quattro", "4x4", "eawd"}
 _TWO_WD_TOKENS = {"rwd", "fwd", "2wd"}
-_FILLER_TOKENS = {"with", "eq", "technology", "tech", "hybrid", "plug", "in", "electric", "auto", "and"}
+_DOOR_TOKENS = {"2dr", "4dr", "2door", "4door", "2-door", "4-door"}
+# Words that name the powertrain or the marketing line, not the model: never a distinctive word.
+_FILLER_TOKENS = {"with", "eq", "technology", "tech", "hybrid", "plug", "in", "plugin", "electric", "auto", "and", "recharge",
+                  "phev", "bev", "ev", "edition", "package", "pkg", "the"}
+_NOT_DISTINCTIVE = _BODY_TOKENS | _AWD_TOKENS | _TWO_WD_TOKENS | _DOOR_TOKENS | _FILLER_TOKENS
 
 
 def _tokens(text: str) -> set[str]:
-    return set(re.findall(r"[a-z0-9]+", (text or "").lower()))
+    return set(re.findall(r"[a-z0-9]+", (text or "").lower().replace("+", " plus ")))
 
 
-def _desig_parts(desigs: set[str]) -> set[str]:
-    parts = set(desigs)
-    for d in desigs:
-        m = re.match(r"([a-z]+)(\d+)$", d)
+def _token_pool(text: str) -> set[str]:
+    """Tokens of a car's text, plus: each pair of ADJACENT tokens joined ("GLC 350e" also gives glc350e, "G 580" gives
+    g580), a joined letters+digits token split ("g580" gives g and 580), and a number with one trailing letter without
+    it ("580e" also gives 580)."""
+    seq = re.findall(r"[a-z0-9]+", (text or "").lower().replace("+", " plus "))
+    pool = set(seq) | {a + b for a, b in zip(seq, seq[1:])}
+    for t in seq:
+        m = re.fullmatch(r"([a-z]+)(\d+[a-z]?)", t)
         if m:
-            parts |= {m.group(1), m.group(2)}
-        if d.startswith("model"):
-            parts |= {"model", d[5:]}
-    return parts
+            pool |= {m.group(1), m.group(2)}
+        m = re.fullmatch(r"(\d+)[a-z]", t)
+        if m:
+            pool.add(m.group(1))
+    return pool
 
 
-def _pick_model(
-    names: list[str], ours: set[str], ours_desig: set[str], body: str | None, awd: bool | None
-) -> tuple[list[str], str]:
-    """Narrow candidate EPA model names to the one for this trim. Returns
-    (survivors, why) — exactly one survivor is a match."""
+def _core_words(epa_name: str) -> set[str]:
+    """An EPA model name's distinctive words: what is left after the powertrain / marketing filler, the body,
+    drivetrain and door-count words are taken away ("GLC350e 4matic with EQ Hybrid Tech" -> {glc350e})."""
+    return _tokens(epa_name) - _NOT_DISTINCTIVE
+
+
+def _drive_class(text: str) -> bool | None:
+    """True all-/four-wheel drive, False two-wheel, None unknown."""
+    t = (text or "").lower()
+    if "all-wheel" in t or "4-wheel" in t or "four-wheel" in t:
+        return True
+    if "front-wheel" in t or "rear-wheel" in t or "2-wheel" in t:
+        return False
+    return None
+
+
+def _surviving_by_body(names: list[str], body: str | None, awd: bool | None) -> list[str]:
+    """Drop the names whose body or drivetrain words contradict the car (a "(coupe)" name for an SUV, a name for the
+    body the car has when another name carries it, 4matic names for a rear-drive car ...)."""
     toks = {n: _tokens(n) for n in names}
-    survivors = []
+    out = []
     for n in names:
         t = toks[n]
         others = [toks[o] for o in names if o != n]
@@ -647,22 +671,8 @@ def _pick_model(
             continue
         if not t & _AWD_TOKENS and awd and any(o & _AWD_TOKENS for o in others):
             continue
-        survivors.append(n)
-    if len(survivors) <= 1:
-        return survivors, "body/drivetrain"
-    parts = _desig_parts(ours_desig)
-    scored = []
-    for n in survivors:
-        words = toks[n] - parts - _BODY_TOKENS - _AWD_TOKENS - _TWO_WD_TOKENS - _FILLER_TOKENS
-        words = {w for w in words if not w.isdigit()}
-        if words - ours:
-            continue  # the EPA name carries a trim word this car doesn't have
-        scored.append((len(words & ours), n))
-    if not scored:
-        return survivors, "trim words"
-    best = max(s for s, _ in scored)
-    top = [n for s, n in scored if s == best]
-    return top, "trim words"
+        out.append(n)
+    return out
 
 
 def epa_lookup(
@@ -676,30 +686,47 @@ def epa_lookup(
     extra_text: str = "",
     fetch: Callable[..., Any] = epa_fetch,
 ) -> dict[str, Any]:
-    """Exact year/make/model/trim lookup on fueleconomy.gov. Returns
-    {"status": "match", "miles", "matched_trim", "url"} |
-    {"status": "conflict", "note"} | {"status": "none", "note"}.
+    """Exact year/make/model/trim lookup on fueleconomy.gov (pass 0). No model "designation" is needed:
+
+      1. year + make: the EPA's model names for that year;
+      2. a name FITS when every distinctive word in it (the name minus powertrain filler, body, drivetrain and door
+         words) is among the car's words (model, trim, sticker text), and at least one of them is in the car's own
+         model / trim (so sticker noise alone never matches);
+      3. only plug-in hybrid / battery-electric EPA records count (the class's atvType), then the record's drivetrain
+         and the body words of the name must agree with the car;
+      4. of what is left the most specific name (most distinctive words) wins; the answer is accepted only when
+         exactly one name is left and its records agree on the range.
+
+    Returns {"status": "match", "miles", "matched_trim", "url"} | {"status": "ambiguous", "note"} (more than one
+    candidate, or records that disagree: the caller falls through to the next source) | {"status": "none", "note"}.
     Raises RangeLookupUnavailable when the service can't be reached."""
-    ours_text = f"{model} {trim or ''} {extra_text}"
-    ours = _tokens(ours_text)
-    ours_desig = designations(f"{model} {trim or ''}")
+    ident = f"{model} {trim or ''}"
+    ident_pool = _token_pool(ident)
+    pool = ident_pool | _token_pool(f"{ident} {extra_text}")
+    ours = _tokens(f"{ident} {extra_text}")
     body = (body_style or "").strip().lower() or None
     if body not in _BODY_TOKENS:
-        body = None
+        body = next((b for b in ("wagon", "suv", "coupe", "convertible", "cabriolet", "sedan", "hatchback") if b in _tokens(ident)), None)
     awd: bool | None = True if ours & _AWD_TOKENS else (False if ours & _TWO_WD_TOKENS else None)
     atv = EPA_ATV[cls]
 
-    def year_matches(y: int) -> dict[str, list[tuple[str, str, int]]]:
-        """{EPA model name: [(option text, vehicle id, miles), ...]} for this
-        year's models that share a designation and have this powertrain."""
+    def year_matches(y: int) -> dict[str, dict[str, Any]]:
+        """{EPA model name: {"core": n distinctive words, "records": [(option text, vehicle id, miles), ...]}} for the
+        names of year y that fit the car and have plug-in / electric records that agree on the drivetrain."""
         names = [i.get("value") or "" for i in _menu(fetch("menu/model", {"year": y, "make": make}))]
-        out: dict[str, list[tuple[str, str, int]]] = {}
+        fits = []
         for name in names:
-            if not (designations(name) & ours_desig):
-                continue
+            core = _core_words(name)
+            if core and core <= pool and core & ident_pool:
+                fits.append(name)
+        out: dict[str, dict[str, Any]] = {}
+        for name in fits:
             for opt in _menu(fetch("menu/options", {"year": y, "make": make, "model": name})):
                 rec = fetch(str(opt.get("value"))) or {}
                 if rec.get("atvType") != atv:
+                    continue
+                drive = _drive_class(rec.get("drive"))
+                if awd is not None and drive is not None and drive != awd:
                     continue
                 raw = rec.get("range") if cls == BEV else rec.get("rangeA")
                 try:
@@ -708,41 +735,42 @@ def epa_lookup(
                     continue
                 if miles <= 0:
                     continue
-                out.setdefault(name, []).append((opt.get("text") or "", str(rec.get("id") or opt.get("value")), miles))
-        return out
+                out.setdefault(name, {"core": len(_core_words(name)), "records": []})["records"].append(
+                    (opt.get("text") or "", str(rec.get("id") or opt.get("value")), miles))
+        keep = _surviving_by_body(list(out), body, awd)
+        return {n: out[n] for n in keep}
 
-    if not ours_desig:
-        return {"status": "none", "note": f"no model designation found in {model!r} {trim!r} to match against fueleconomy.gov"}
+    def best(found: dict[str, dict[str, Any]]) -> list[str]:
+        top = max((v["core"] for v in found.values()), default=0)
+        return [n for n, v in found.items() if v["core"] == top]
 
     found = year_matches(year)
     if found:
-        top, why = _pick_model(list(found), ours, ours_desig, body, awd)
+        top = best(found)
         if len(top) > 1:
-            listing = "; ".join(f"{n}: {sorted({m for _, _, m in found[n]})} mi" for n in top)
-            return {"status": "conflict", "note": f"fueleconomy.gov {year}: more than one trim fits ({listing})"}
-        if top:
-            name = top[0]
-            miles = sorted({m for _, _, m in found[name]})
-            if len(miles) > 1:
-                listing = "; ".join(f"{t} = {m} mi" for t, _, m in found[name])
-                return {"status": "conflict", "note": f"fueleconomy.gov {year} {name}: conflicting ranges ({listing})"}
-            vid = found[name][0][1]
-            return {
-                "status": "match", "miles": miles[0], "matched_trim": f"{year} {make} {name}",
-                "url": f"https://www.fueleconomy.gov/feg/Find.do?action=sbs&id={vid}",
-            }
+            listing = "; ".join(f"{n}: {sorted({m for _, _, m in found[n]['records']})} mi" for n in top)
+            return {"status": "ambiguous", "note": f"fueleconomy.gov {year}: ambiguous - more than one candidate fits ({listing})"}
+        name = top[0]
+        recs = found[name]["records"]
+        miles = sorted({m for _, _, m in recs})
+        if len(miles) > 1:
+            listing = "; ".join(f"{t} = {m} mi" for t, _, m in recs)
+            return {"status": "ambiguous", "note": f"fueleconomy.gov {year} {name}: ambiguous - conflicting ranges ({listing})"}
+        return {
+            "status": "match", "miles": miles[0], "matched_trim": f"{year} {make} {name}",
+            "url": f"https://www.fueleconomy.gov/feg/Find.do?action=sbs&id={recs[0][1]}",
+        }
 
     # No exact-year match: note any neighbouring year that does list this
-    # trim (never used — the figure must be for this model year).
+    # trim (never used - the figure must be for this model year).
     elsewhere = []
     for y in range(year - EPA_NEIGHBOR_YEARS, year + EPA_NEIGHBOR_YEARS + 1):
         if y == year:
             continue
         other = year_matches(y)
         if other:
-            top, _ = _pick_model(list(other), ours, ours_desig, body, awd)
-            for n in top:
-                elsewhere.append(f"{y} {n} = {sorted({m for _, _, m in other[n]})} mi")
+            for n in best(other):
+                elsewhere.append(f"{y} {n} = {sorted({m for _, _, m in other[n]['records']})} mi")
     note = f"fueleconomy.gov has no {year} {make} {model} {trim or ''} {CLASS_LABELS[cls]} entry".replace("  ", " ")
     if elsewhere:
         note += f"; it lists only a different model year ({'; '.join(elsewhere)}), which is not used"
@@ -782,7 +810,54 @@ MANUFACTURER_DOMAINS: dict[str, list[str]] = {
     "land": ["landroverusa.com"],
     "jaguar": ["jaguarusa.com"],
     "mini": ["miniusa.com"],
+    "buick": ["buick.com"],
+    "ram": ["ramtrucks.com"],
 }
+
+# Makes that sell direct, with no franchised dealers: a "same-make dealer" search pass is skipped for them.
+DIRECT_SALE_MAKES = frozenset({"tesla", "lucid", "polestar", "rivian"})
+
+# What a franchised dealer's domain or page title for a make looks like (regex, case-insensitive). A make with no
+# entry is matched on its own name; a direct-sale make has no dealers, so no pattern.
+DEALER_PATTERNS: dict[str, str] = {
+    "mercedes-benz": r"mercedes|benz|mbusa|mb[a-z]*of",
+    "volvo": r"volvo",
+    "jeep": r"jeep|chrysler|dodge|ram|cdjr|fca|stellantis",
+    "dodge": r"jeep|chrysler|dodge|ram|cdjr|fca|stellantis",
+    "chrysler": r"jeep|chrysler|dodge|ram|cdjr|fca|stellantis",
+    "ram": r"jeep|chrysler|dodge|ram|cdjr|fca|stellantis",
+    "toyota": r"toyota",
+    "lexus": r"lexus",
+    "ford": r"ford",
+    "lincoln": r"lincoln|ford",
+    "chevrolet": r"chevrolet|chevy|gm",
+    "gmc": r"gmc|buick|gm",
+    "buick": r"buick|gmc|gm",
+    "cadillac": r"cadillac|gm",
+    "bmw": r"bmw",
+    "genesis": r"genesis",
+    "honda": r"honda",
+    "hyundai": r"hyundai",
+    "mazda": r"mazda",
+}
+
+
+def make_key(make: str | None) -> str:
+    """The lower-case key the make tables use ("Mercedes-Benz" -> "mercedes-benz", "Land Rover" -> "land")."""
+    m = (make or "").lower().strip()
+    return "mercedes-benz" if m.startswith("mercedes") else (m.split()[0].split("-")[0] if m else "")
+
+
+def has_franchised_dealers(make: str | None) -> bool:
+    return make_key(make) not in DIRECT_SALE_MAKES
+
+
+def dealer_pattern(make: str | None) -> str:
+    """The regex a same-make dealer's domain or title should match; empty for a direct-sale make."""
+    k = make_key(make)
+    if k in DIRECT_SALE_MAKES:
+        return ""
+    return DEALER_PATTERNS.get(k) or re.escape(k)
 
 MANUFACTURER_SEARCH_MODEL = "claude-sonnet-4-6"  # same model as the ad-writing calls
 _MFR_LINE_RE = re.compile(r"^RANGE\s*::\s*(.+?)\s*::\s*(.+?)\s*::\s*(.+?)\s*::\s*(\S+)\s*$", re.M)
@@ -919,9 +994,11 @@ def electric_range(
     if res["status"] == "match":
         store(res["miles"], "epa", res["matched_trim"], res["url"], None)
         return _range_info(res["miles"], "epa", res["matched_trim"], res["url"], None, False)
-    if res["status"] == "conflict":
+    if res["status"] == "conflict":          # the old pass 0; kept for any stub that still answers this way
         store(None, "conflict", None, None, res["note"])
         return _range_info(None, None, None, None, f"electric range omitted: {res['note']}", False)
+    # "ambiguous" (more than one candidate, or records that disagree) and "none" both fall through to the
+    # manufacturer search; the note says which, and stays in the omission flag if nothing is found there.
 
     epa_note = res["note"]
     domains = MANUFACTURER_DOMAINS.get(make.lower())
