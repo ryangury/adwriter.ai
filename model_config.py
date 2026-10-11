@@ -8,7 +8,7 @@ orchestrator and the website's manual generate / reprice read the same flags.
 
     GENERATE_MODEL_MB / _NON_MB   adwriter.generate_ad without the search tool (purpose generate)
     REPRICE_MODEL_MB / _NON_MB    the paragraph-two rewrite of a reprice (adwriter._capped_completion)
-    RESEARCH_SEARCH_MODEL         adwriter.generate_ad with the search tool (purpose research_search), any status
+    RESEARCH_SEARCH_MODEL_MB / _NON_MB   adwriter.generate_ad with the search tool (purpose research_search)
     TOW_LOOKUP_MODEL              towing.lookup (tow_refresh --lookup; builds make no tow lookup)
 
 A recon update makes no model call. A status outside 11 / 12 / 13 (None included) uses the MB flag.
@@ -37,7 +37,8 @@ GENERATE_MODEL_MB = SONNET_46
 GENERATE_MODEL_NON_MB = SONNET_55
 REPRICE_MODEL_MB = SONNET_46
 REPRICE_MODEL_NON_MB = SONNET_55
-RESEARCH_SEARCH_MODEL = SONNET_46
+RESEARCH_SEARCH_MODEL_MB = SONNET_46
+RESEARCH_SEARCH_MODEL_NON_MB = SONNET_55
 TOW_LOOKUP_MODEL = SONNET_46
 
 SONNET_55_EFFORT = "medium"          # low | medium | high
@@ -82,6 +83,11 @@ def is_non_mb(status_code: int | None) -> bool:
 def generate_model(status_code: int | None) -> str:
     """The model for an ad written without the search tool."""
     return GENERATE_MODEL_NON_MB if is_non_mb(status_code) else GENERATE_MODEL_MB
+
+
+def research_search_model(status_code: int | None) -> str:
+    """The model for an ad written with the search tool (the research search)."""
+    return RESEARCH_SEARCH_MODEL_NON_MB if is_non_mb(status_code) else RESEARCH_SEARCH_MODEL_MB
 
 
 def reprice_model(status_code: int | None) -> str:

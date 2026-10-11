@@ -1063,8 +1063,8 @@ def generate_ad(
 ) -> tuple[str, str | None]:
     """Send the vehicle data to Claude and return (ad_copy, feedback_block).
 
-    The model comes from model_config: the search call uses RESEARCH_SEARCH_MODEL; a write without the search tool
-    uses GENERATE_MODEL_MB or GENERATE_MODEL_NON_MB by status_code (11 / 12 / 13 are non-MB).
+    The model comes from model_config by status_code (11 / 12 / 13 are non-MB): the search call uses
+    RESEARCH_SEARCH_MODEL_MB / _NON_MB, a write without the search tool GENERATE_MODEL_MB / _NON_MB.
 
     Every request is logged to api_cost_log (purpose research_search when the
     web-search tool is on, otherwise generate). With api_cost.GENERATE_GUARD_ENABLED
@@ -1089,7 +1089,7 @@ def generate_ad(
     )
     # One flag per call site (model_config): the search call and the plain write can run different models. The
     # caps were set for 4.6 and are scaled for the model (Sonnet 5.5 writes about 20% more tokens).
-    model = model_config.RESEARCH_SEARCH_MODEL if needs_lookup else model_config.generate_model(status_code)
+    model = model_config.research_search_model(status_code) if needs_lookup else model_config.generate_model(status_code)
     if stock:
         GENERATED_WITH[stock] = model_config.tag(model)     # the last call is the one whose text is kept
     kwargs: dict = {
@@ -1115,7 +1115,7 @@ def generate_ad(
         try:
             response = run_search(client, kwargs=kwargs, messages=messages, label=f"ad research {stock or ''}".strip(),
                                   budget_s=GENERATE_SEARCH_BUDGET_S, silence_s=GENERATE_SEARCH_SILENCE_S,
-                                  purpose="research_search", stock=stock, guard=api_cost.generate_guard(stock))
+                                  purpose="research_search", stock=stock, guard=api_cost.generate_guard(stock, model))
         except api_cost.SearchDegrade as exc:
             print(f"[adwriter] {stock}: cost guard degrade ({exc.reason}) - writing the ad without search: {exc}",
                   file=sys.stderr)

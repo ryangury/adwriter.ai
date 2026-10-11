@@ -35,13 +35,14 @@ class Client:
 
 class Defaults(unittest.TestCase):
     def test_flags_mb_on_4_6_non_mb_on_5_5(self):
-        for name in ("GENERATE_MODEL_MB", "REPRICE_MODEL_MB", "RESEARCH_SEARCH_MODEL", "TOW_LOOKUP_MODEL"):
+        for name in ("GENERATE_MODEL_MB", "REPRICE_MODEL_MB", "RESEARCH_SEARCH_MODEL_MB", "TOW_LOOKUP_MODEL"):
             self.assertEqual(getattr(M, name), "claude-sonnet-4-6", name)
-        for name in ("GENERATE_MODEL_NON_MB", "REPRICE_MODEL_NON_MB"):
+        for name in ("GENERATE_MODEL_NON_MB", "REPRICE_MODEL_NON_MB", "RESEARCH_SEARCH_MODEL_NON_MB"):
             self.assertEqual(getattr(M, name), "claude-sonnet-5-5", name)
         for status, want in ((10, M.SONNET_46), (16, M.SONNET_46), (None, M.SONNET_46), (99, M.SONNET_46),
                              (11, M.SONNET_55), (12, M.SONNET_55), (13, M.SONNET_55)):
-            self.assertEqual((M.generate_model(status), M.reprice_model(status)), (want, want), status)
+            self.assertEqual((M.generate_model(status), M.reprice_model(status), M.research_search_model(status)),
+                             (want, want, want), status)
         self.assertEqual(M.describe(M.tag(M.SONNET_55)), "claude-sonnet-5-5 (effort medium)")
         self.assertEqual(M.tag(M.SONNET_46), {"model": "claude-sonnet-4-6", "effort": None})
         self.assertEqual(M.SONNET_55_EFFORT, "medium")
@@ -107,9 +108,19 @@ class Generate(unittest.TestCase):
             seen.update(kwargs=kwargs, guard=guard)
             return message(self.AD)
 
-        with mock.patch.object(M, "RESEARCH_SEARCH_MODEL", M.SONNET_55), mock.patch("bounded_search.run_search", run), \
+        with mock.patch("bounded_search.run_search", run), \
              mock.patch.object(A, "_research_instructions", return_value=""), mock.patch.object(A, "web_search_tool_for", return_value={"type": "web_search_20260209", "name": "web_search"}):
-            A.generate_ad(Client([]), "data", "system", needs_lookup=[{"feature": "x"}], stock="S1")
+            A.generate_ad(Client([]), "data", "system", needs_lookup=[{"feature": "x"}], stock="S1", status_code=12)
+        seen_mb = dict(seen)
+        with mock.patch("bounded_search.run_search", run), \
+             mock.patch.object(A, "_research_instructions", return_value=""), mock.patch.object(A, "web_search_tool_for", return_value={"type": "web_search_20260209", "name": "web_search"}):
+            A.generate_ad(Client([]), "data", "system", needs_lookup=[{"feature": "x"}], stock="S1", status_code=10)
+        self.assertEqual(seen["kwargs"]["model"], "claude-sonnet-4-6", "status 10: the MB search flag")
+        self.assertNotIn("thinking", seen["kwargs"])
+        self.assertEqual(seen["kwargs"]["max_tokens"], 3700, "4.6 cap unchanged")
+        self.assertEqual((seen["guard"].call_budget, seen["guard"].ad_budget, seen["guard"].max_searches), (0.75, 1.50, 6))
+        seen.clear()
+        seen.update(seen_mb)
         kw = seen["kwargs"]
         self.assertEqual((kw["model"], kw["max_tokens"], kw["thinking"]["type"]), ("claude-sonnet-5-5", 4440, "between_tools"))
         self.assertEqual((seen["guard"].call_budget, seen["guard"].ad_budget, seen["guard"].max_searches), (0.75, 1.50, 6))
