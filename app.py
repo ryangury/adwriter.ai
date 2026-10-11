@@ -1002,26 +1002,22 @@ def cache_save_powertrain(stock_number: str):
 # --------------------------------------------------------------------------- #
 
 
-def research_groups(history: dict[str, Any] | None = None, live: set[str] | None = None) -> list[dict[str, Any]]:
-    """The configurations the live ads are missing a range / tow rating for (ad_history's research_needed), one row
-    per configuration with the stocks that share it, the stored candidates (fresh from the table) and any figure
-    already entered."""
-    history = history if history is not None else load_ad_history()
-    if live is None:
+def research_groups(vehicles: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """The configurations the cars in the inventory snapshot are missing a range / tow rating for, computed at page
+    load from the snapshot and the caches (research.live_items: no search, no ad_history read or write). One row per
+    configuration with the stocks that share it, the stored candidates and any figure already entered."""
+    if vehicles is None:
         vehicles, _stamp = _load_snapshot()
-        live = {normalize_stock(v.get("stock_number")) for v in vehicles}
     groups: dict[str, dict[str, Any]] = {}
-    for stock, e in sorted(history.items()):
-        if stock not in live or e.get("absent_since"):
-            continue
-        for it in e.get("research_needed") or []:
+    for r in research.live_items(vehicles):
+        stock = normalize_stock(r["stock"])
+        for it in r["items"]:
             gid = it.get("key_id") or f"incomplete:{stock}:{it.get('kind')}"
             g = groups.setdefault(gid, {**it, "stocks": [], "fact": None})
-            g["stocks"].append({"stock": stock, "ymm": e.get("year_make_model") or ""})
-    for gid, g in groups.items():
+            g["stocks"].append({"stock": stock, "ymm": r.get("ymm") or ""})
+    for g in groups.values():
         if g.get("key_id"):
             kind, key = research.key_from_id(g["key_id"])
-            g["candidates"] = research.candidates(kind, key)
             g["fact"] = research.get_fact(kind, key)
         g["unit"] = research.UNITS.get(g.get("kind"), "")
     return sorted(groups.values(), key=lambda g: (g["fact"] is not None, g.get("kind") or "", g.get("config_text") or ""))
@@ -1054,6 +1050,26 @@ def research_save_fact():
     except ValueError as exc:
         return jsonify({"saved": False, "error": str(exc)}), 400
     return jsonify({"saved": True, "figure": row["figure"], "entered_date": row["entered_date"]})
+
+
+@app.post("/research/candidates")
+def research_find_candidates():
+    """"Find candidates": one Haiku 4.5 search for this configuration (capped at research.FIND_CAP_USD, logged as
+    research_candidates, the site's production key), on a click only. The figures come back as candidates with
+    their source URL and quote; nothing is accepted."""
+    if not session.get("authed"):
+        return jsonify({"ok": False, "error": "Not signed in."}), 401
+    try:
+        kind, key = research.key_from_id(request.form.get("key_id") or "")
+    except (ValueError, TypeError, IndexError):
+        return jsonify({"ok": False, "error": "Unknown configuration."}), 400
+    try:
+        res = research.find_candidates(kind, key)
+    except Exception as exc:  # noqa: BLE001 - report it on the page
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 500
+    return jsonify({"ok": res["error"] is None, "error": res["error"], "candidates": res["candidates"],
+                    "cost": res["cost"], "reply": res["reply"], "unit": research.UNITS[kind]})
 
 
 @app.post("/research/refresh/<stock_number>")

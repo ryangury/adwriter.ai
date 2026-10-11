@@ -50,9 +50,11 @@ REASONS = {
     "epa_unavailable": "fueleconomy.gov could not be reached this run",
     "no_year_make_model": "no year / make / model on the record",
     "config_incomplete": "the configuration could not be read from the sticker / record",
-    "not_looked_up": "not in the tow cache (a build makes no live lookup)",
+    "not_looked_up": "no figure on file for this configuration (a build makes no live lookup)",
+    "not_entered": "a lookup found a figure; a tow figure is stated only once it is entered here (or a VIN override)",
     "no_exact_match": "a lookup found no rating for this exact configuration",
     "lookup_failed": "the lookup failed",
+    "not_checked": "not looked up yet; the next build runs pass 0 (fueleconomy.gov, free)",
     "other": "see the detail",
 }
 
@@ -288,6 +290,8 @@ def range_reason(flag_or_note: str | None, status: str | None = None) -> str:
 
 def tow_reason(note: str | None) -> str:
     t = (note or "").lower()
+    if "not used until it is entered" in t or "not from an override or the research page" in t:
+        return "not_entered"
     if "not looked up" in t:
         return "not_looked_up"
     if "incomplete" in t:
@@ -479,3 +483,143 @@ def apply_refresh(stock: str) -> dict[str, Any]:
     A.save_ad_history(history)
     print(f"[research] {stock}: text refreshed ({'; '.join(plan['notes'])}); backup {backup.name}", file=sys.stderr)
     return dict(plan, applied=True, backup=backup.name)
+
+
+# --------------------------------------------------------------------------- #
+# The Research page's list, computed at page load (read-only)
+# --------------------------------------------------------------------------- #
+def live_items(vehicles: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """[{stock, ymm, items}] for the cars in the inventory snapshot that miss an electric range or a tow rating,
+    from the caches only: no search, no pass 0 call, no write (ad_history and the caches are only read).
+    A plug-in whose range was never looked up shows reason "not_checked" (the next build runs pass 0)."""
+    from powertrain import PLUG_IN, _range_info, cached_texts, classify, split_ymm
+    from towing import towing_for
+    from vehicle_cache import get_window_sticker
+
+    out = []
+    for v in vehicles:
+        stock, vin = v.get("stock_number"), v.get("vin")
+        ymm, trim, body = v.get("year_make_model"), v.get("trim"), v.get("body_style")
+        try:
+            st, rc = cached_texts(vin) if vin else ("", "")
+            cls = classify(vin, ymm, trim, sticker_text=st, recon_text=rc)["class"]
+            pt = {"class": cls, "range": {}}
+            if cls in PLUG_IN:
+                cfg = range_config(ymm, trim, body, st, cls)
+                fact = get_fact("range", cfg)
+                year, make, model = split_ymm(ymm)
+                row = feature_cache.get_electric_range(year, make, model, trim) if (year and make and model) else None
+                if fact or (row and row.get("powertrain") == cls and row.get("range_miles")):
+                    rng = {"miles": (fact or {}).get("figure") or row["range_miles"]}
+                elif row and row.get("powertrain") == cls:
+                    rng = _range_info(None, None, None, None, f"electric range omitted: {row.get('note')}", True,
+                                      reason=range_reason(row.get("note"), "ambiguous" if row.get("source") in ("ambiguous", "conflict") else None))
+                else:
+                    rng = _range_info(None, None, None, None, "not looked up yet (the next build runs pass 0)", False,
+                                      reason="not_checked")
+                rng["config"] = cfg
+                pt["range"] = rng
+            sticker = (get_window_sticker(vin) or {}) if vin else {}
+            names = [o.get("name") or "" for o in (sticker.get("option_packages") or []) + (sticker.get("added_options_all") or [])]
+            tow = towing_for(ymm, trim, body, sticker.get("raw_text") or "", names, vin=vin, powertrain_class=cls,
+                             allow_lookup=False)
+            items = items_for(pt, tow)
+        except Exception as exc:  # noqa: BLE001 - one car must not break the page
+            items = [{"kind": "?", "missing": "range / tow", "reason": "other", "detail": f"could not be checked ({exc})",
+                      "config_text": ymm or "?", "key_id": None, "candidates": []}]
+        if items:
+            out.append({"stock": stock, "ymm": ymm, "items": items})
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# "Find candidates": one search, on a click only. Never accepted automatically.
+# --------------------------------------------------------------------------- #
+FIND_MODEL = "claude-haiku-4-5"
+FIND_TOOL = "web_search_20250305"        # Haiku 4.5 takes the basic search tool only
+FIND_MAX_USES = 3
+FIND_CAP_USD = 0.25
+FIND_PURPOSE = "research_candidates"
+_FIGURE_RES = {
+    "range": re.compile(r"(?<![\d,.$])(\d{1,3})\s*(?:-\s*)?(?:miles?|mi\b)", re.I),
+    "tow": re.compile(r"(?<![\d.$])(\d{1,2},\d{3}|\d{4,5})\s*(?:-\s*)?(?:lbs?\b|pounds\b)", re.I),
+}
+
+
+def _find_ask(kind: str, key: dict[str, Any]) -> str:
+    what = describe(kind, key)
+    if kind == "range":
+        return (f"Find the published electric driving range (miles, electric only) for this vehicle: {what}. "
+                "Prefer the manufacturer's site or fueleconomy.gov. In your reply, state the figure, the model year and "
+                "trim it applies to, and the URL of the page that states it.")
+    return (f"Find the manufacturer's maximum trailer tow rating in pounds for this vehicle: {what}. Prefer the "
+            "manufacturer's site or its official towing guide. In your reply, state the rating, the model year, engine "
+            "and tow equipment it applies to, and the URL of the page that states it.")
+
+
+def figures_in(kind: str, text: str) -> list[int]:
+    lo, hi = LIMITS[kind]
+    out = []
+    for m in _FIGURE_RES[kind].finditer(text or ""):
+        n = int(m.group(1).replace(",", ""))
+        if lo <= n <= hi and n not in out:
+            out.append(n)
+    return out
+
+
+def find_candidates(kind: str, key: dict[str, Any], *, client: Any = None, run: Any = None) -> dict[str, Any]:
+    """One Haiku 4.5 search (basic tool, a loose reply) for this configuration, capped at FIND_CAP_USD and logged
+    under purpose research_candidates. Returns {"candidates": [{figure, source_url, quote, origin}], "cost", "reply",
+    "error"}. Figures come from the citations (the quoted page text) and, marked as such, from the reply itself.
+    They are stored as candidates only: entering a figure stays manual."""
+    import api_cost
+    import bounded_search
+
+    run = run or bounded_search.run_search
+    client = client or api_cost.make_client(max_retries=0)
+    before = _logged_cost()
+    out: dict[str, Any] = {"candidates": [], "cost": 0.0, "reply": "", "error": None}
+    try:
+        resp = run(client, kwargs={"model": FIND_MODEL, "max_tokens": 1500,
+                                   "tools": [{"type": FIND_TOOL, "name": "web_search", "max_uses": FIND_MAX_USES}]},
+                   messages=[{"role": "user", "content": _find_ask(kind, key)}], label=f"find candidates {describe(kind, key)}",
+                   purpose=FIND_PURPOSE, max_cost_usd=FIND_CAP_USD)
+    except bounded_search.SearchUnavailable as exc:
+        out["error"] = f"{exc.reason}: {exc}"
+        out["cost"] = round(_logged_cost() - before, 4)
+        return out
+    out["cost"] = round(_logged_cost() - before, 4)
+    seen: set[tuple[int, str]] = set()
+    text = ""
+    for b in getattr(resp, "content", None) or []:
+        if getattr(b, "type", None) != "text":
+            continue
+        text += getattr(b, "text", "") or ""
+        for c in getattr(b, "citations", None) or []:
+            quote = " ".join((getattr(c, "cited_text", "") or "").split())
+            url = getattr(c, "url", "") or ""
+            for n in figures_in(kind, quote):
+                if (n, url) not in seen:
+                    seen.add((n, url))
+                    out["candidates"].append({"figure": n, "source_url": url, "quote": quote[:400], "origin": "Find candidates (quoted page)"})
+    out["reply"] = text.strip()[:1500]
+    urls = re.findall(r"https?://[^\s<>\")\]]+", text)
+    for n in figures_in(kind, text):
+        if not any(c["figure"] == n for c in out["candidates"]):
+            out["candidates"].append({"figure": n, "source_url": urls[0].rstrip(".,;") if urls else "",
+                                      "quote": "", "origin": "Find candidates (model's reply, no quote)"})
+    if out["candidates"]:
+        add_candidates(kind, key, [{"figure": c["figure"], "url": c["source_url"], "quote": c["quote"], "origin": c["origin"]}
+                                   for c in out["candidates"]], "Find candidates")
+    return out
+
+
+def _logged_cost() -> float:
+    import api_cost
+
+    try:
+        with contextlib.closing(sqlite3.connect(api_cost.db_path())) as c:
+            c.executescript(api_cost.SCHEMA)
+            return float(c.execute("SELECT COALESCE(SUM(cost_usd), 0) FROM api_cost_log").fetchone()[0])
+    except sqlite3.Error:
+        return 0.0

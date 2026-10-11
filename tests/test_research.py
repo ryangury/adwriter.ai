@@ -38,6 +38,8 @@ def wipe():
     with feature_cache._connect() as c:
         c.execute("DELETE FROM electric_range")
         c.commit()
+    with T._connect() as c:
+        c.execute("DELETE FROM towing_config")
 
 
 class Facts(unittest.TestCase):
@@ -305,13 +307,16 @@ class Site(unittest.TestCase):
         self.assertEqual(R.get_fact("tow", GLS)["figure"], 7700)
         self.assertTrue(self.client.post("/research/fact", data={"key_id": kid, "clear": "1"}).get_json()["cleared"])
 
-    def test_the_page_lists_live_cars_with_their_candidates(self):
+    def test_the_page_groups_the_live_list_by_configuration(self):
         R.add_candidates("tow", GLS, [{"figure": 7700, "url": "https://www.mbusa.com/gls", "quote": "Towing 7,700 lbs"}], "prototype")
         item = R.items_for(None, {"triggered": True, "rating": None, "note": "not looked up yet", "config": GLS, "config_text": "2024 GLS 450"})
-        hist = {"S1": {"research_needed": item, "year_make_model": "2024 Mercedes-Benz GLS"}, "S2": {"research_needed": item, "absent_since": "2026-10-01"}}
-        groups = self.app.research_groups(hist, live={"S1", "S2"})
+        rows = [{"stock": "S1", "ymm": "2024 Mercedes-Benz GLS", "items": item},
+                {"stock": "S3", "ymm": "2024 Mercedes-Benz GLS", "items": item}]
+        with mock.patch.object(R, "live_items", return_value=rows), \
+             mock.patch.object(A, "load_ad_history", side_effect=AssertionError("the page never reads ad_history")):
+            groups = self.app.research_groups([{"stock_number": "S1"}, {"stock_number": "S3"}])
         self.assertEqual(len(groups), 1)
-        self.assertEqual([s["stock"] for s in groups[0]["stocks"]], ["S1"], "a car that left the lot is not listed")
+        self.assertEqual([s["stock"] for s in groups[0]["stocks"]], ["S1", "S3"], "one row per configuration")
         self.assertEqual(groups[0]["candidates"][0]["figure"], 7700)
         self.login()
         with mock.patch.object(self.app, "research_groups", return_value=groups):
@@ -319,7 +324,133 @@ class Site(unittest.TestCase):
         self.assertIn("2024 GLS 450", html)
         self.assertIn('data-figure="7700"', html)
         self.assertIn("Refresh text", html)
+        self.assertIn("Find candidates", html)
         self.assertIn('href="/research">Research</a>', html)
+
+    def test_find_candidates_route_needs_a_login_and_accepts_nothing(self):
+        kid = R.key_id("tow", R.key_of("tow", GLS))
+        self.assertEqual(self.client.post("/research/candidates", data={"key_id": kid}).status_code, 401)
+        self.login()
+        found = {"candidates": [{"figure": 7700, "source_url": "https://www.mbusa.com/gls", "quote": "tows 7,700 lbs",
+                                 "origin": "Find candidates (quoted page)"}], "cost": 0.05, "reply": "x", "error": None}
+        with mock.patch.object(R, "find_candidates", return_value=found) as fc:
+            j = self.client.post("/research/candidates", data={"key_id": kid}).get_json()
+        self.assertEqual((j["ok"], j["candidates"][0]["figure"], j["unit"]), (True, 7700, "lbs"))
+        self.assertEqual(fc.call_args[0][0], "tow")
+        self.assertIsNone(R.get_fact("tow", GLS), "a found figure is never entered automatically")
+
+
+class LiveList(unittest.TestCase):
+    """The Research page's list, from the snapshot and the caches only."""
+
+    def setUp(self):
+        wipe()
+        self.ov = mock.patch.object(T, "TOW_OVERRIDES_PATH", TMP / "tow_overrides.json")
+        self.ov.start()
+        self.addCleanup(self.ov.stop)
+        (TMP / "tow_overrides.json").write_text("{}", encoding="utf-8")
+        self.cars = [{"stock_number": "G1", "vin": "W1NGLS", "year_make_model": "2024 Mercedes-Benz GLS", "trim": "GLS 450 4MATIC SUV",
+                      "body_style": "SUV"},
+                     {"stock_number": "C1", "vin": "W1NC", "year_make_model": "2024 Mercedes-Benz C-Class", "trim": "C 300 Sedan",
+                      "body_style": "Sedan"}]
+
+    def items(self):
+        sticker = {"W1NGLS": {"raw_text": "INCREASED TOWING  TRAILER HITCH"}, "W1NC": {"raw_text": "PREMIUM PACKAGE"}}
+        with mock.patch.object(P, "cached_texts", side_effect=lambda vin: ((sticker.get(vin) or {}).get("raw_text", ""), "")), \
+             mock.patch("vehicle_cache.get_window_sticker", side_effect=lambda vin: sticker.get(vin)), \
+             mock.patch.object(T, "lookup", side_effect=AssertionError("no lookup at page load")), \
+             mock.patch.object(P, "epa_lookup", side_effect=AssertionError("no pass 0 at page load")), \
+             mock.patch.object(A, "load_ad_history", side_effect=AssertionError("no ad_history read")):
+            return R.live_items(self.cars)
+
+    def test_missing_then_candidate_then_entered(self):
+        (row,) = self.items()
+        self.assertEqual((row["stock"], [i["reason"] for i in row["items"]]), ("G1", ["not_looked_up"]))
+        cfg = T.vehicle_config("2024 Mercedes-Benz GLS", "GLS 450 4MATIC SUV", "SUV", "INCREASED TOWING  TRAILER HITCH", "gas")
+        T.save(cfg, {"lbs": 7700, "url": "https://www.mbusa.com/gls", "page_config": "GLS 450 4MATIC", "note": None})
+        (row,) = self.items()
+        it = row["items"][0]
+        self.assertEqual(it["reason"], "not_entered", "a looked-up figure is only a candidate")
+        self.assertEqual(it["candidates"][0]["figure"], 7700)
+        R.set_fact("tow", cfg, 7700, "https://www.mbusa.com/gls", "Towing capacity 7,700 lbs")
+        self.assertEqual(self.items(), [], "entered: nothing missing")
+
+
+class TowPolicy(unittest.TestCase):
+    """A tow figure reaches an ad only from a VIN override or a Research-page entry."""
+
+    def test_the_guard_drops_any_other_rating(self):
+        self.assertIsNone(A.tow_policy({"triggered": True, "rating": 9000, "sentence": "x", "config_text": "c"})["rating"])
+        ok = {"triggered": True, "rating": 7700, "researched": {"figure": 7700}, "sentence": "s"}
+        self.assertEqual(A.tow_policy(ok)["rating"], 7700)
+        self.assertEqual(A.tow_policy({"rating": 7500, "override": {"rating": 7500}})["rating"], 7500)
+        self.assertEqual(T.TOW_RATING_SOURCES, ("override", "research"))
+
+    def test_strip_keeps_only_the_allowed_figure(self):
+        text = "It is rated to tow up to 7,700 lbs. It can tow 9,000 lbs with the hitch. It has a hitch."
+        new, notes = A.strip_unverified_tow(text, {"rating": 7700, "researched": {"figure": 7700}}, stock="S", label="t")
+        self.assertEqual(new, "It is rated to tow up to 7,700 lbs. It has a hitch.")
+        new, notes = A.strip_unverified_tow(text, {"rating": 7700}, stock="S", label="t")
+        self.assertEqual(new, "It has a hitch.", "a rating with no allowed source counts as none")
+        self.assertEqual(len(notes), 2)
+
+    def test_recon_update_removes_an_unentered_tow_figure_without_a_model_call(self):
+        e = {"paragraph_one": "A clean GLS.", "paragraph_two": "It is a three-row SUV.",
+             "paragraph_three": "It can tow up to 7,716 lbs.", "paragraph_four": "Call us."}
+        e["current_ad_text"] = "\n\n".join(e.values())
+        pt = {"class": "gas", "range": {}, "flags": []}
+        with mock.patch.object(A, "powertrain_for", return_value=pt), \
+             mock.patch.object(A, "towing_for_package", return_value={"triggered": True, "rating": None, "note": "not looked up yet",
+                                                                      "config": GLS, "config_text": "x"}), \
+             mock.patch.object(A, "_topup_carfax_check"), mock.patch.object(A, "_generate_once", side_effect=AssertionError):
+            A._topup_powertrain_check("S", e)
+        self.assertNotIn("7,716", e["current_ad_text"])
+        self.assertEqual(e["paragraph_three"], "")
+        self.assertTrue(any("tow figure not from an override" in f for f in e["powertrain_flags"]))
+        self.assertIn("towing_review", e)
+
+    def test_every_ad_path_runs_the_tow_check(self):
+        import inspect
+
+        src = {n: inspect.getsource(getattr(A, n)) for n in ("_generate_from_package", "reprice_ad", "_topup_powertrain_check")}
+        self.assertIn("fact_check_problems(ad_copy, pkg)", src["_generate_from_package"], "new build: whole ad, retry then drop")
+        self.assertIn("fact_check_problems(new_p2, tow_pkg)", src["reprice_ad"], "reprice: the rewritten paragraph")
+        self.assertIn("strip_unverified_tow(p1", src["reprice_ad"], "reprice: the paragraphs it leaves alone")
+        self.assertIn("strip_unverified_tow(entry[key]", src["_topup_powertrain_check"], "recon update")
+        self.assertIn("tow_policy(towing_for(", inspect.getsource(A.towing_for_package))
+
+
+class FindCandidates(unittest.TestCase):
+    def setUp(self):
+        wipe()
+
+    def test_one_capped_haiku_search_logged_as_research_candidates(self):
+        import api_cost
+        from types import SimpleNamespace as NS
+
+        calls = []
+        cite = NS(url="https://www.mbusa.com/gls", title="GLS", cited_text="The 2024 GLS 450 4MATIC tows up to 7,700 lbs when properly equipped.")
+        resp = NS(content=[NS(type="text", text="It is 7,700 lbs (https://www.mbusa.com/gls); some say 8,000 pounds.", citations=[cite])],
+                  stop_reason="end_turn", model=R.FIND_MODEL,
+                  usage=NS(input_tokens=20000, output_tokens=300, cache_creation_input_tokens=0, cache_read_input_tokens=0,
+                           server_tool_use=NS(web_search_requests=2)))
+
+        def run(client, *, kwargs, messages, label, purpose, max_cost_usd, **kw):
+            calls.append((kwargs, purpose, max_cost_usd))
+            api_cost.record(resp, purpose=purpose, model=kwargs["model"], label=label)
+            return resp
+
+        out = R.find_candidates("tow", R.key_of("tow", GLS), client=object(), run=run)
+        (kwargs, purpose, cap), = calls
+        self.assertEqual((kwargs["model"], kwargs["tools"][0]["type"], purpose, cap),
+                         ("claude-haiku-4-5", "web_search_20250305", "research_candidates", 0.25))
+        self.assertIn("research_candidates", api_cost.PURPOSES)
+        figs = [(c["figure"], c["origin"]) for c in out["candidates"]]
+        self.assertEqual(figs, [(7700, "Find candidates (quoted page)"), (8000, "Find candidates (model's reply, no quote)")])
+        self.assertIn("tows up to 7,700 lbs", out["candidates"][0]["quote"])
+        self.assertGreater(out["cost"], 0)
+        self.assertEqual(sorted(c["figure"] for c in R.candidates("tow", GLS)), [7700, 8000])
+        self.assertIsNone(R.get_fact("tow", GLS), "never accepted automatically")
 
 
 class RangeSentenceChecks(unittest.TestCase):

@@ -66,6 +66,7 @@
       <label>Quote</label><textarea name="quote" placeholder="the sentence or table row that states it">{{ g.fact.quote if g.fact else '' }}</textarea>
     </form>
     <div class="rs-actions">
+      <button type="button" class="rs-find" title="One Haiku 4.5 web search, up to $0.25; the figures come back as candidates only">Find candidates</button>
       <button type="button" class="rs-save">Save figure</button>
       {% if g.fact %}<button type="button" class="rs-clear">Remove figure</button>{% endif %}
     </div>
@@ -121,6 +122,33 @@
       b.addEventListener("click", function () {
         form.figure.value = b.dataset.figure; form.source_url.value = b.dataset.url; form.quote.value = b.dataset.quote;
         show(msg, "Candidate copied into the form; check the quote, then Save figure.");
+      });
+    });
+    const find = g.querySelector(".rs-find");
+    if (find) find.addEventListener("click", function () {
+      if (!confirm("Run one web search (Haiku 4.5, up to $0.25) for this configuration? Nothing is entered automatically.")) return;
+      find.disabled = true;
+      show(msg, "Searching...");
+      post("/research/candidates", { key_id: key }).then(function (r) {
+        find.disabled = false;
+        if (!r.j.ok) { show(msg, (r.j.error || "failed") + (r.j.cost ? " ($" + r.j.cost.toFixed(3) + ")" : ""), true); return; }
+        const box = g.querySelector(".rs-cands");
+        r.j.candidates.forEach(function (c) {
+          const b = document.createElement("button");
+          b.type = "button"; b.className = "rs-cand";
+          b.dataset.figure = c.figure; b.dataset.url = c.source_url; b.dataset.quote = c.quote;
+          const head = document.createElement("b"); head.textContent = c.figure.toLocaleString() + " " + r.j.unit;
+          b.appendChild(head);
+          b.appendChild(document.createTextNode(" · " + c.origin + (c.source_url ? " · " + c.source_url : "")));
+          if (c.quote) { const q = document.createElement("span"); q.className = "q"; q.textContent = "“" + c.quote + "”";
+                         b.appendChild(document.createElement("br")); b.appendChild(q); }
+          b.addEventListener("click", function () {
+            form.figure.value = c.figure; form.source_url.value = c.source_url; form.quote.value = c.quote;
+            show(msg, "Candidate copied into the form; check it against the page, then Save figure.");
+          });
+          box.appendChild(b);
+        });
+        show(msg, r.j.candidates.length + " candidate figure(s) found, $" + r.j.cost.toFixed(3) + ". None is entered until you Save figure.");
       });
     });
     const save = g.querySelector(".rs-save");

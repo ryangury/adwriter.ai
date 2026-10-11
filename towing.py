@@ -538,10 +538,10 @@ def towing_for(
     (tow_refresh --relookup).
 
     {"triggered", "rating" (lbs or None), "config", "config_text", "source_url",
-    "note", "override", "sentence"}. A tow override for the VIN beats everything
-    (its rating is used verbatim). Not triggered -> nothing to state. Triggered
-    without a rating -> the ad states no tow figure and "note" says why
-    (TOWING RATING NEEDS REVIEW)."""
+    "note", "override", "researched", "candidate", "sentence"}. The rating comes ONLY from a tow override for the
+    VIN (used verbatim) or a figure entered for the configuration on the Research page (TOW_RATING_SOURCES). A
+    cached lookup result is returned as "candidate", never as the rating. Not triggered -> nothing to state.
+    Triggered without a rating -> the ad states no tow figure and "note" says why (RESEARCH NEEDED)."""
     cfg = vehicle_config(year_make_model, trim, body_style, sticker_text, powertrain_class)
     # force: check even without tow wording on the sticker (an ad that already
     # states a tow figure, e.g. a Tesla with no cached sticker).
@@ -585,11 +585,32 @@ def towing_for(
     if row is None:
         out["note"] = "not looked up yet"
         return out
-    out["rating"] = row.get("tow_rating_lbs")
-    out["source_url"] = row.get("source_url")
-    out["note"] = None if out["rating"] else (row.get("note") or "no exact match on a manufacturer page")
-    out["sentence"] = towing_sentence(out["rating"])
+    # POLICY: a lookup never puts a figure in an ad. Its rating is a CANDIDATE for the Research page; only a VIN
+    # override or a configuration entry made there becomes the rating (TOW_RATING_SOURCES).
+    found = row.get("tow_rating_lbs")
+    if found:
+        out["candidate"] = {"figure": found, "source_url": row.get("source_url"), "quote": row.get("page_config")}
+        out["note"] = (f"a lookup found {found:,} lbs ({row.get('source_url') or 'no URL'}); "
+                       "not used until it is entered on the Research page")
+    else:
+        out["note"] = row.get("note") or "no exact match on a manufacturer page"
     return out
+
+
+# Where a tow figure in an ad may come from. Nothing else: no lookup, cache or model figure is ever stated.
+TOW_RATING_SOURCES = ("override", "research")
+
+
+def rating_source(tow: dict[str, Any] | None) -> str | None:
+    """"override" / "research" for a rating towing_for() may state, else None."""
+    tow = tow or {}
+    if not tow.get("rating"):
+        return None
+    if tow.get("override"):
+        return "override"
+    if tow.get("researched"):
+        return "research"
+    return None
 
 
 # --- the sentence ------------------------------------------------------------------ #

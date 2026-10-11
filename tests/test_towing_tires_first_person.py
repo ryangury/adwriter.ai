@@ -155,7 +155,9 @@ class CacheAndEntryTests(unittest.TestCase):
         with mock.patch.object(T, "lookup", return_value={"lbs": 13000, "url": "https://www.chevrolet.com/x", "page_config": "p", "note": None}) as lk:
             a = self._for("CT23308A")
             b = self._for("CT23308A")
-        self.assertEqual((a["rating"], b["rating"]), (13000, 13000))
+        # Policy: a looked-up rating is a Research-page candidate, never stated by itself.
+        self.assertEqual((a["rating"], b["rating"]), (None, None))
+        self.assertEqual((a["candidate"]["figure"], b["candidate"]["figure"]), (13000, 13000))
         self.assertEqual(lk.call_count, 1, "second call is a cache hit")
 
     def test_no_match_omits_and_notes(self):

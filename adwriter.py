@@ -45,7 +45,7 @@ from feature_cache import (
 from carfax_history import carfax_history, claim_problems, scrub_claims
 from towing import tow_figures as _tow_figures_in
 from research import set_research_needed
-from towing import towing_for, towing_sentence, unverified_tow_sentences
+from towing import rating_source, towing_for, towing_sentence, unverified_tow_sentences
 from vehicle_cache import get_vehicle, get_window_sticker
 from powertrain import (
     MILD_HYBRID_SENTENCE,
@@ -817,8 +817,7 @@ def towing_package_lines(tow: dict | None) -> list[str]:
         return []
     if tow.get("rating"):
         how = ("set by a manual override" if tow.get("override")
-               else f"researched for this exact configuration ({tow['config_text']}; {tow.get('source_url')})" if tow.get("researched")
-               else f"verified on a manufacturer page for this exact configuration ({tow['config_text']}; {tow.get('source_url')})")
+               else f"entered on the Research page for this exact configuration ({tow['config_text']}; {tow.get('source_url')})")
         return [
             "",
             f"TOWING CAPACITY: {tow['rating']:,} lbs — {how}.",
@@ -849,6 +848,30 @@ def set_towing_review(entry: dict, tow: dict | None) -> None:
         entry.pop("towing_review", None)
 
 
+def tow_policy(tow: dict) -> dict:
+    """A tow figure reaches an ad only from a VIN override or a configuration entry made on the Research page
+    (towing.TOW_RATING_SOURCES). Anything else carrying a rating is stripped to "no rating" here, so neither
+    TOWING_SENTENCE nor the tow-figure check can let it through."""
+    if tow.get("rating") and rating_source(tow) is None:
+        print(f"[towing] {tow.get('config_text')}: a rating of {tow['rating']} lbs without an override or Research-page "
+              "entry was dropped (policy)", file=sys.stderr)
+        tow = dict(tow, rating=None, sentence=None,
+                   note=f"{tow['rating']:,} lbs is not from an override or the Research page; not stated")
+    return tow
+
+
+def strip_unverified_tow(text: str, tow: dict | None, *, stock: str, label: str) -> tuple[str, list[str]]:
+    """No model call: remove every sentence of `text` stating a tow figure other than the allowed rating (a VIN
+    override or a Research-page entry; with neither, every tow figure). Returns (text, notes)."""
+    rating = (tow or {}).get("rating") if rating_source(tow) else None
+    bad = unverified_tow_sentences(text, rating)
+    if not bad:
+        return text, []
+    for b in bad:
+        print(f"[{label}] {stock}: removed sentence (tow figure not from an override or the Research page): {b}", file=sys.stderr)
+    return _drop_sentences(text, bad), [f"removed (tow figure not from an override or the Research page): {b}" for b in bad]
+
+
 def towing_for_package(pkg: dict) -> dict:
     """towing.towing_for() for an aggregated package: the inventory record's
     trim / body style, and the sticker text and option names. Never raises."""
@@ -870,10 +893,10 @@ def towing_for_package(pkg: dict) -> dict:
         # minutes each and timed out on 10/8). A miss comes back "not looked up
         # yet" and is flagged needs-review at once; tow_refresh --lookup-stocks
         # fills the cache.
-        return towing_for(
+        return tow_policy(towing_for(
             ymm, trim, snap.get("body_style"), raw, names,
             vin=vin, powertrain_class=pclass, force=bool(pkg.get("_tow_force")), allow_lookup=False,
-        )
+        ))
     except Exception as exc:  # noqa: BLE001 - a tow lookup must never sink a build
         print(f"[towing] {stock}: lookup failed — {exc}", file=sys.stderr)
         return {"triggered": True, "rating": None, "config_text": stock, "note": f"lookup failed ({exc})"}
@@ -3054,6 +3077,11 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
     p3, n3 = strip_powertrain_claims(p3, pt, stock=stock, label="reprice", existing=True)
     p4, n4 = strip_powertrain_claims(p4, pt, stock=stock, label="reprice", existing=True)
     pt_notes.extend(n1 + n3 + n4)
+    # ... and the tow-figure check (paragraph two was checked above, before and after the rewrite).
+    p1, t1 = strip_unverified_tow(p1, tow_pkg["towing"], stock=stock, label="reprice")
+    p3, t3 = strip_unverified_tow(p3, tow_pkg["towing"], stock=stock, label="reprice")
+    p4, t4 = strip_unverified_tow(p4, tow_pkg["towing"], stock=stock, label="reprice")
+    pt_notes.extend(t1 + t3 + t4)
     # Carfax claims the report doesn't support (clean history, all service at
     # authorized dealers): rewritten or removed in every paragraph, no model call.
     verdict = carfax_verdict_for_stock(stock)
@@ -3181,7 +3209,8 @@ def strip_pending_recon_sentence(text: str, status_code: int | None = None) -> s
 def _topup_powertrain_check(stock: str, entry: dict) -> None:
     """The recon top-up makes no model call, so the powertrain check here
     removes (and logs) any offending sentence from the stored paragraphs and
-    the full ad text, and records the flags on the entry."""
+    the full ad text, and records the flags on the entry. The same goes for a
+    tow figure that is not from a VIN override or the Research page."""
     pt = powertrain_for(stock)
     notes: list[str] = []
     for key in ("paragraph_one", "paragraph_two", "paragraph_three", "paragraph_four", "current_ad_text"):
@@ -3194,6 +3223,23 @@ def _topup_powertrain_check(stock: str, entry: dict) -> None:
             else:
                 entry[key] = new
                 notes.extend(n)
+    tow = towing_for_package({"stock_number": stock, "vehicle": {}, "powertrain": pt})
+    keys = ("paragraph_one", "paragraph_two", "paragraph_three", "paragraph_four")
+    tow_changed = False
+    for key in keys:
+        if entry.get(key):
+            new, n = strip_unverified_tow(entry[key], tow, stock=stock, label="update_recon")
+            if new != entry[key]:
+                entry[key], tow_changed = new, True
+                notes.extend(n)
+    if tow_changed:
+        set_current_ad_text(entry, "\n\n".join(entry[k] for k in keys if entry.get(k)))
+    elif entry.get("current_ad_text") and not any(entry.get(k) for k in keys):
+        new, n = strip_unverified_tow(entry["current_ad_text"], tow, stock=stock, label="update_recon")
+        if n:
+            set_current_ad_text(entry, new)
+            notes.extend(n)
+    set_towing_review(entry, tow)
     if notes or pt.get("flags"):
         entry["powertrain_flags"] = list(pt.get("flags") or []) + notes
     else:

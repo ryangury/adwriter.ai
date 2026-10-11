@@ -173,7 +173,9 @@ class Users(unittest.TestCase):
              mock.patch.object(T, "lookup", side_effect=lambda c: calls.append(c) or {"lbs": 7700, "url": "u"}), \
              mock.patch.object(T, "save"), mock.patch.object(T, "load_tow_overrides", return_value={}):
             self.assertIsNone(T.towing_for("x", "y", "SUV", "TRAILER HITCH", force=True)["rating"])
-            self.assertEqual(T.towing_for("x", "y", "SUV", "TRAILER HITCH", force=True, refresh=True)["rating"], 7700)
+            t = T.towing_for("x", "y", "SUV", "TRAILER HITCH", force=True, refresh=True)
+            # Policy: a lookup's figure is a candidate for the Research page, never the rating.
+            self.assertEqual((t["rating"], t["candidate"]["figure"]), (None, 7700))
         self.assertEqual(len(calls), 1)
 
     def test_range_lookup_stop_is_unavailable(self):

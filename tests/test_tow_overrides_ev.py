@@ -92,7 +92,9 @@ class EvLookupTests(TempStores):
         with mock.patch.object(T, "lookup", return_value={"lbs": 5000, "url": "https://www.tesla.com/x", "note": None}):
             with mock.patch.object(T, "get_cached", return_value=None):
                 t = T.towing_for(*args, powertrain_class="bev", force=True)
-        self.assertEqual((t["rating"], t["sentence"]), (5000, "It is rated to tow up to 5,000 lbs."))
+        # Policy: the lookup's 5,000 lbs is a candidate only; no tow sentence until it is entered on the Research page.
+        self.assertEqual((t["rating"], t["sentence"], t["candidate"]["figure"]), (None, None, 5000))
+        self.assertIn("not used until it is entered on the Research page", t["note"])
 
 
 class OverrideTests(TempStores):
