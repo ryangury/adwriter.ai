@@ -38,6 +38,7 @@ def generate(pkg):
     """_generate_from_package as far as the summary sees it: the package gains its powertrain and towing."""
     pkg["powertrain"] = {"class": "diesel", "range": {}}
     pkg["towing"] = dict(TOW_MISS)
+    pkg["package_coverage_missing"] = [{"name": "Z71 OFF-ROAD PACKAGE", "price": 750.0}]
     return AD, FEEDBACK
 
 
@@ -190,6 +191,8 @@ class StepOrder(unittest.TestCase):
         self.assertIn("RESEARCH NEEDED (1)", summary)
         self.assertIn("[CT23308A]", summary.split("RESEARCH NEEDED")[1])
         self.assertIn("tow rating missing (not_looked_up)", summary)
+        self.assertIn("PACKAGES NOT NAMED IN PARAGRAPH TWO (warning only) (1)", summary)
+        self.assertIn("Z71 OFF-ROAD PACKAGE ($750)", summary)
 
     def assert_order(self, r):
         e = r.events
