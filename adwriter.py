@@ -27,6 +27,7 @@ import credentials
 from credentials import ANTHROPIC_API_KEY
 from email_config import EMAIL_ADS_READY
 import api_cost
+import model_config
 from aggregator import (
     _RECON_DONE_FALLBACK,
     _RECON_PENDING_FALLBACK,
@@ -89,7 +90,7 @@ from system_prompt_hendrick_certified import HENDRICK_CERTIFIED_PROMPT
 # a real key here again.
 API_KEY = ANTHROPIC_API_KEY
 
-MODEL = "claude-sonnet-4-6"
+MODEL = model_config.GENERATE_MODEL     # kept for older callers; each call site reads its own flag in model_config
 MAX_TOKENS = 2500
 
 # ACV MAX inventory status codes that mean "certified and postable". Anything
@@ -1078,10 +1079,13 @@ def generate_ad(
         "Here is the vehicle data package. Write the ad copy using the framework."
         "\n\n" + vehicle_data
     )
+    # One flag per call site (model_config): the search call and the plain write can run different models. The
+    # caps were set for 4.6 and are scaled for the model (Sonnet 5.5 writes about 20% more tokens).
+    model = model_config.RESEARCH_SEARCH_MODEL if needs_lookup else model_config.GENERATE_MODEL
     kwargs: dict = {
-        "model": MODEL,
-        "max_tokens": (
-            min(10000, 3000 + 700 * len(needs_lookup)) if needs_lookup else MAX_TOKENS
+        **model_config.request_kwargs(model),
+        "max_tokens": model_config.output_cap(
+            model, min(10000, 3000 + 700 * len(needs_lookup)) if needs_lookup else MAX_TOKENS
         ),
         "system": system_prompt,
     }
@@ -2734,21 +2738,25 @@ REPRICE_MIN_TOKENS = 1500
 _CAP_EXTRA_TOKENS = 400
 
 
-def _estimate_tokens(client, text: str) -> int:
-    """Token count of `text` for MODEL (free count_tokens endpoint); falls back to
-    a conservative characters-per-token guess if the call fails."""
+def _estimate_tokens(client, text: str, model: str | None = None) -> int:
+    """Token count of `text` for `model` (the rewrite model; free count_tokens endpoint, so a model that counts more
+    tokens for the same text gets a bigger estimate); falls back to a conservative characters-per-token guess,
+    scaled by the model's input factor, if the call fails."""
+    model = model or model_config.REPRICE_MODEL
     try:
         return int(client.messages.count_tokens(
-            model=MODEL, messages=[{"role": "user", "content": text or " "}]
+            model=model, messages=[{"role": "user", "content": text or " "}]
         ).input_tokens)
     except Exception:  # noqa: BLE001 - a sizing helper must never sink the call
-        return int(len(text or "") / 2.5) + 1
+        return int(len(text or "") / 2.5 * model_config.INPUT_FACTOR.get(model, 1.0)) + 1
 
 
-def _output_cap(client, size_text: str, floor: int) -> int:
+def _output_cap(client, size_text: str, floor: int, model: str | None = None) -> int:
     """max_tokens for a paragraph rewrite: twice the existing paragraph's tokens
-    plus 400, never below `floor`."""
-    return max(floor, 2 * _estimate_tokens(client, size_text) + _CAP_EXTRA_TOKENS)
+    plus 400, never below `floor` (the floor and the extra scaled for the model's output)."""
+    model = model or model_config.REPRICE_MODEL
+    return max(model_config.output_cap(model, floor),
+               2 * _estimate_tokens(client, size_text, model) + model_config.output_cap(model, _CAP_EXTRA_TOKENS))
 
 
 def flag_generation_problem(stock: str, kind: str, detail: str) -> None:
@@ -2767,13 +2775,14 @@ def _capped_completion(client, *, stock: str, label: str, system: str, user: str
     stop with end_turn (max_tokens, refusal, ...) is retried once with double
     the cap; if it still did not finish, the vehicle is flagged and
     TruncatedGenerationError is raised - a truncated paragraph is never returned."""
-    cap = _output_cap(client, size_text, floor)
+    model = model_config.REPRICE_MODEL       # reprice and recon update
+    cap = _output_cap(client, size_text, floor, model)
     last = None
     for attempt_cap in (cap, cap * 2):
         resp = api_cost.create(
             client, purpose={"reprice": "reprice", "update_recon": "recon_update"}.get(label, "other"),
             stock=stock, retry=attempt_cap != cap, label=label,
-            model=MODEL,
+            **model_config.request_kwargs(model),
             max_tokens=attempt_cap,
             system=system,
             messages=[{"role": "user", "content": user}],
