@@ -167,7 +167,7 @@ class SentenceTests(unittest.TestCase):
         hist = copy.deepcopy(HIST)
         saved = []
 
-        def fake(client, *, stock, label, system, user, size_text, floor):
+        def fake(client, *, stock, label, system, user, size_text, floor, status_code=None):
             return user.split("EXISTING PARAGRAPH TWO:\n", 1)[1].split("\n\nNEW PRICING DATA:", 1)[0]
 
         with mock.patch.object(A, "load_ad_history", return_value=hist), \

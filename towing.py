@@ -455,11 +455,13 @@ def lookup(cfg: dict[str, Any]) -> dict[str, Any]:
     client = api_cost.make_client(max_retries=0)
     messages: list[Any] = [{"role": "user", "content": ask}]
     try:
+        import model_config
+
         response = run_search(
             client,
             kwargs={
-                "model": MANUFACTURER_SEARCH_MODEL,
-                "max_tokens": 16000,
+                **model_config.request_kwargs(model_config.TOW_LOOKUP_MODEL),
+                "max_tokens": model_config.output_cap(model_config.TOW_LOOKUP_MODEL, 16000),
                 "tools": [{
                     "type": "web_search_20260209", "name": "web_search",
                     "allowed_domains": domains, "max_uses": TOW_LOOKUP_MAX_USES,

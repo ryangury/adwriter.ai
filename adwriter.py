@@ -27,6 +27,7 @@ import credentials
 from credentials import ANTHROPIC_API_KEY
 from email_config import EMAIL_ADS_READY
 import api_cost
+import model_config
 from aggregator import (
     _RECON_DONE_FALLBACK,
     _RECON_PENDING_FALLBACK,
@@ -89,7 +90,11 @@ from system_prompt_hendrick_certified import HENDRICK_CERTIFIED_PROMPT
 # a real key here again.
 API_KEY = ANTHROPIC_API_KEY
 
-MODEL = "claude-sonnet-4-6"
+MODEL = model_config.GENERATE_MODEL_MB  # kept for older callers; each call site reads its own flag in model_config
+
+# The model (and effort) that wrote each stock's ad text this process, for ad_history's generated_with and the
+# per-ad email's feedback block. Set by generate_ad, read by _generate_from_package and record_ad.
+GENERATED_WITH: dict[str, dict] = {}
 MAX_TOKENS = 2500
 
 # ACV MAX inventory status codes that mean "certified and postable". Anything
@@ -1077,8 +1082,12 @@ def generate_ad(
     stock: str | None = None,
     make: str | None = None,
     _retry: bool = False,
+    status_code: int | None = None,
 ) -> tuple[str, str | None]:
     """Send the vehicle data to Claude and return (ad_copy, feedback_block).
+
+    The model comes from model_config by status_code (11 / 12 / 13 are non-MB): the search call uses
+    RESEARCH_SEARCH_MODEL_MB / _NON_MB, a write without the search tool GENERATE_MODEL_MB / _NON_MB.
 
     Every request is logged to api_cost_log (purpose research_search when the
     web-search tool is on, otherwise generate). With api_cost.GENERATE_GUARD_ENABLED
@@ -1101,10 +1110,15 @@ def generate_ad(
         "Here is the vehicle data package. Write the ad copy using the framework."
         "\n\n" + vehicle_data
     )
+    # One flag per call site (model_config): the search call and the plain write can run different models. The
+    # caps were set for 4.6 and are scaled for the model (Sonnet 5.5 writes about 20% more tokens).
+    model = model_config.research_search_model(status_code) if needs_lookup else model_config.generate_model(status_code)
+    if stock:
+        GENERATED_WITH[stock] = model_config.tag(model)     # the last call is the one whose text is kept
     kwargs: dict = {
-        "model": MODEL,
-        "max_tokens": (
-            min(10000, 3000 + 700 * len(needs_lookup)) if needs_lookup else MAX_TOKENS
+        **model_config.request_kwargs(model),
+        "max_tokens": model_config.output_cap(
+            model, min(10000, 3000 + 700 * len(needs_lookup)) if needs_lookup else MAX_TOKENS
         ),
         "system": system_prompt,
     }
@@ -1124,15 +1138,17 @@ def generate_ad(
         try:
             response = run_search(client, kwargs=kwargs, messages=messages, label=f"ad research {stock or ''}".strip(),
                                   budget_s=GENERATE_SEARCH_BUDGET_S, silence_s=GENERATE_SEARCH_SILENCE_S,
-                                  purpose="research_search", stock=stock, guard=api_cost.generate_guard(stock))
+                                  purpose="research_search", stock=stock, guard=api_cost.generate_guard(stock, model))
         except api_cost.SearchDegrade as exc:
             print(f"[adwriter] {stock}: cost guard degrade ({exc.reason}) - writing the ad without search: {exc}",
                   file=sys.stderr)
-            return generate_ad(client, vehicle_data, system_prompt, needs_lookup=[], stock=stock, make=make, _retry=True)
+            return generate_ad(client, vehicle_data, system_prompt, needs_lookup=[], stock=stock, make=make, _retry=True,
+                               status_code=status_code)
         except SearchUnavailable as exc:
             print(f"[adwriter] {stock}: web search stopped ({exc.reason}) - writing the ad without search: {exc}",
                   file=sys.stderr)
-            return generate_ad(client, vehicle_data, system_prompt, needs_lookup=[], stock=stock, make=make, _retry=True)
+            return generate_ad(client, vehicle_data, system_prompt, needs_lookup=[], stock=stock, make=make, _retry=True,
+                               status_code=status_code)
     else:
         for _ in range(4):
             response = api_cost.create(client, purpose="generate", stock=stock, retry=_retry,
@@ -2285,10 +2301,20 @@ def _generate_from_package(pkg: dict) -> tuple[str, str | None]:
         pt_flags.append(f"TOWING RATING NEEDS REVIEW — {tow.get('config_text')}: {tow.get('note')}")
 
     def _done(ad_copy: str, feedback: str | None) -> tuple[str, str | None]:
-        return scrub_non_mb_tire_wording(
+        ad_copy = scrub_non_mb_tire_wording(
             ad_copy, vehicle.get("status_code"), vehicle.get("year_make_model"),
             stock=stock or "", label="adwriter",
-        ), _with_flags(feedback, pt_flags)
+        )
+        flags = list(pt_flags)
+        uncovered = package_coverage_missing(ad_copy, pkg)
+        pkg["package_coverage_missing"] = uncovered
+        if uncovered:
+            listed = "; ".join(f"{u['name']} (${u['price']:,.0f})" for u in uncovered)
+            print(f"[adwriter] {stock}: package coverage (warning only) - not named in paragraph two: {listed}", file=sys.stderr)
+            flags.append(f"PACKAGE COVERAGE (warning only): ${PACKAGE_COVERAGE_MIN_USD}+ sticker package(s) not named "
+                         f"in paragraph two: {listed}")
+        fb = _with_flags(feedback, flags)
+        return ad_copy, ((fb or "").rstrip() + f"\nMODEL: {model_config.describe(GENERATED_WITH.get(stock or ''))}").strip()
 
     for attempt in (1, 2):
         ad_copy, feedback = _generate_once(pkg)
@@ -2380,6 +2406,7 @@ def _generate_once(pkg: dict) -> tuple[str, str | None]:
         needs_lookup=needs_lookup,
         stock=pkg.get("stock_number"),
         make=split_ymm(v.get("year_make_model"))[1],
+        status_code=v.get("status_code"),
     )
 
 
@@ -2664,6 +2691,9 @@ def record_ad(
     entry["recon_pending"] = bool(recon_pending)
     entry["lifecycle_stage"] = lifecycle_stage
     entry["last_feedback"] = last_feedback
+    entry.pop("generated_with", None)
+    if GENERATED_WITH.get(stock):
+        entry["generated_with"] = GENERATED_WITH.pop(stock)
     # a fresh ad body has not been verified against hendrickcars.com yet
     clear_verification(entry)
     # a regenerated ad starts clean: no removed-sentence tracking
@@ -2753,25 +2783,91 @@ class TruncatedGenerationError(RuntimeError):
     after a retry with double the cap. The old text is kept."""
 
 
+class RepriceSurvivalError(TruncatedGenerationError):
+    """A reprice's new paragraph two dropped or changed a sentence it had to keep, even after a retry. The old text
+    is kept and the vehicle flagged (handled like a truncated reprice)."""
+
+
+_NUMBER_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
+_PROOF_POINT_START_RE = re.compile(r"^Current asking price is\b")
+
+
+def _mask_numbers(s: str) -> str:
+    return _ws(_NUMBER_RE.sub("#", s or ""))
+
+
+def reprice_lost_sentences(old_p2: str, new_p2: str, required: dict[str, str]) -> list[str]:
+    """Sentences of the old paragraph two (after Python's own removals) that are not Python-built and are missing
+    from the new paragraph two. The reprice may change dollar figures only, so a sentence with a $ figure must come
+    back with only its numbers changed; any other sentence must come back verbatim. Python-built sentences (the
+    required sentences, whatever numbers they carried before, and the proof-point sentence) are exempt."""
+    from aggregator import SHIPPING_SENTENCE  # local, as in reprice_ad
+
+    keep = list(required.values()) + [SHIPPING_SENTENCE]
+    req_masked = {_mask_numbers(r) for r in required.values()} | {_mask_numbers(SHIPPING_SENTENCE)}
+    new_units = _units(new_p2 or "", keep)
+    new_exact = {_ws(u) for u in new_units}
+    new_masked = {_mask_numbers(u) for u in new_units}
+    lost = []
+    for u in _units(old_p2 or "", keep):
+        if _mask_numbers(u) in req_masked or _PROOF_POINT_START_RE.match(u.strip()):
+            continue
+        ok = (_mask_numbers(u) in new_masked) if "$" in u else (_ws(u) in new_exact)
+        if not ok:
+            lost.append(u.strip())
+    return lost
+
+
+# Package coverage (a warning, never a block): every sticker package priced at this or more is named in paragraph two.
+PACKAGE_COVERAGE_MIN_USD = 750
+_PKG_STOPWORDS = {"package", "pkg", "w", "with", "the", "and", "eng", "option", "options", "inch", "in", "of"}
+
+
+def _name_tokens(text: str) -> set[str]:
+    t = (text or "").lower().replace('"', " ").replace("”", " ").replace("-", " ").replace("/", " ")
+    return {w for w in re.findall(r"[a-z0-9]+(?:\.[0-9]+[a-z]*)?", t) if w not in _PKG_STOPWORDS}
+
+
+def package_coverage_missing(ad_copy: str, pkg: dict) -> list[dict]:
+    """[{name, price}] for each sticker package (msrp_data.option_packages) priced at PACKAGE_COVERAGE_MIN_USD or
+    more whose name is not in paragraph two (every word of the name, in any order; 'Package', 'ENG:', 'w/' ignored)."""
+    p2 = split_ad_paragraphs(ad_copy or "").get("paragraph_two") or ""
+    have = _name_tokens(p2)
+    out = []
+    for o in ((pkg or {}).get("msrp_data") or {}).get("option_packages") or []:
+        try:
+            price = float(o.get("price") or 0)
+        except (TypeError, ValueError):
+            continue
+        words = _name_tokens(o.get("name") or "")
+        if price >= PACKAGE_COVERAGE_MIN_USD and words and not words <= have:
+            out.append({"name": o.get("name"), "price": price})
+    return out
+
+
 REPRICE_MIN_TOKENS = 1500
 _CAP_EXTRA_TOKENS = 400
 
 
-def _estimate_tokens(client, text: str) -> int:
-    """Token count of `text` for MODEL (free count_tokens endpoint); falls back to
-    a conservative characters-per-token guess if the call fails."""
+def _estimate_tokens(client, text: str, model: str | None = None) -> int:
+    """Token count of `text` for `model` (the rewrite model; free count_tokens endpoint, so a model that counts more
+    tokens for the same text gets a bigger estimate); falls back to a conservative characters-per-token guess,
+    scaled by the model's input factor, if the call fails."""
+    model = model or model_config.REPRICE_MODEL_MB
     try:
         return int(client.messages.count_tokens(
-            model=MODEL, messages=[{"role": "user", "content": text or " "}]
+            model=model, messages=[{"role": "user", "content": text or " "}]
         ).input_tokens)
     except Exception:  # noqa: BLE001 - a sizing helper must never sink the call
-        return int(len(text or "") / 2.5) + 1
+        return int(len(text or "") / 2.5 * model_config.INPUT_FACTOR.get(model, 1.0)) + 1
 
 
-def _output_cap(client, size_text: str, floor: int) -> int:
+def _output_cap(client, size_text: str, floor: int, model: str | None = None) -> int:
     """max_tokens for a paragraph rewrite: twice the existing paragraph's tokens
-    plus 400, never below `floor`."""
-    return max(floor, 2 * _estimate_tokens(client, size_text) + _CAP_EXTRA_TOKENS)
+    plus 400, never below `floor` (the floor and the extra scaled for the model's output)."""
+    model = model or model_config.REPRICE_MODEL_MB
+    return max(model_config.output_cap(model, floor),
+               2 * _estimate_tokens(client, size_text, model) + model_config.output_cap(model, _CAP_EXTRA_TOKENS))
 
 
 def flag_generation_problem(stock: str, kind: str, detail: str) -> None:
@@ -2785,18 +2881,20 @@ def flag_generation_problem(stock: str, kind: str, detail: str) -> None:
     save_ad_history(history)
 
 
-def _capped_completion(client, *, stock: str, label: str, system: str, user: str, size_text: str, floor: int) -> str:
+def _capped_completion(client, *, stock: str, label: str, system: str, user: str, size_text: str, floor: int,
+                       status_code: int | None = None) -> str:
     """One paragraph-rewrite call with a size-based cap. A response that did not
     stop with end_turn (max_tokens, refusal, ...) is retried once with double
     the cap; if it still did not finish, the vehicle is flagged and
     TruncatedGenerationError is raised - a truncated paragraph is never returned."""
-    cap = _output_cap(client, size_text, floor)
+    model = model_config.reprice_model(status_code)      # MB (10 / 16) or non-MB (11 / 12 / 13)
+    cap = _output_cap(client, size_text, floor, model)
     last = None
     for attempt_cap in (cap, cap * 2):
         resp = api_cost.create(
             client, purpose={"reprice": "reprice", "update_recon": "recon_update"}.get(label, "other"),
             stock=stock, retry=attempt_cap != cap, label=label,
-            model=MODEL,
+            **model_config.request_kwargs(model),
             max_tokens=attempt_cap,
             system=system,
             messages=[{"role": "user", "content": user}],
@@ -2996,7 +3094,7 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
     def _rewrite() -> str:
         return _capped_completion(
             client, stock=stock, label="reprice", system=reprice_prompt_for(status),
-            user=data_block, size_text=clean_p2 or old_p2, floor=REPRICE_MIN_TOKENS,
+            user=data_block, size_text=clean_p2 or old_p2, floor=REPRICE_MIN_TOKENS, status_code=status,
         )
 
     # Sentences kept from the existing paragraph (mild-hybrid wording only)
@@ -3017,16 +3115,28 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
             sticker_mild=mild_wording_ok(pt), engine=pt.get("engine"),
         )
         tow_bad, tire_bad = fact_check_problems(new_p2, tow_pkg)
-        if not hits and not missing and not pt_bad and not tow_bad and not tire_bad:
+        lost = reprice_lost_sentences(clean_p2 or old_p2, new_p2, required)
+        if not hits and not missing and not pt_bad and not tow_bad and not tire_bad and not lost:
             break
         problems = ([f"banned scarcity wording {sorted(set(hits))}"] if hits else []) + (
             [f"missing required sentence(s) {missing}"] if missing else []
         ) + [f"powertrain: {'; '.join(p)}" for _, p in pt_bad] + (
             [f"unverified tow figure / tire size: {tow_bad + tire_bad}"] if tow_bad or tire_bad else []
-        )
+        ) + ([f"{len(lost)} sentence(s) of the old paragraph two not kept verbatim"] if lost else [])
         if attempt == 1:
             print(f"[reprice] {stock}: {'; '.join(problems)} - retrying once", file=sys.stderr)
             continue
+        if lost:
+            # The reprice may change dollar figures and the Python-built sentences only. Anything else lost twice:
+            # keep the old paragraph (the old ad stays as it is), log it and flag the vehicle.
+            for s in lost:
+                print(f"[reprice] {stock}: not kept verbatim after retry: {s}", file=sys.stderr)
+            flag_generation_problem(stock, "reprice_dropped_sentences",
+                                    f"{len(lost)} sentence(s) not kept verbatim after a retry: " + " | ".join(lost)[:600])
+            raise RepriceSurvivalError(
+                f"reprice: {len(lost)} sentence(s) of the old paragraph two were not kept verbatim after a retry; "
+                "old text kept, vehicle flagged"
+            )
         if hits:
             print(f"[reprice] {stock}: banned scarcity wording {sorted(set(hits))} after retry - skipping", file=sys.stderr)
             raise BannedScarcityPhraseError(
@@ -3049,6 +3159,7 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
                 print(f"[reprice] {stock}: removed sentence (unverified tow figure / tire size): {s}", file=sys.stderr)
                 pt_notes.append(f"removed after retry (unverified tow figure / tire size): {s}")
     new_p2 = insert_scarcity_sentence(new_p2, pd.get("scarcity_sentence"))
+    entry["generated_with"] = model_config.tag(model_config.reprice_model(status))
     set_towing_review(entry, tow_pkg["towing"])
     set_research_needed(entry, pt, tow_pkg["towing"])
 

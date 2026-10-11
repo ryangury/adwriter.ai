@@ -121,8 +121,14 @@ class Guard:
         return None
 
 
-def generate_guard(stock: str | None = None) -> Guard | None:
-    return Guard(stock) if GENERATE_GUARD_ENABLED else None
+def generate_guard(stock: str | None = None, model: str | None = None) -> Guard | None:
+    """The guard for one generate call, with the limits for the search call's model (model_config.GUARD_LIMITS)."""
+    if not GENERATE_GUARD_ENABLED:
+        return None
+    import model_config
+
+    lim = model_config.guard_limits(model or model_config.RESEARCH_SEARCH_MODEL_MB)
+    return Guard(stock, call_budget=lim["call_usd"], ad_budget=lim["ad_usd"], max_searches=int(lim["searches"]))
 
 
 # --------------------------------------------------------------------------- #

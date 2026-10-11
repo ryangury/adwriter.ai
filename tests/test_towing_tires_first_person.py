@@ -216,7 +216,7 @@ class RepriceAndReportTests(unittest.TestCase):
         e["paragraph_two"] = p2 + " The Escape is rated to tow up to 3,500 lbs with the tow package."
         seen, saved = [], []
 
-        def fake(client, *, stock, label, system, user, size_text, floor):
+        def fake(client, *, stock, label, system, user, size_text, floor, status_code=None):
             ex = user.split("EXISTING PARAGRAPH TWO:\n", 1)[1].split("\n\nNEW PRICING DATA:", 1)[0]
             seen.append(ex)
             return ex
