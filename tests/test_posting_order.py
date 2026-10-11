@@ -15,7 +15,9 @@ from unittest import mock
 
 import _paths  # noqa: F401  (repo root first on sys.path)
 import adwriter  # noqa: E402
+import feature_cache  # noqa: E402
 import orchestrator as o  # noqa: E402
+import research  # noqa: E402
 import verifier  # noqa: E402
 
 sys.path.insert(0, __import__("os").path.dirname(__file__))
@@ -24,6 +26,19 @@ from test_per_ad_email import AD, FEEDBACK, PKG  # noqa: E402
 
 VEH = [{"stock_number": "CT23308A", "status_code": 11, "vin": "V", "year_make_model": "2024 Chevrolet Silverado 1500"}]
 TODAY = date.today()
+_FC = __import__("pathlib").Path(__import__("tempfile").mkdtemp(prefix="posting_order_fc_")) / "feature_cache.db"
+# The build leaves the Silverado without a tow rating (a build makes no live lookup): RESEARCH NEEDED.
+TOW_MISS = {"triggered": True, "rating": None, "note": "not looked up yet",
+            "config_text": "2024 Chevrolet Silverado 1500 3.0L Duramax 4WD crew cab short bed",
+            "config": {"year": 2024, "make": "Chevrolet", "model": "Silverado 1500", "engine": "3.0L Duramax",
+                       "drivetrain": "4WD", "cab": "crew", "bed": "short", "tow_package": "TRAILERING PACKAGE"}}
+
+
+def generate(pkg):
+    """_generate_from_package as far as the summary sees it: the package gains its powertrain and towing."""
+    pkg["powertrain"] = {"class": "diesel", "range": {}}
+    pkg["towing"] = dict(TOW_MISS)
+    return AD, FEEDBACK
 
 
 def row(stock):
@@ -113,7 +128,8 @@ class Run:
             mock.patch.object(o, "check_recon", return_value={"recon_complete": True}),
             mock.patch.object(o, "aggregate", return_value=dict(PKG, recon_complete=True)),
             mock.patch.object(o, "source_status", return_value={}),
-            mock.patch.object(o, "_generate_from_package", return_value=(AD, FEEDBACK)),
+            mock.patch.object(o, "_generate_from_package", side_effect=generate),
+            mock.patch.object(feature_cache, "DB_PATH", _FC),
             mock.patch.object(o, "record_ad"), mock.patch.object(o, "ACVMaxScraper", Fake),
             mock.patch.object(o, "recorded_today", side_effect=fake_recorded_today()),
             mock.patch.object(o, "run_watched", side_effect=fake_run_watched(on_child)),
@@ -170,6 +186,10 @@ class StepOrder(unittest.TestCase):
         self.assertNotIn("HENDRICKCARS.COM LINKS", r.output, "the link lookup only feeds Ads Ready")
         self.assertEqual(len(r.sent_subject("Action Required")), 1, r.events)
         self.assertEqual(len(r.sent_subject("Build Summary")), 1, r.events)
+        summary = dict(r.sent)[r.sent_subject("Build Summary")[0]]
+        self.assertIn("RESEARCH NEEDED (1)", summary)
+        self.assertIn("[CT23308A]", summary.split("RESEARCH NEEDED")[1])
+        self.assertIn("tow rating missing (not_looked_up)", summary)
 
     def assert_order(self, r):
         e = r.events
@@ -232,6 +252,15 @@ class StepOrder(unittest.TestCase):
         rc = r.run()
         self.assert_still_sends(r, rc)
         self.assert_order(r)
+
+    def test_a_research_failure_still_sends_the_summary(self):
+        r = Run([clean, clean])
+        r.patches.append(mock.patch.object(research, "items_for", side_effect=RuntimeError("research table locked")))
+        rc = r.run()
+        self.assertEqual(rc, 0)
+        summary = dict(r.sent)[r.sent_subject("Build Summary")[0]]
+        self.assertIn("could not be checked (research table locked)", summary)
+        self.assertEqual(len(r.sent_subject("Action Required")), 1, r.events)
 
     def test_second_check_answer_replaces_the_first(self):
         # posted between the checks: check 1 said not found, check 2 says current

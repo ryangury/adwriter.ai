@@ -322,5 +322,35 @@ class Site(unittest.TestCase):
         self.assertIn('href="/research">Research</a>', html)
 
 
+class RangeSentenceChecks(unittest.TestCase):
+    """The sentence Refresh text writes passes every check a generated ad gets: the range figure and wording, the
+    powertrain type words, and the required (verbatim) sentences already in the ad stay intact."""
+
+    def test_range_and_type_word_checks(self):
+        for cls in (P.PHEV, P.BEV):
+            for source in ("epa", "manual", "manufacturer"):
+                rng = {"miles": 54, "source": source, "phrase": P.range_phrase(54, source)}
+                s = R.range_sentence(54, source)
+                self.assertEqual(P.sentence_problems(s, cls, rng), [], (cls, source, s))
+                self.assertEqual(P.check_claims(s, cls, rng, []), [], (cls, source))
+                self.assertTrue(P.sentence_problems(R.range_sentence(60, source), cls, rng), "a different figure fails")
+        self.assertIn("EPA", R.range_sentence(54, "epa"))
+        self.assertNotIn("EPA", R.range_sentence(54, "manual"))
+
+    def test_required_sentences_survive_the_insert(self):
+        required = {"engine_sentence": "It is powered by a 2.0L turbocharged inline-four engine.",
+                    "towing_sentence": "It is rated to tow up to 3,500 lbs.",
+                    "shipping_sentence": "Shipping is free within 100 miles."}
+        ad = ("This 2025 GLC 350e is ready.\n\nIt is a plug-in hybrid SUV. " + required["engine_sentence"] + " "
+              + required["towing_sentence"] + " " + required["shipping_sentence"] + "\n\nWarranty applies.\n\nCall us.")
+        new = A.insert_required_sentences(ad, {"towing_sentence": R.range_sentence(54, "epa")}, ["towing_sentence"])
+        self.assertEqual(A.missing_required_sentences(new, required), [])
+        p2 = A.split_ad_paragraphs(new)["paragraph_two"]
+        self.assertIn(required["engine_sentence"] + " " + R.range_sentence(54, "epa"), p2, "right after the engine sentence")
+        self.assertTrue(p2.endswith(required["shipping_sentence"]), "shipping stays last")
+        rng = {"miles": 54, "source": "epa", "phrase": P.range_phrase(54, "epa")}
+        self.assertEqual(P.check_claims(new, P.PHEV, rng, list(required.values())), [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
