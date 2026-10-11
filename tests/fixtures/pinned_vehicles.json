@@ -28,5 +28,21 @@
   "status_code": 10,
   "certified": true,
   "objective": "Retail"
+ },
+ "XH51984A": {
+  "vehicle_id": "87113884",
+  "stock_number": "XH51984A",
+  "vin": "KL4MMDSL6LB094005",
+  "year_make_model": "2020 Buick Encore GX",
+  "trim": "Select FWD",
+  "body_style": "SUV",
+  "mileage": null,
+  "exterior_color": null,
+  "current_price": null,
+  "days_on_lot": null,
+  "status_code": 12,
+  "certified": false,
+  "objective": "Retail",
+  "_note": "sold 2026-10-11; rebuilt from vehicle_cache.db (VIN, model), the orchestrator log (vehicle id) and its ad (trim)"
  }
 }

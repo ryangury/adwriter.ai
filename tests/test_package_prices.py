@@ -159,6 +159,66 @@ check("still missing after the retry: Duramax price inserted after its sentence,
 check("still no standard-equipment sentence after the retry: flagged, nothing invented",
       "STANDARD EQUIPMENT (warning only)" in fb and "standard equipment" not in adwriter.split_ad_paragraphs(out)["paragraph_two"].lower(), fb)
 
+print("=== standard-equipment retry message ===")
+note = adwriter.standard_equipment_retry_note(ex, adwriter.standard_equipment_missing(ad(no_std), ex))
+check("Explorer: the message names the gap and asks for 'Standard equipment on the ST also includes' with 3+ items",
+      "no standard-equipment sentence" in note and 'beginning "Standard equipment on the ST also includes"' in note
+      and "at least 3 items" in note, note)
+check("Explorer: the cached list is given, item by item", "  - 12.3-inch digital instrument cluster" in note and "  - 4WD" in note, note)
+OLD_EXPLORER = ("2023 Ford Explorer ST 4WD standard equipment: twin-turbocharged 3.0L EcoBoost V6 (exclusive to ST and above vs. "
+                "2.3L I-4 on lower trims), 4WD, sport-tuned suspension, 12.3-inch digital instrument cluster")
+raw_note = adwriter.standard_equipment_retry_note(ex, OLD_EXPLORER)
+check("an uncleaned list: engine and trim-comparison wording is left out of the message",
+      "EcoBoost" not in raw_note and "2.3L" not in raw_note and "  - sport-tuned suspension" in raw_note, raw_note)
+note = adwriter.standard_equipment_retry_note(sv, adwriter.standard_equipment_missing(ad(SILVERADO_55_P2), sv))
+check("Silverado 5.5: 'Standard equipment on the RST also includes', its cached list, no 'NOT standard' clause",
+      'beginning "Standard equipment on the RST also includes"' in note and "  - 13.4-inch infotainment touchscreen with Google Built-in" in note
+      and "Bose" not in note and "NOT" not in note, note)
+
+seen = []
+
+
+def run_seen(replies, package):
+    seq = list(replies)
+
+    def once(p):
+        seen.append(p.get("_retry_note"))
+        return seq.pop(0), "CONFIDENCE: HIGH"
+    adwriter._generate_once = once
+    full = dict(package, stock_number="CT23308A", towing={"triggered": False},
+                vehicle={"status_code": 11, "year_make_model": "2024 Chevrolet Silverado 1500"},
+                powertrain={"class": "diesel", "range": {}, "flags": [], "engine": None})
+    out, fb = adwriter._generate_from_package(full)
+    return out, fb, full
+
+
+seen.clear()
+fixed55 = SILVERADO_55_P2.replace("turbo-diesel with", "turbo-diesel ($2,390) with")
+out, fb, full = run_seen([ad(fixed55), ad(fixed55 + " " + SILVERADO_STD)], sv)
+check("Silverado 5.5: first call has no message, the retry carries it, the retry's sentence is kept",
+      seen[0] is None and "Standard equipment on the RST also includes" in (seen[1] or "")
+      and SILVERADO_STD in out and "STANDARD EQUIPMENT" not in fb, (seen, fb))
+check("the message is cleared after the build", "_retry_note" not in full)
+seen.clear()
+out, fb, full = run_seen([ad(fixed55), ad(fixed55)], sv)
+check("still missing after the one retry: flagged", "STANDARD EQUIPMENT (warning only)" in fb and len(seen) == 2, fb)
+seen.clear()
+ex_bare = dict(ex)
+out, fb, full = run_seen([ad(no_std), ad(EXPLORER_P2)], ex_bare)
+check("Explorer: the retry carries 'Standard equipment on the ST also includes'",
+      "Standard equipment on the ST also includes" in (seen[1] or "") and out == ad(EXPLORER_P2), seen)
+seen.clear()
+out, fb, full = run_seen([ad(SILVERADO_55_P2 + " " + SILVERADO_STD), ad(good)], sv)
+check("a retry for another reason (a missing price) carries no standard-equipment message", seen == [None, None], seen)
+
+print("=== non-MB prompts: $750 package prices ===")
+for name in ("AS_IS_PROMPT", "HENDRICK_AFFORDABLE_PROMPT", "HENDRICK_CERTIFIED_PROMPT"):
+    text = getattr(adwriter, name)
+    check(f"{name}: states prices of $750+ options, names smaller ones without a price",
+          "State the original price of any package or option that was $750 or more" in text
+          and "Name smaller options without a price" in text and "$400" not in text)
+check("MB prompt: still $750", "$750 or more at time of sale" in adwriter.SYSTEM_PROMPT)
+
 shutil.rmtree(TMP, ignore_errors=True)
 print()
 print("FAILED:" if FAIL else "ALL PASSED", FAIL if FAIL else "")

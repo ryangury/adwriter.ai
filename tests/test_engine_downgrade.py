@@ -24,6 +24,11 @@ def check(name, cond, detail=""):
 
 snap = {v["stock_number"]: v for v in json.load(open(str(_paths.DATA / "last_inventory_snapshot.json")))["vehicles"]}
 
+# Cars the tests are pinned to that may be sold (and so leave the live snapshot)
+# are read from a saved copy of their snapshot rows instead.
+for _s, _v in json.load(open(str(_paths.ROOT / "tests" / "fixtures" / "pinned_vehicles.json"), encoding="utf-8")).items():
+    snap.setdefault(_s, _v)
+
 
 def pt_for(stock):
     v = snap[stock]

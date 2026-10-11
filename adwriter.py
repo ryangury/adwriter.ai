@@ -2332,6 +2332,7 @@ def _generate_from_package(pkg: dict) -> tuple[str, str | None]:
         std_bad = standard_equipment_missing(ad_copy, pkg)
         if (not leaks and not hits and not missing and not pt_bad and not tow_bad and not tire_bad and not hist_bad
                 and not price_bad and not std_bad):
+            pkg.pop("_retry_note", None)
             return _done(ad_copy, feedback)
         problems = (
             ([f"tool output in the ad text {leaks[:2]}"] if leaks else [])
@@ -2346,7 +2347,10 @@ def _generate_from_package(pkg: dict) -> tuple[str, str | None]:
         )
         if attempt == 1:
             print(f"[adwriter] {stock}: {'; '.join(problems)} - retrying once", file=sys.stderr)
+            if std_bad:
+                pkg["_retry_note"] = standard_equipment_retry_note(pkg, std_bad)
             continue
+        pkg.pop("_retry_note", None)
         if leaks:
             print(f"[adwriter] {stock}: tool output still in the ad text after retry - skipping this vehicle", file=sys.stderr)
             raise LeakedToolOutputError(f"tool-call markup in the ad text after retry: {leaks[:2]}")
@@ -2397,6 +2401,8 @@ def _generate_once(pkg: dict) -> tuple[str, str | None]:
     """(ad_copy, feedback_block) for one aggregated package."""
     formatted, needs_lookup = format_data_package(pkg)
     pkg["_data_package_text"] = formatted  # the tire-size check reads it
+    if pkg.get("_retry_note"):
+        formatted = formatted + "\n" + pkg["_retry_note"]
     v = pkg.get("vehicle") or {}
     system_prompt = _system_prompt_for(v.get("status_code"), pkg.get("stock_prefix"))
     if system_prompt == HENDRICK_AFFORDABLE_PROMPT:
@@ -2955,6 +2961,45 @@ def _standard_equipment_items(text: str) -> list[set[str]]:
     head, _, rest = body.partition(":")
     body = rest if rest and "," not in head else body
     return [t for t in (_name_tokens(x) for x in re.split(r",|;|\band\b", body)) if t]
+
+
+STANDARD_EQUIPMENT_RETRY_ITEMS = 3          # the retry asks for a sentence naming at least this many
+_NOT_EQUIPMENT_RE = re.compile(
+    r"\b\d\.\d\s?-?(?:L|liter)\b|\bV[68]\b|\bcylinder|\bturbo|\bhorsepower\b|\b\d+\s?hp\b|\blb-ft\b|\btorque\b|\bhybrid\b|"
+    r"\btow|\brange\b|\bEPA\b|\b\d[\d,]*\s?lbs?\b", re.I)
+
+
+def _top_level_items(text: str) -> list[str]:
+    """Comma / semicolon separated items, not splitting inside parentheses or a thousands comma."""
+    items, depth, cur = [], 0, ""
+    for i, ch in enumerate(text or ""):
+        depth += ch == "("
+        depth -= ch == ")"
+        if ch in ",;" and depth == 0 and not (ch == "," and i and text[i - 1].isdigit() and text[i + 1:i + 2].isdigit()):
+            items.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    items.append(cur)
+    return [" ".join(x.split()) for x in items if x.strip()]
+
+
+def standard_equipment_retry_note(pkg: dict, standard_equipment: str) -> str:
+    """The retry message for a missing standard-equipment sentence: names the gap, gives the trim's list from the cache
+    (engine, tow and range wording left out: those come only from their own sources) and asks for one sentence
+    beginning "Standard equipment on the <trim> also includes" with at least STANDARD_EQUIPMENT_RETRY_ITEMS items."""
+    key = (pkg or {}).get("_trim_knowledge_key") or (None, None, None, None, None)
+    trim = ((key[3] or "").split(" - ")[0].strip() or key[2] or "trim")
+    items = [i for i in _top_level_items(standard_equipment) if not _NOT_EQUIPMENT_RE.search(i)]
+    return "\n".join([
+        "",
+        "=== RETRY: STANDARD-EQUIPMENT SENTENCE MISSING ===",
+        "Your previous draft's paragraph two had no standard-equipment sentence, but TRIM KNOWLEDGE lists this trim's "
+        "standard equipment. Write the ad again, following every rule above, and put in paragraph two one sentence "
+        f'beginning "Standard equipment on the {trim} also includes" that names at least {STANDARD_EQUIPMENT_RETRY_ITEMS} '
+        "items from this list, worded as listed (add no engine, horsepower, towing or range wording):",
+        *[f"  - {i}" for i in items],
+    ])
 
 
 def standard_equipment_missing(ad_copy: str, pkg: dict) -> str | None:
