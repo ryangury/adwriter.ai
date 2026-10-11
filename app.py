@@ -1002,34 +1002,54 @@ def cache_save_powertrain(stock_number: str):
 # --------------------------------------------------------------------------- #
 
 
-def research_groups(vehicles: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
-    """The configurations the cars in the inventory snapshot are missing a range / tow rating for, computed at page
-    load from the snapshot and the caches (research.live_items: no search, no ad_history read or write). One row per
-    configuration with the stocks that share it, the stored candidates and any figure already entered."""
+def research_page_data(vehicles: list[dict[str, Any]] | None = None, history: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The Research page's three sections, counts and waivers (research.page_rows), computed at page load from the
+    snapshot, ad_history (read only: the page writes ad_history only through Refresh text) and the caches. No lookup."""
     if vehicles is None:
         vehicles, _stamp = _load_snapshot()
-    groups: dict[str, dict[str, Any]] = {}
-    for r in research.live_items(vehicles):
-        stock = normalize_stock(r["stock"])
-        for it in r["items"]:
-            gid = it.get("key_id") or f"incomplete:{stock}:{it.get('kind')}"
-            g = groups.setdefault(gid, {**it, "stocks": [], "fact": None})
-            g["stocks"].append({"stock": stock, "ymm": r.get("ymm") or ""})
-    for g in groups.values():
-        if g.get("key_id"):
-            kind, key = research.key_from_id(g["key_id"])
-            g["fact"] = research.get_fact(kind, key)
-        g["unit"] = research.UNITS.get(g.get("kind"), "")
-    return sorted(groups.values(), key=lambda g: (g["fact"] is not None, g.get("kind") or "", g.get("config_text") or ""))
+    if history is None:
+        history = load_ad_history()
+    return research.page_rows(vehicles, history)
 
 
 @app.get("/research")
 def research_page():
     if not session.get("authed"):
         return render_template("login.html", error=request.args.get("error"))
-    return render_template("research.html", groups=research_groups(), facts=research.all_facts(),
-                           reasons=research.REASONS, key_id=research.key_id, describe=research.describe,
-                           key_cols=research.KEY_COLS)
+    data = research_page_data()
+    return render_template("research.html", data=data, sections=research.SECTIONS, titles=research.SECTION_TITLES,
+                           facts=research.all_facts(), describe=research.describe)
+
+
+@app.post("/research/epa-check")
+def research_epa_check():
+    """"Run free EPA check": pass 0 (fueleconomy.gov, HTTP only, no model call) for every range row; exact matches are
+    cached with their fueleconomy.gov URL. Returns how many cleared and how many remain."""
+    if not session.get("authed"):
+        return jsonify({"ok": False, "error": "Not signed in."}), 401
+    vehicles, _stamp = _load_snapshot()
+    try:
+        res = research.run_epa_check(vehicles, load_ad_history())
+    except Exception as exc:  # noqa: BLE001 - report it on the page
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 500
+    return jsonify(dict(res, ok=True))
+
+
+@app.post("/research/waive")
+def research_waive():
+    """"No figure needed" for one configuration (reason required), or with clear=1 its undo. A waived configuration
+    leaves the page and no tow / range sentence is built for it."""
+    if not session.get("authed"):
+        return jsonify({"saved": False, "error": "Not signed in."}), 401
+    kind, wid = request.form.get("kind") or "", request.form.get("waiver_id") or ""
+    if request.form.get("clear"):
+        return jsonify({"saved": True, "cleared": research.clear_waiver(kind, wid)})
+    try:
+        row = research.set_waiver(kind, wid, request.form.get("reason"), request.form.get("config_text"))
+    except ValueError as exc:
+        return jsonify({"saved": False, "error": str(exc)}), 400
+    return jsonify({"saved": True, "entered_date": row["entered_date"]})
 
 
 @app.post("/research/fact")

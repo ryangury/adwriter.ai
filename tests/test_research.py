@@ -40,6 +40,8 @@ def wipe():
         c.commit()
     with T._connect() as c:
         c.execute("DELETE FROM towing_config")
+    with R._connect_waiver() as c:
+        c.execute("DELETE FROM config_waiver")
 
 
 class Facts(unittest.TestCase):
@@ -307,25 +309,43 @@ class Site(unittest.TestCase):
         self.assertEqual(R.get_fact("tow", GLS)["figure"], 7700)
         self.assertTrue(self.client.post("/research/fact", data={"key_id": kid, "clear": "1"}).get_json()["cleared"])
 
-    def test_the_page_groups_the_live_list_by_configuration(self):
+    def test_the_page_groups_each_section_by_configuration(self):
         R.add_candidates("tow", GLS, [{"figure": 7700, "url": "https://www.mbusa.com/gls", "quote": "Towing 7,700 lbs"}], "prototype")
         item = R.items_for(None, {"triggered": True, "rating": None, "note": "not looked up yet", "config": GLS, "config_text": "2024 GLS 450"})
+        item[0]["config"] = GLS
         rows = [{"stock": "S1", "ymm": "2024 Mercedes-Benz GLS", "items": item},
                 {"stock": "S3", "ymm": "2024 Mercedes-Benz GLS", "items": item}]
-        with mock.patch.object(R, "live_items", return_value=rows), \
-             mock.patch.object(A, "load_ad_history", side_effect=AssertionError("the page never reads ad_history")):
-            groups = self.app.research_groups([{"stock_number": "S1"}, {"stock_number": "S3"}])
-        self.assertEqual(len(groups), 1)
-        self.assertEqual([s["stock"] for s in groups[0]["stocks"]], ["S1", "S3"], "one row per configuration")
-        self.assertEqual(groups[0]["candidates"][0]["figure"], 7700)
+        with mock.patch.object(R, "live_items", return_value=rows):
+            data = self.app.research_page_data([{"stock_number": "S1"}, {"stock_number": "S3"}], {})
+        (g,) = data["sections"]["tow_missing"]
+        self.assertEqual([c["stock"] for c in g["cars"]], ["S1", "S3"], "one row per configuration")
+        self.assertEqual(g["candidates"][0]["figure"], 7700)
+        self.assertEqual(g["reason"], "Candidates found but not confirmed")
         self.login()
-        with mock.patch.object(self.app, "research_groups", return_value=groups):
+        with mock.patch.object(self.app, "research_page_data", return_value=data):
             html = self.client.get("/research").get_data(as_text=True)
-        self.assertIn("2024 GLS 450", html)
+        self.assertIn("2024 Mercedes-Benz GLS GLS 450 AWD", html)
         self.assertIn('data-figure="7700"', html)
-        self.assertIn("Refresh text", html)
-        self.assertIn("Find candidates", html)
+        for text in ("Refresh text", "Find candidates", "No figure needed", "Run free EPA check",
+                     "Live ads stating a tow figure with no allowed source", "Hitch or tow package on the sticker, no figure",
+                     "Electric range", "live ads lose a tow sentence at their next reprice", "cars affected"):
+            self.assertIn(text, html)
+        self.assertLess(html.index("Live ads stating a tow figure"), html.index("Hitch or tow package on the sticker"))
+        self.assertLess(html.index("Hitch or tow package on the sticker"), html.index("Electric range ("))
         self.assertIn('href="/research">Research</a>', html)
+
+    def test_waive_route_needs_a_login_and_a_reason_and_undoes(self):
+        wid = R.waiver_id("tow", GLS)
+        self.assertEqual(self.client.post("/research/waive", data={"kind": "tow", "waiver_id": wid, "reason": "x"}).status_code, 401)
+        self.assertEqual(self.client.post("/research/epa-check").status_code, 401)
+        self.login()
+        self.assertEqual(self.client.post("/research/waive", data={"kind": "tow", "waiver_id": wid, "reason": "  "}).status_code, 400)
+        ok = self.client.post("/research/waive", data={"kind": "tow", "waiver_id": wid, "reason": "fleet buyer, no towing",
+                                                       "config_text": "2024 GLS 450"}).get_json()
+        self.assertTrue(ok["saved"])
+        self.assertEqual(R.get_waiver("tow", GLS)["reason"], "fleet buyer, no towing")
+        self.assertTrue(self.client.post("/research/waive", data={"kind": "tow", "waiver_id": wid, "clear": "1"}).get_json()["cleared"])
+        self.assertIsNone(R.get_waiver("tow", GLS))
 
     def test_find_candidates_route_needs_a_login_and_accepts_nothing(self):
         kid = R.key_id("tow", R.key_of("tow", GLS))
@@ -481,6 +501,163 @@ class RangeSentenceChecks(unittest.TestCase):
         self.assertTrue(p2.endswith(required["shipping_sentence"]), "shipping stays last")
         rng = {"miles": 54, "source": "epa", "phrase": P.range_phrase(54, "epa")}
         self.assertEqual(P.check_claims(new, P.PHEV, rng, list(required.values())), [])
+
+
+class Waivers(unittest.TestCase):
+    """"No figure needed": stored by configuration, with undo; the row leaves the page and no sentence is built."""
+
+    def setUp(self):
+        wipe()
+        self.ov = mock.patch.object(T, "TOW_OVERRIDES_PATH", TMP / "tow_overrides.json")
+        self.ov.start()
+        self.addCleanup(self.ov.stop)
+        (TMP / "tow_overrides.json").write_text("{}", encoding="utf-8")
+
+    def tow(self, vin="W1N"):
+        return T.towing_for("2024 Mercedes-Benz GLS", "GLS 450 4MATIC SUV", "SUV", "TRAILER HITCH  4MATIC", [], vin=vin,
+                            powertrain_class="gas", allow_lookup=False)
+
+    def test_a_waived_tow_configuration_builds_no_sentence_and_no_review_flag(self):
+        miss = self.tow()
+        self.assertTrue(miss["triggered"])
+        with self.assertRaises(ValueError):
+            R.set_waiver("tow", R.waiver_id("tow", miss["config"]), "  ")
+        R.set_waiver("tow", R.waiver_id("tow", miss["config"]), "no hitch fitted", miss["config_text"])
+        w = self.tow()
+        self.assertEqual((w["triggered"], w["rating"], w["sentence"]), (False, None, None))
+        self.assertIn("no figure needed", w["note"])
+        self.assertEqual(R.items_for(None, w), [], "not research needed")
+        self.assertEqual(A.tow_policy(w)["sentence"], None)
+        T.set_tow_override("W1N", 7500, "owner's manual")
+        self.assertEqual(self.tow()["rating"], 7500, "a VIN override still wins")
+        (TMP / "tow_overrides.json").write_text("{}", encoding="utf-8")
+        self.assertTrue(R.clear_waiver("tow", R.waiver_id("tow", miss["config"])))
+        self.assertTrue(self.tow()["triggered"], "undo: the configuration needs a figure again")
+
+    def test_a_waived_range_configuration_gets_no_range_no_flag_no_lookup(self):
+        cfg = R.range_config("2025 Mercedes-Benz GLC", "GLC 350e 4MATIC SUV", "SUV", "", P.PHEV)
+        R.set_waiver("range", R.waiver_id("range", cfg), "range not advertised for this model")
+        with mock.patch.object(P, "cached_texts", return_value=("", "")), \
+             mock.patch.object(P, "classify", return_value={"class": P.PHEV, "label": "plug-in hybrid", "flag": None}), \
+             mock.patch.object(P, "electric_range", side_effect=AssertionError("no lookup for a waived range")):
+            pt = P.vehicle_powertrain("VIN1", "2025 Mercedes-Benz GLC", "GLC 350e 4MATIC SUV", body_style="SUV")
+        self.assertEqual((pt["range"]["miles"], pt["range"]["flag"], pt["flags"]), (None, None, []))
+        self.assertEqual(R.items_for(pt, None), [])
+
+    def test_an_incomplete_configuration_is_waived_by_its_text(self):
+        cfg = dict(GLS, engine="", missing=["engine"])
+        self.assertEqual(R.waiver_id("tow", cfg, "2019 Lexus RX engine ? AWD"), "incomplete:2019 Lexus RX engine ? AWD")
+
+
+class PageRows(unittest.TestCase):
+    """The three sections, the plain-English reasons, the VIN-override mark and the counts, on stubbed data."""
+
+    def setUp(self):
+        wipe()
+
+    def vehicles(self):
+        return [{"stock_number": s, "vin": "V" + s, "year_make_model": "2024 Mercedes-Benz GLS", "trim": "GLS 450"}
+                for s in ("S1", "S2", "S3", "S4", "GONE")]
+
+    def history(self):
+        ad = "P1.\n\nIt is rated to tow up to 7,700 lbs. More.\n\nP3.\n\nP4."
+        return {"S1": {"current_ad_text": ad}, "S2": {"current_ad_text": ad},
+                "S3": {"current_ad_text": "P1.\n\nNo tow words.\n\nP3.\n\nP4."},
+                "GONE": {"current_ad_text": ad, "absent_since": "2026-10-01"}}
+
+    def towing(self, stock, v, allow_lookup, refresh=False):
+        return {"triggered": True, "rating": None, "config": GLS, "config_text": "2024 GLS 450", "note": "not looked up yet",
+                "sticker_triggers": True}
+
+    def live(self, vehicles):
+        stocks = [v["stock_number"] for v in vehicles]
+        self.assertNotIn("GONE", stocks, "sold / absent cars are hidden")
+        tow = R.items_for(None, self.towing(None, None, False))
+        for it in tow:
+            it["config"] = GLS
+        rng = [{"kind": "range", "missing": "electric range", "reason": "epa_no_entry", "detail": "", "key_id": None,
+                "config_text": "2023 EQE", "candidates": [],
+                "config": dict(year=2023, make="Mercedes-Benz", model="EQE", engine="battery-electric EQE 500", drivetrain="AWD",
+                               cab="", bed="", tow_package="")}]
+        inc = [{"kind": "tow", "missing": "tow rating", "reason": "config_incomplete", "detail": "configuration incomplete",
+                "key_id": None, "config_text": "2019 Lexus RX engine ? AWD", "candidates": [],
+                "config": {"year": 2019, "make": "Lexus", "model": "RX", "engine": "", "missing": ["engine"]}}]
+        return [{"stock": "S1", "ymm": "x", "items": tow}, {"stock": "S3", "ymm": "x", "items": tow},
+                {"stock": "S4", "ymm": "x", "items": rng + inc}]
+
+    def rows(self):
+        with mock.patch.object(TR, "_towing", side_effect=self.towing), mock.patch.object(R, "live_items", side_effect=self.live), \
+             mock.patch.object(TR, "_old_cache_rows", return_value=[]):
+            return R.page_rows(self.vehicles(), self.history())
+
+    def test_sections_reasons_and_counts(self):
+        d = self.rows()
+        (stated,) = d["sections"]["tow_stated"]
+        self.assertEqual([(c["stock"], c["stated"]) for c in stated["cars"]], [("S1", [7700]), ("S2", [7700])])
+        self.assertIn("model's own search", stated["cars"][0]["source"])
+        self.assertEqual(stated["reason"], "Never looked up")
+        tow_missing = d["sections"]["tow_missing"]
+        self.assertEqual([[c["stock"] for c in g["cars"]] for g in tow_missing], [["S4"], ["S3"]],
+                         "S1 is not repeated (already in the first section); the incomplete row sorts first")
+        self.assertTrue(tow_missing[0]["needs_vin_override"])
+        self.assertEqual(tow_missing[0]["reason"], "Configuration incomplete")
+        (rng,) = d["sections"]["range"]
+        self.assertEqual(rng["reason"], "No EPA listing for this year")
+        self.assertEqual(d["counts"], {"rows": {"tow_stated": 1, "tow_missing": 2, "range": 1},
+                                       "cars": {"tow_stated": 2, "tow_missing": 2, "range": 1},
+                                       "cars_total": 4, "losing_tow_sentence": 2, "needs_vin_override": 1, "waived": 0})
+
+    def test_a_waived_configuration_leaves_the_page_but_its_ads_still_lose_the_sentence(self):
+        R.set_waiver("tow", R.waiver_id("tow", GLS), "no towing for this one", "2024 GLS 450")
+        d = self.rows()
+        self.assertEqual(d["sections"]["tow_stated"], [])
+        self.assertEqual([g["needs_vin_override"] for g in d["sections"]["tow_missing"]], [True])
+        self.assertEqual((d["counts"]["losing_tow_sentence"], d["counts"]["waived"]), (2, 1))
+        self.assertEqual(d["waived"][0]["reason"], "no towing for this one")
+
+    def test_plain_reasons(self):
+        k = R.key_of("tow", GLS)
+        self.assertEqual(R.plain_reason("tow", None, "not_looked_up", []), "incomplete")
+        self.assertEqual(R.plain_reason("tow", k, "not_looked_up", []), "never")
+        self.assertEqual(R.plain_reason("tow", k, "not_entered", [{"figure": 7700}]), "candidates")
+        self.assertEqual(R.plain_reason("tow", k, "not_entered", [{"figure": 7700}, {"figure": 8000}]), "conflict")
+        self.assertEqual(R.plain_reason("tow", k, "not_looked_up", [{"figure": 7700, "origin": "tow cache, OTHER configuration: x"}]),
+                         "never", "another configuration's figure is not a candidate")
+        self.assertEqual(R.plain_reason("range", k, "epa_ambiguous", []), "conflict")
+        self.assertEqual(R.plain_reason("range", k, "epa_no_entry", []), "no_epa")
+        self.assertEqual(R.plain_reason("range", k, "epa_no_entry", [{"figure": 305}, {"figure": 282}]), "no_epa",
+                         "pass 0's other-year candidates are not conflicting sources")
+        self.assertEqual(R.plain_reason("tow", k, "no_exact_match", []), "no_match")
+
+
+class EpaCheck(unittest.TestCase):
+    """"Run free EPA check": pass 0 for every range row, no model call; exact matches cached with their fueleconomy.gov URL."""
+
+    def setUp(self):
+        wipe()
+
+    def test_matches_are_cached_and_counted(self):
+        vehicles = [{"stock_number": "E1", "vin": "VE1", "year_make_model": "2025 Mercedes-Benz GLC", "trim": "GLC 350e 4MATIC SUV",
+                     "body_style": "SUV"},
+                    {"stock_number": "E2", "vin": "VE2", "year_make_model": "2023 Mercedes-Benz EQE", "trim": "EQE 500 4MATIC SUV",
+                     "body_style": "SUV"}]
+        cls = {"VE1": P.PHEV, "VE2": P.BEV}
+
+        def lookup(year, make, model, trim, c, **k):
+            if model == "GLC":
+                return {"status": "match", "miles": 54, "matched_trim": "GLC 350e 4matic", "url": "https://www.fueleconomy.gov/feg/Find.do?id=1"}
+            return {"status": "none", "note": "fueleconomy.gov has no 2023 EQE entry", "candidates": [{"figure": 282, "label": "2024"}]}
+
+        with mock.patch.object(P, "cached_texts", return_value=("", "")), \
+             mock.patch.object(P, "classify", side_effect=lambda vin, *a, **k: {"class": cls[vin], "label": "", "flag": None}), \
+             mock.patch("anthropic.Anthropic", side_effect=AssertionError("no model call")):
+            before = R.page_rows(vehicles, {})["counts"]["rows"]["range"]
+            res = R.run_epa_check(vehicles, {}, lookup=lookup)
+        self.assertEqual(before, 2)
+        self.assertEqual((res["checked"], res["cleared"], res["remain"]), (2, 1, 1))
+        row = feature_cache.get_electric_range(2025, "Mercedes-Benz", "GLC", "GLC 350e 4MATIC SUV")
+        self.assertEqual((row["range_miles"], row["source"]), (54, "epa"))
+        self.assertIn("fueleconomy.gov", row["source_url"])
 
 
 if __name__ == "__main__":

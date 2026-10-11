@@ -557,6 +557,17 @@ def towing_for(
         return out
     if not out["triggered"]:
         return out
+    # "No figure needed" (Research page) for this configuration: nothing to state and nothing to review.
+    try:
+        import research
+
+        waived = research.get_waiver("tow", cfg, out["config_text"])
+    except Exception as exc:  # noqa: BLE001 - the research table must never sink a build
+        print(f"[towing] waiver check failed: {exc}", file=sys.stderr)
+        waived = None
+    if waived:
+        out.update(triggered=False, waived=waived, note=f"no figure needed (Research page): {waived['reason']}")
+        return out
     # A rating researched for this exact configuration (research.py, the site's Research page) comes next.
     try:
         import research

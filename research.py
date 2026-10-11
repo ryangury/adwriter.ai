@@ -310,7 +310,7 @@ def items_for(pt: dict[str, Any] | None, tow: dict[str, Any] | None) -> list[dic
     rng = pt.get("range") or {}
     from powertrain import PLUG_IN
 
-    if pt.get("class") in PLUG_IN and not rng.get("miles"):
+    if pt.get("class") in PLUG_IN and not rng.get("miles") and not rng.get("waived"):
         cfg = rng.get("config") or {}
         key = key_of("range", cfg) if cfg else None
         out.append({
@@ -507,6 +507,7 @@ def live_items(vehicles: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if cls in PLUG_IN:
                 cfg = range_config(ymm, trim, body, st, cls)
                 fact = get_fact("range", cfg)
+                waived = get_waiver("range", cfg)
                 year, make, model = split_ymm(ymm)
                 row = feature_cache.get_electric_range(year, make, model, trim) if (year and make and model) else None
                 if fact or (row and row.get("powertrain") == cls and row.get("range_miles")):
@@ -518,18 +519,266 @@ def live_items(vehicles: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     rng = _range_info(None, None, None, None, "not looked up yet (the next build runs pass 0)", False,
                                       reason="not_checked")
                 rng["config"] = cfg
+                if waived and not rng.get("miles"):
+                    rng["waived"] = waived
                 pt["range"] = rng
             sticker = (get_window_sticker(vin) or {}) if vin else {}
             names = [o.get("name") or "" for o in (sticker.get("option_packages") or []) + (sticker.get("added_options_all") or [])]
             tow = towing_for(ymm, trim, body, sticker.get("raw_text") or "", names, vin=vin, powertrain_class=cls,
                              allow_lookup=False)
             items = items_for(pt, tow)
+            for it in items:
+                it["config"] = (pt.get("range") or {}).get("config") if it["kind"] == "range" else tow.get("config")
         except Exception as exc:  # noqa: BLE001 - one car must not break the page
             items = [{"kind": "?", "missing": "range / tow", "reason": "other", "detail": f"could not be checked ({exc})",
                       "config_text": ymm or "?", "key_id": None, "candidates": []}]
         if items:
             out.append({"stock": stock, "ymm": ymm, "items": items})
     return out
+
+
+# --------------------------------------------------------------------------- #
+# "No figure needed": a configuration a person has decided states no figure
+# --------------------------------------------------------------------------- #
+# Stored by configuration (the key id; an incomplete configuration by its text). A waived configuration leaves the
+# Research page and no sentence is built for it: towing_for() treats a waived tow configuration as not triggered (no
+# TOWING_SENTENCE, no review flag), and vehicle_powertrain() gives a waived range configuration no range and no flag.
+# A VIN override still wins. Undo removes the row (the configuration comes back on the next page load).
+_WAIVER_SCHEMA = """
+CREATE TABLE IF NOT EXISTS config_waiver (
+    kind          TEXT NOT NULL,
+    waiver_id     TEXT NOT NULL,
+    config_text   TEXT NOT NULL DEFAULT '',
+    reason        TEXT NOT NULL,
+    entered_date  TEXT NOT NULL,
+    UNIQUE (kind, waiver_id)
+);
+"""
+
+
+@contextlib.contextmanager
+def _connect_waiver():
+    with _connect() as conn:
+        conn.executescript(_WAIVER_SCHEMA)
+        yield conn
+
+
+def waiver_id(kind: str, cfg: dict[str, Any] | None, config_text: str | None = None) -> str:
+    """The configuration's key id, or for an incomplete configuration "incomplete:<configuration text>"."""
+    key = key_of(kind, cfg) if cfg and not cfg.get("missing") else None
+    if key:
+        return key_id(kind, key)
+    return "incomplete:" + " ".join((config_text or (cfg or {}).get("config_text") or "").split())
+
+
+def set_waiver(kind: str, wid: str, reason: str | None, config_text: str | None = None) -> dict[str, Any]:
+    if kind not in KINDS:
+        raise ValueError(f"unknown kind {kind!r}")
+    why = " ".join((reason or "").split())
+    if not why:
+        raise ValueError("give the reason no figure is needed")
+    if not wid or wid == "incomplete:":
+        raise ValueError("unknown configuration")
+    row = {"kind": kind, "waiver_id": wid, "config_text": config_text or "", "reason": why[:500],
+           "entered_date": date.today().isoformat()}
+    with _connect_waiver() as conn:
+        conn.execute("INSERT INTO config_waiver (kind, waiver_id, config_text, reason, entered_date) VALUES (?,?,?,?,?) "
+                     "ON CONFLICT (kind, waiver_id) DO UPDATE SET reason=excluded.reason, config_text=excluded.config_text, "
+                     "entered_date=excluded.entered_date", tuple(row.values()))
+    return row
+
+
+def clear_waiver(kind: str, wid: str) -> bool:
+    with _connect_waiver() as conn:
+        return conn.execute("DELETE FROM config_waiver WHERE kind=? AND waiver_id=?", (kind, wid)).rowcount > 0
+
+
+def get_waiver(kind: str, cfg: dict[str, Any] | None, config_text: str | None = None) -> dict[str, Any] | None:
+    """The waiver for this configuration, or None. Never raises (a build must not sink on it)."""
+    try:
+        wid = waiver_id(kind, cfg, config_text)
+        with _connect_waiver() as conn:
+            row = conn.execute("SELECT * FROM config_waiver WHERE kind=? AND waiver_id=?", (kind, wid)).fetchone()
+        return dict(row) if row else None
+    except Exception as exc:  # noqa: BLE001
+        print(f"[research] waiver check failed: {exc}", file=sys.stderr)
+        return None
+
+
+def all_waivers() -> list[dict[str, Any]]:
+    with _connect_waiver() as conn:
+        return [dict(r) for r in conn.execute("SELECT * FROM config_waiver ORDER BY kind, config_text")]
+
+
+# --------------------------------------------------------------------------- #
+# The Research page (computed at page load; read-only)
+# --------------------------------------------------------------------------- #
+SECTIONS = ("tow_stated", "tow_missing", "range")
+SECTION_TITLES = {
+    "tow_stated": "Live ads stating a tow figure with no allowed source",
+    "tow_missing": "Hitch or tow package on the sticker, no figure",
+    "range": "Electric range",
+}
+PLAIN = {
+    "never": "Never looked up",
+    "candidates": "Candidates found but not confirmed",
+    "incomplete": "Configuration incomplete",
+    "no_epa": "No EPA listing for this year",
+    "conflict": "Conflicting sources",
+    "no_match": "Looked up; no figure for this exact configuration",
+}
+
+
+def plain_reason(kind: str, key: dict[str, Any] | None, reason_code: str | None, cands: list[dict[str, Any]]) -> str:
+    """One of PLAIN's keys. Candidates of OTHER configurations (the tow cache's) are not this configuration's."""
+    if not key:
+        return "incomplete"
+    # pass 0's own verdict first: its candidates for a "no entry" are other model years / body styles, not conflicts
+    if reason_code == "epa_ambiguous":
+        return "conflict"
+    if reason_code == "epa_no_entry":
+        return "no_epa"
+    own = sorted({c["figure"] for c in cands if c.get("figure") and "OTHER configuration" not in (c.get("origin") or "")})
+    if len(own) > 1:
+        return "conflict"
+    if own:
+        return "candidates"
+    if reason_code == "config_incomplete":
+        return "incomplete"
+    if reason_code == "no_exact_match":
+        return "no_match"
+    return "never"
+
+
+def _live(stock: str, v: dict[str, Any], history: dict[str, Any]) -> bool:
+    """In the snapshot, not absent or sold per ad_history."""
+    e = history.get(stock) or {}
+    return bool(v) and not e.get("absent_since") and (e.get("lifecycle_stage") or "") not in ("sold", "absent", "deleted")
+
+
+def page_rows(vehicles: list[dict[str, Any]], history: dict[str, Any]) -> dict[str, Any]:
+    """{"sections": {name: [row]}, "counts": {...}, "waived": [row]}. One row per configuration with the cars sharing
+    it. Read-only: the snapshot, ad_history (read), the caches and this module's tables; no lookup, no write.
+
+    tow_stated   a live ad states a tow figure that is not from a VIN override or a Research-page entry (or differs
+                 from it): stock, stated figure(s), where the figure came from. Every one of these ads loses the
+                 sentence at its next reprice (adwriter.strip_unverified_tow), waived or not.
+    tow_missing  the sticker prints a hitch / tow package and there is no allowed figure (cars already in tow_stated
+                 are not repeated).
+    range        a plug-in hybrid / battery-electric car with no range."""
+    import tow_refresh as TR
+    import towing as T
+
+    snap = {v.get("stock_number"): v for v in vehicles}
+    old_rows = TR._old_cache_rows()
+    rows: dict[str, dict[str, dict[str, Any]]] = {s: {} for s in SECTIONS}
+    waived: dict[tuple[str, str], dict[str, Any]] = {}
+    losing: list[str] = []
+    stated_stocks: set[str] = set()
+
+    def add(section: str, kind: str, cfg: dict[str, Any] | None, config_text: str, reason_code: str | None,
+            detail: str, car: dict[str, Any]) -> None:
+        key = key_of(kind, cfg) if cfg and not cfg.get("missing") else None
+        wid = waiver_id(kind, cfg, config_text)
+        cands = [_cand(c) for c in candidates(kind, key)] if key else []
+        w = get_waiver(kind, cfg, config_text)
+        target = waived.setdefault((kind, wid), {"kind": kind, "waiver_id": wid, "config_text": config_text, "waiver": w,
+                                                  "section": section, "cars": []}) if w else \
+            rows[section].setdefault(wid, {
+                "kind": kind, "section": section, "waiver_id": wid, "key_id": key_id(kind, key) if key else None,
+                "config_text": describe(kind, key) if key else config_text, "needs_vin_override": key is None,
+                "missing_parts": (cfg or {}).get("missing") or [], "reason": PLAIN[plain_reason(kind, key, reason_code, cands)],
+                "reason_code": reason_code, "detail": detail, "candidates": cands, "fact": get_fact(kind, key) if key else None,
+                "unit": UNITS[kind], "cars": []})
+        target["cars"].append(car)
+
+    for stock, e in sorted(history.items()):
+        v = snap.get(stock)
+        if not v or not _live(stock, v, history) or not e.get("current_ad_text"):
+            continue
+        units = TR._tow_units(e["current_ad_text"])
+        figs = sorted({f for u in units for f in T.tow_figures(u)})
+        if not figs:
+            continue
+        tow = TR._towing(stock, v, allow_lookup=False)
+        allowed = tow.get("rating") if T.rating_source(tow) else None
+        if allowed and all(f == allowed for f in figs):
+            continue
+        losing.append(stock)
+        stated_stocks.add(stock)
+        code = tow_reason(tow.get("note")) if not allowed else "other"
+        src = TR._source_of(figs, v.get("year_make_model"), e.get("last_feedback"), old_rows)
+        add("tow_stated", "tow", tow.get("config"), tow.get("config_text") or "", code, tow.get("note") or "",
+            {"stock": stock, "ymm": v.get("year_make_model"), "stated": figs, "source": src, "sentences": units,
+             "allowed": allowed})
+
+    for r in live_items([v for s, v in snap.items() if _live(s, v, history)]):
+        for it in r["items"]:
+            if it["kind"] == "tow" and r["stock"] in stated_stocks:
+                continue
+            section = "range" if it["kind"] == "range" else "tow_missing"
+            cfg = it.get("config")
+            add(section, it["kind"], cfg, it.get("config_text") or "", it.get("reason"), it.get("detail") or "",
+                {"stock": r["stock"], "ymm": r.get("ymm")})
+
+    sections = {s: sorted(rows[s].values(), key=lambda g: (not g["needs_vin_override"], g["config_text"])) for s in SECTIONS}
+    cars = {c["stock"] for s in SECTIONS for g in sections[s] for c in g["cars"]}
+    counts = {
+        "rows": {s: len(sections[s]) for s in SECTIONS},
+        "cars": {s: len({c["stock"] for g in sections[s] for c in g["cars"]}) for s in SECTIONS},
+        "cars_total": len(cars),
+        "losing_tow_sentence": len(losing),
+        "needs_vin_override": sum(1 for s in SECTIONS for g in sections[s] if g["needs_vin_override"]),
+        "waived": len(waived),
+    }
+    return {"sections": sections, "counts": counts, "waived": all_waivers(), "losing": losing}
+
+
+# --------------------------------------------------------------------------- #
+# "Run free EPA check": pass 0 for every range row; no model call
+# --------------------------------------------------------------------------- #
+def run_epa_check(vehicles: list[dict[str, Any]], history: dict[str, Any], *, lookup: Any = None) -> dict[str, Any]:
+    """Pass 0 (fueleconomy.gov's data service, HTTP only, no model call) for every range row on the page, ignoring the
+    30-day negative cache. An exact match is cached in the range cache with source "epa" and its fueleconomy.gov URL
+    (the next build states it); a miss refreshes the negative entry and stores pass 0's candidates. Returns
+    {"checked", "cleared", "remain", "results": [{config_text, stocks, status, miles, note}]}."""
+    from feature_cache import save_electric_range
+    from powertrain import RangeLookupUnavailable, cached_texts, classify, epa_lookup, split_ymm
+
+    lookup = lookup or epa_lookup
+    before = page_rows(vehicles, history)["sections"]["range"]
+    snap = {v.get("stock_number"): v for v in vehicles}
+    results, cleared = [], 0
+    for g in before:
+        v = snap.get(g["cars"][0]["stock"]) or {}
+        year, make, model = split_ymm(v.get("year_make_model"))
+        trim = v.get("trim")
+        res: dict[str, Any] = {"config_text": g["config_text"], "stocks": [c["stock"] for c in g["cars"]]}
+        if not (year and make and model):
+            results.append(dict(res, status="skipped", note="no year / make / model"))
+            continue
+        st, rc = cached_texts(v.get("vin")) if v.get("vin") else ("", "")
+        cls = classify(v.get("vin"), v.get("year_make_model"), trim, sticker_text=st, recon_text=rc)["class"]
+        try:
+            r = lookup(year, make, model, trim, cls, body_style=v.get("body_style"), extra_text=" ".join(st[:400].split()))
+        except RangeLookupUnavailable as exc:
+            results.append(dict(res, status="unavailable", note=str(exc)))
+            continue
+        if r["status"] == "match":
+            save_electric_range(year, make, model, trim, powertrain=cls, range_miles=r["miles"], source="epa",
+                                matched_trim=r.get("matched_trim"), source_url=r.get("url"), note=None)
+            cleared += 1
+            results.append(dict(res, status="match", miles=r["miles"], url=r.get("url"), note=r.get("matched_trim")))
+            continue
+        neg = "ambiguous" if r["status"] in ("ambiguous", "conflict") else "none"
+        save_electric_range(year, make, model, trim, powertrain=cls, range_miles=None, source=neg, matched_trim=None,
+                            source_url=None, note=r.get("note"))
+        if r.get("candidates") and g.get("key_id"):
+            kind, key = key_from_id(g["key_id"])
+            add_candidates("range", key, r["candidates"], "fueleconomy.gov (pass 0)")
+        results.append(dict(res, status=r["status"], note=r.get("note")))
+    remain = len(page_rows(vehicles, history)["sections"]["range"])
+    return {"checked": len(before), "cleared": cleared, "remain": remain, "results": results}
 
 
 # --------------------------------------------------------------------------- #
