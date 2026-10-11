@@ -1,0 +1,155 @@
+{% extends "layout.html" %}
+{% block title %}Research | Mercedes-Benz of Durham{% endblock %}
+{% block head %}
+<style>
+  .rs-group { border: 1px solid var(--line); border-radius: 10px; padding: 14px 18px; margin-bottom: 16px; background: var(--card); }
+  .rs-head { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+  .rs-kind { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+  .rs-config { font-weight: 650; }
+  .rs-reason { color: var(--muted); font-size: 0.88rem; margin: 4px 0 8px; }
+  .rs-done { color: var(--accent); font-weight: 650; }
+  .rs-cands { margin: 8px 0; }
+  .rs-cand { display: block; width: 100%; text-align: left; margin: 4px 0; padding: 6px 10px; border: 1px solid var(--line);
+             border-radius: 6px; background: transparent; cursor: pointer; font: inherit; }
+  .rs-cand:hover { border-color: var(--accent); }
+  .rs-cand .q { color: var(--muted); font-size: 0.85rem; }
+  .rs-form { display: grid; grid-template-columns: 140px 1fr; gap: 6px 10px; align-items: center; margin-top: 8px; max-width: 900px; }
+  .rs-form input, .rs-form textarea { font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; }
+  .rs-form textarea { min-height: 3.2em; }
+  .rs-actions { margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .rs-stocks { margin-top: 10px; font-size: 0.9rem; }
+  .rs-stock { display: flex; gap: 8px; align-items: center; margin: 3px 0; flex-wrap: wrap; }
+  .rs-msg { font-size: 0.88rem; margin-top: 6px; white-space: pre-wrap; }
+  .rs-msg.err { color: var(--fail, #b91c1c); }
+  .rs-table td { vertical-align: top; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="wrap-wide">
+  <h1 class="page-title">Research</h1>
+  <p class="page-sub">
+    Electric ranges and tow ratings the builds could not state. Builds make no live search: pass 0
+    (fueleconomy.gov), the caches, overrides and the figures entered here only. A figure entered here is used for
+    every car of the same configuration; a VIN override on the car's Database page still wins.
+    After saving, use <b>Refresh text</b> to put the sentence into a stored ad (no model call; the verifier re-checks it).
+  </p>
+
+  {% if not groups %}
+  <p class="empty-note">Nothing is waiting for research.</p>
+  {% endif %}
+
+  {% for g in groups %}
+  <div class="rs-group" data-key="{{ g.key_id or '' }}">
+    <div class="rs-head">
+      <span class="rs-kind">{{ g.missing }}</span>
+      <span class="rs-config">{{ g.config_text }}</span>
+      {% if g.fact %}<span class="rs-done">entered: {{ '{:,}'.format(g.fact.figure) }} {{ g.unit }} ({{ g.fact.entered_date }})</span>{% endif %}
+    </div>
+    <div class="rs-reason">{{ g.reason }} — {{ reasons.get(g.reason, '') }}{% if g.detail %}<br>{{ g.detail }}{% endif %}</div>
+
+    {% if g.key_id %}
+    <div class="rs-cands">
+      {% if g.candidates %}
+        {% for c in g.candidates %}
+        <button type="button" class="rs-cand" data-figure="{{ c.figure }}" data-url="{{ c.source_url }}" data-quote="{{ c.quote }}">
+          <b>{{ '{:,}'.format(c.figure) }} {{ g.unit }}</b> · {{ c.origin }}{% if c.source_url %} · {{ c.source_url }}{% endif %}
+          {% if c.quote %}<br><span class="q">“{{ c.quote }}”</span>{% endif %}
+        </button>
+        {% endfor %}
+      {% else %}
+        <div class="rs-reason">No candidates found yet.</div>
+      {% endif %}
+    </div>
+    <form class="rs-form" onsubmit="return false;">
+      <label>Figure ({{ g.unit }})</label><input name="figure" value="{{ g.fact.figure if g.fact else '' }}" inputmode="numeric">
+      <label>Source URL</label><input name="source_url" value="{{ g.fact.source_url if g.fact else '' }}">
+      <label>Quote</label><textarea name="quote" placeholder="the sentence or table row that states it">{{ g.fact.quote if g.fact else '' }}</textarea>
+    </form>
+    <div class="rs-actions">
+      <button type="button" class="rs-save">Save figure</button>
+      {% if g.fact %}<button type="button" class="rs-clear">Remove figure</button>{% endif %}
+    </div>
+    {% else %}
+    <div class="rs-reason">The configuration is incomplete, so a figure can't be keyed to it; set a VIN override on the car's Database page instead.</div>
+    {% endif %}
+    <div class="rs-msg"></div>
+
+    <div class="rs-stocks">
+      {% for s in g.stocks %}
+      <div class="rs-stock" data-stock="{{ s.stock }}">
+        <a href="/cache/{{ s.stock }}">{{ s.stock }}</a> {{ s.ymm }}
+        <button type="button" class="rs-preview">Preview</button>
+        <button type="button" class="rs-refresh">Refresh text</button>
+        <span class="rs-msg"></span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+
+  <h2>Entered figures ({{ facts|length }})</h2>
+  {% if facts %}
+  <table class="inv-table rs-table">
+    <tr><th>Kind</th><th>Configuration</th><th>Figure</th><th>Source</th><th>Quote</th><th>Date</th></tr>
+    {% for f in facts %}
+    <tr>
+      <td>{{ f.kind }}</td><td>{{ describe(f.kind, f) }}</td>
+      <td>{{ '{:,}'.format(f.figure) }}</td>
+      <td><a href="{{ f.source_url }}" rel="noopener noreferrer" target="_blank">{{ f.source_url[:60] }}</a></td>
+      <td>{{ f.quote }}</td><td>{{ f.entered_date }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="empty-note">None yet.</p>
+  {% endif %}
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(function () {
+  function post(url, data) {
+    const body = new URLSearchParams(data);
+    return fetch(url, { method: "POST", body: body, credentials: "same-origin" })
+      .then(r => r.json().then(j => ({ ok: r.ok, j: j })));
+  }
+  function show(el, text, err) { el.textContent = text; el.classList.toggle("err", !!err); }
+
+  document.querySelectorAll(".rs-group").forEach(function (g) {
+    const key = g.dataset.key, form = g.querySelector(".rs-form"), msg = g.querySelector(":scope > .rs-msg");
+    g.querySelectorAll(".rs-cand").forEach(function (b) {
+      b.addEventListener("click", function () {
+        form.figure.value = b.dataset.figure; form.source_url.value = b.dataset.url; form.quote.value = b.dataset.quote;
+        show(msg, "Candidate copied into the form; check the quote, then Save figure.");
+      });
+    });
+    const save = g.querySelector(".rs-save");
+    if (save) save.addEventListener("click", function () {
+      post("/research/fact", { key_id: key, figure: form.figure.value, source_url: form.source_url.value, quote: form.quote.value })
+        .then(function (r) { show(msg, r.j.saved ? "Saved " + r.j.figure.toLocaleString() + ". Use Refresh text on each car below." : r.j.error, !r.j.saved); });
+    });
+    const clear = g.querySelector(".rs-clear");
+    if (clear) clear.addEventListener("click", function () {
+      if (!confirm("Remove the entered figure for this configuration?")) return;
+      post("/research/fact", { key_id: key, clear: "1" }).then(function (r) { show(msg, r.j.saved ? "Removed." : r.j.error, !r.j.saved); });
+    });
+    g.querySelectorAll(".rs-stock").forEach(function (row) {
+      const stock = row.dataset.stock, m = row.querySelector(".rs-msg");
+      function run(dry) {
+        if (!dry && !confirm("Edit the stored ad for " + stock + "? ad_history.json is backed up first.")) return;
+        show(m, dry ? "Checking..." : "Editing...");
+        post("/research/refresh/" + encodeURIComponent(stock), dry ? { dry: "1" } : {}).then(function (r) {
+          if (!r.j.ok) { show(m, r.j.error, true); return; }
+          let t = r.j.notes.join("; ");
+          if (dry) t = (r.j.changes ? "Would change: " : "No change: ") + t;
+          else t = (r.j.applied ? "Done: " : "No change: ") + t + (r.j.backup ? " (backup " + r.j.backup + ")" : "");
+          show(m, t);
+        });
+      }
+      row.querySelector(".rs-preview").addEventListener("click", function () { run(true); });
+      row.querySelector(".rs-refresh").addEventListener("click", function () { run(false); });
+    });
+  });
+})();
+</script>
+{% endblock %}

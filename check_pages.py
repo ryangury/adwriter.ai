@@ -22,7 +22,7 @@ sys.path.insert(0, str(ROOT))
 
 import app as adapp  # noqa: E402
 
-MAIN_PAGES = ["/", "/inventory", "/cache", "/ctr", "/cost", "/about"]
+MAIN_PAGES = ["/", "/inventory", "/cache", "/research", "/ctr", "/cost", "/about"]
 
 
 def _stocks() -> tuple[list[str], list[str]]:

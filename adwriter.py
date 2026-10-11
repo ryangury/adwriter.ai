@@ -44,6 +44,7 @@ from feature_cache import (
 )
 from carfax_history import carfax_history, claim_problems, scrub_claims
 from towing import tow_figures as _tow_figures_in
+from research import set_research_needed
 from towing import towing_for, towing_sentence, unverified_tow_sentences
 from vehicle_cache import get_vehicle, get_window_sticker
 from powertrain import (
@@ -816,6 +817,7 @@ def towing_package_lines(tow: dict | None) -> list[str]:
         return []
     if tow.get("rating"):
         how = ("set by a manual override" if tow.get("override")
+               else f"researched for this exact configuration ({tow['config_text']}; {tow.get('source_url')})" if tow.get("researched")
                else f"verified on a manufacturer page for this exact configuration ({tow['config_text']}; {tow.get('source_url')})")
         return [
             "",
@@ -3025,6 +3027,7 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
                 pt_notes.append(f"removed after retry (unverified tow figure / tire size): {s}")
     new_p2 = insert_scarcity_sentence(new_p2, pd.get("scarcity_sentence"))
     set_towing_review(entry, tow_pkg["towing"])
+    set_research_needed(entry, pt, tow_pkg["towing"])
 
     # Non-MB tire wording is scrubbed from every paragraph, not just the new
     # one, so a reprice also repairs an older paragraph one.

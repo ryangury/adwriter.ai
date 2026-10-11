@@ -555,6 +555,18 @@ def towing_for(
         return out
     if not out["triggered"]:
         return out
+    # A rating researched for this exact configuration (research.py, the site's Research page) comes next.
+    try:
+        import research
+
+        fact = research.get_fact("tow", cfg) if not cfg["missing"] else None
+    except Exception as exc:  # noqa: BLE001 - the research table must never sink a build
+        print(f"[towing] researched-rating check failed: {exc}", file=sys.stderr)
+        fact = None
+    if fact:
+        out.update(rating=fact["figure"], source_url=fact["source_url"], researched=fact,
+                   sentence=towing_sentence(fact["figure"]))
+        return out
     if cfg["missing"]:
         out["note"] = f"configuration incomplete on the sticker / record (no {', '.join(cfg['missing'])})"
         return out

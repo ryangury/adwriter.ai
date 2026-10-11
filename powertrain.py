@@ -744,18 +744,26 @@ def epa_lookup(
         top = max((v["core"] for v in found.values()), default=0)
         return [n for n, v in found.items() if v["core"] == top]
 
+    def candidates(y: int, found_y: dict[str, dict[str, Any]], names: list[str]) -> list[dict[str, Any]]:
+        """Every record of these names as a reviewable candidate (figure, what it is, its EPA page)."""
+        return [{"figure": m, "label": f"{y} {make} {n} ({t})".replace(" ()", ""),
+                 "url": f"https://www.fueleconomy.gov/feg/Find.do?action=sbs&id={vid}", "year": y}
+                for n in names for t, vid, m in found_y[n]["records"]]
+
     found = year_matches(year)
     if found:
         top = best(found)
         if len(top) > 1:
             listing = "; ".join(f"{n}: {sorted({m for _, _, m in found[n]['records']})} mi" for n in top)
-            return {"status": "ambiguous", "note": f"fueleconomy.gov {year}: ambiguous - more than one candidate fits ({listing})"}
+            return {"status": "ambiguous", "note": f"fueleconomy.gov {year}: ambiguous - more than one candidate fits ({listing})",
+                    "candidates": candidates(year, found, top)}
         name = top[0]
         recs = found[name]["records"]
         miles = sorted({m for _, _, m in recs})
         if len(miles) > 1:
             listing = "; ".join(f"{t} = {m} mi" for t, _, m in recs)
-            return {"status": "ambiguous", "note": f"fueleconomy.gov {year} {name}: ambiguous - conflicting ranges ({listing})"}
+            return {"status": "ambiguous", "note": f"fueleconomy.gov {year} {name}: ambiguous - conflicting ranges ({listing})",
+                    "candidates": candidates(year, found, [name])}
         return {
             "status": "match", "miles": miles[0], "matched_trim": f"{year} {make} {name}",
             "url": f"https://www.fueleconomy.gov/feg/Find.do?action=sbs&id={recs[0][1]}",
@@ -764,6 +772,7 @@ def epa_lookup(
     # No exact-year match: note any neighbouring year that does list this
     # trim (never used - the figure must be for this model year).
     elsewhere = []
+    other_years: list[dict[str, Any]] = []
     for y in range(year - EPA_NEIGHBOR_YEARS, year + EPA_NEIGHBOR_YEARS + 1):
         if y == year:
             continue
@@ -771,10 +780,11 @@ def epa_lookup(
         if other:
             for n in best(other):
                 elsewhere.append(f"{y} {n} = {sorted({m for _, _, m in other[n]['records']})} mi")
+            other_years += candidates(y, other, best(other))
     note = f"fueleconomy.gov has no {year} {make} {model} {trim or ''} {CLASS_LABELS[cls]} entry".replace("  ", " ")
     if elsewhere:
         note += f"; it lists only a different model year ({'; '.join(elsewhere)}), which is not used"
-    return {"status": "none", "note": note}
+    return {"status": "none", "note": note, "candidates": other_years}
 
 
 MANUFACTURER_DOMAINS: dict[str, list[str]] = {
@@ -940,14 +950,23 @@ def range_phrase(miles: int | None, source: str | None) -> str | None:
         return None
     if source == "manufacturer":
         return f"manufacturer-estimated up to {miles} miles of electric range"
-    return f"EPA-estimated up to {miles} miles of electric range"
+    if source == "manual":            # a researched figure whose quote does not say EPA
+        return f"estimated up to {miles} miles of electric range"
+    return f"EPA-estimated up to {miles} miles of electric range"     # epa, and a researched figure quoting EPA
 
 
-def _range_info(miles, source, matched_trim, url, flag, cached) -> dict[str, Any]:
+def _range_info(miles, source, matched_trim, url, flag, cached, *, reason=None, candidates=None) -> dict[str, Any]:
     return {
         "miles": miles, "source": source, "phrase": range_phrase(miles, source),
         "matched_trim": matched_trim, "url": url, "flag": flag, "cached": cached,
+        "reason": reason, "candidates": candidates or [],
     }
+
+
+# Production builds make no paid search for a range: pass 0 (free), the cache and researched figures only; a miss is
+# RESEARCH NEEDED (research.py). The manufacturer search stays available to a caller that passes it explicitly.
+RANGE_PAID_SEARCH = False
+NEGATIVE_RECHECK_DAYS = 30   # a cached "nothing found" is tried again (pass 0, free) after this
 
 
 def electric_range(
@@ -960,25 +979,40 @@ def electric_range(
     body_style: str | None = None,
     extra_text: str = "",
     epa: Callable[..., dict[str, Any]] = epa_lookup,
-    manufacturer: Callable[..., dict[str, Any]] = manufacturer_search,
+    manufacturer: Callable[..., dict[str, Any]] | None = None,
     use_cache: bool = True,
+    today: date | None = None,
 ) -> dict[str, Any]:
-    """ELECTRIC_RANGE for one vehicle: {"miles", "source", "phrase",
-    "matched_trim", "url", "flag", "cached"}. Only plug-in hybrids and
-    battery-electric cars are looked up; every other class returns no range
-    and no flag without any search."""
+    """ELECTRIC_RANGE for one vehicle: {"miles", "source", "phrase", "matched_trim", "url", "flag", "cached",
+    "reason", "candidates"}. Only plug-in hybrids and battery-electric cars are looked up; every other class returns
+    no range and no flag without any search.
+
+    The cache, then pass 0 (fueleconomy.gov, free). No paid search unless a `manufacturer` searcher is passed (or
+    RANGE_PAID_SEARCH is switched on). A cached miss is answered from the cache for NEGATIVE_RECHECK_DAYS days and
+    then pass 0 is tried again. A miss carries a reason code (research.REASONS) and pass 0's candidates."""
+    from research import range_reason
+
     if cls not in PLUG_IN:
         return _range_info(None, None, None, None, None, False)
     if not (year and make and model):
-        return _range_info(None, None, None, None, "no year/make/model to look the electric range up — range omitted", False)
+        return _range_info(None, None, None, None, "no year/make/model to look the electric range up — range omitted", False,
+                           reason="no_year_make_model")
     from feature_cache import get_electric_range, save_electric_range
 
+    today = today or date.today()
     if use_cache:
         row = get_electric_range(year, make, model, trim)
         if row and row.get("powertrain") == cls:
             if row.get("source") in ("epa", "manufacturer") and row.get("range_miles"):
                 return _range_info(row["range_miles"], row["source"], row.get("matched_trim"), row.get("source_url"), None, True)
-            return _range_info(None, None, None, None, f"electric range omitted: {row.get('note')}", True)
+            try:
+                age = (today - date.fromisoformat(row.get("cached_date") or "")).days
+            except ValueError:
+                age = NEGATIVE_RECHECK_DAYS + 1
+            if age <= NEGATIVE_RECHECK_DAYS:
+                status = "ambiguous" if row.get("source") in ("ambiguous", "conflict") else None
+                return _range_info(None, None, None, None, f"electric range omitted: {row.get('note')}", True,
+                                   reason=range_reason(row.get("note"), status))
 
     def store(miles, source, matched, url, note):
         if use_cache:
@@ -990,32 +1024,41 @@ def electric_range(
     try:
         res = epa(year, make, model, trim, cls, body_style=body_style, extra_text=extra_text)
     except RangeLookupUnavailable as exc:
-        return _range_info(None, None, None, None, f"electric range omitted this run: {exc}", False)
+        return _range_info(None, None, None, None, f"electric range omitted this run: {exc}", False, reason="epa_unavailable")
     if res["status"] == "match":
         store(res["miles"], "epa", res["matched_trim"], res["url"], None)
         return _range_info(res["miles"], "epa", res["matched_trim"], res["url"], None, False)
+    cands = list(res.get("candidates") or [])
+    reason = "epa_ambiguous" if res["status"] in ("ambiguous", "conflict") else "epa_no_entry"
     if res["status"] == "conflict":          # the old pass 0; kept for any stub that still answers this way
         store(None, "conflict", None, None, res["note"])
-        return _range_info(None, None, None, None, f"electric range omitted: {res['note']}", False)
-    # "ambiguous" (more than one candidate, or records that disagree) and "none" both fall through to the
-    # manufacturer search; the note says which, and stays in the omission flag if nothing is found there.
-
+        return _range_info(None, None, None, None, f"electric range omitted: {res['note']}", False, reason=reason, candidates=cands)
+    # "ambiguous" (more than one candidate, or records that disagree) and "none": a manufacturer search only when
+    # one is passed or switched on; otherwise RESEARCH NEEDED, with the note and pass 0's candidates.
     epa_note = res["note"]
+    neg_source = "ambiguous" if res["status"] == "ambiguous" else "none"
+    if manufacturer is None and RANGE_PAID_SEARCH:
+        manufacturer = manufacturer_search
+    if manufacturer is None:
+        store(None, neg_source, None, None, epa_note)
+        return _range_info(None, None, None, None, f"electric range omitted (research needed): {epa_note}", False,
+                           reason=reason, candidates=cands)
     domains = MANUFACTURER_DOMAINS.get(make.lower())
     if not domains:
         note = f"{epa_note}; no manufacturer site on file for {make}"
-        store(None, "none", None, None, note)
-        return _range_info(None, None, None, None, f"electric range omitted: {note}", False)
+        store(None, neg_source, None, None, note)
+        return _range_info(None, None, None, None, f"electric range omitted: {note}", False, reason=reason, candidates=cands)
     try:
         mf = manufacturer(year, make, model, trim, cls, domains)
     except RangeLookupUnavailable as exc:
-        return _range_info(None, None, None, None, f"electric range omitted this run: {epa_note}; {exc}", False)
+        return _range_info(None, None, None, None, f"electric range omitted this run: {epa_note}; {exc}", False,
+                           reason=reason, candidates=cands)
     if mf.get("miles"):
         store(mf["miles"], "manufacturer", mf.get("matched_trim"), mf.get("url"), epa_note)
         return _range_info(mf["miles"], "manufacturer", mf.get("matched_trim"), mf.get("url"), None, False)
     note = f"{epa_note}; {mf.get('note') or 'no manufacturer figure'}"
-    store(None, "none", None, None, note)
-    return _range_info(None, None, None, None, f"electric range omitted: {note}", False)
+    store(None, neg_source, None, None, note)
+    return _range_info(None, None, None, None, f"electric range omitted: {note}", False, reason=reason, candidates=cands)
 
 
 def split_ymm(year_make_model: str | None) -> tuple[int | None, str | None, str | None]:
@@ -1034,17 +1077,38 @@ def vehicle_powertrain(
     lookup_range: bool = True,
 ) -> dict[str, Any]:
     """Class + ELECTRIC_RANGE for one vehicle, from the caches:
-    {"class", "label", "source", "signals", "override", "range", "flags"}."""
+    {"class", "label", "source", "signals", "override", "range", "flags"}.
+    A researched figure for the configuration (research.py, entered on the Research page) beats the range cache and
+    pass 0. The range carries its configuration ("config") so a miss can be listed for research, and pass 0's
+    candidates are kept for the Research page."""
+    import research
+
     sticker_text, recon_text = cached_texts(vin)
     info = classify(vin, year_make_model, trim, sticker_text=sticker_text, recon_text=recon_text)
     year, make, model = split_ymm(year_make_model)
-    if lookup_range:
-        rng = electric_range(
-            year, make, model, trim, info["class"], body_style=body_style,
-            extra_text=" ".join(sticker_text[:400].split()),
-        )
-    else:
-        rng = _range_info(None, None, None, None, None, False)
+    rng = _range_info(None, None, None, None, None, False)
+    if info["class"] in PLUG_IN:
+        cfg, fact = None, None
+        try:
+            cfg = research.range_config(year_make_model, trim, body_style, sticker_text, info["class"])
+            fact = research.get_fact("range", cfg)
+        except Exception as exc:  # noqa: BLE001 - the research table must never sink a build
+            print(f"[powertrain] researched-range check failed: {exc}", file=sys.stderr)
+        if fact:
+            src = "epa" if re.search(r"\bEPA\b", fact["quote"]) else "manual"
+            rng = _range_info(fact["figure"], src, f"researched: {fact['quote'][:120]}", fact["source_url"], None, True)
+            rng["researched"] = True
+        elif lookup_range:
+            rng = electric_range(
+                year, make, model, trim, info["class"], body_style=body_style,
+                extra_text=" ".join(sticker_text[:400].split()),
+            )
+            if rng.get("candidates") and cfg:
+                try:
+                    research.add_candidates("range", cfg, rng["candidates"], "fueleconomy.gov (pass 0)")
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[powertrain] could not store range candidates: {exc}", file=sys.stderr)
+        rng["config"] = cfg
     info["range"] = rng
     info["mild_sentence"] = mild_sentence_for(info, make)
     info["engine_sentence"] = engine_sentence(sticker_text)
@@ -1149,8 +1213,8 @@ def sentence_problems(
             problems.append("states an electric range but ELECTRIC_RANGE is omitted")
         elif any(abs(n - rng["miles"]) > RANGE_TOLERANCE_MILES for n in nums):
             problems.append(f"stated range {nums} differs from ELECTRIC_RANGE ({rng['miles']} miles) by more than {RANGE_TOLERANCE_MILES} mile")
-        elif rng.get("source") == "manufacturer" and re.search(r"\bEPA\b", sentence):
-            problems.append("calls a manufacturer-estimated range EPA")
+        elif rng.get("source") in ("manufacturer", "manual") and re.search(r"\bEPA\b", sentence):
+            problems.append(f"calls a {rng['source']}-estimated range EPA")
     for rx, why in TYPE_RULES.get(cls, []):
         if re.search(rx, sentence, re.I):
             problems.append(why)

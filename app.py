@@ -55,6 +55,7 @@ from scraper import STICKER_CACHE_DIR, WorkOrderNotFoundError
 from vehicle_cache import _connect as _cache_connect
 from vehicle_cache import get_carfax, get_carfax_image_path, get_recon, get_recon_image_path, get_seller_comments, get_sticker_image_path, get_vehicle, get_vehicle_by_stock, get_window_sticker, needs_recon, save_seller_comments, save_window_sticker
 import billing
+import research
 import credentials as _credentials
 from credentials import DEMO_PASSWORD
 from run_lock import ScraperBusyError
@@ -994,6 +995,89 @@ def cache_save_powertrain(stock_number: str):
         "override": bool(entry),
         "label": CLASS_LABELS[cls] if cls else None,
     })
+
+
+# --------------------------------------------------------------------------- #
+# Research: electric ranges and tow ratings entered by hand, keyed by configuration
+# --------------------------------------------------------------------------- #
+
+
+def research_groups(history: dict[str, Any] | None = None, live: set[str] | None = None) -> list[dict[str, Any]]:
+    """The configurations the live ads are missing a range / tow rating for (ad_history's research_needed), one row
+    per configuration with the stocks that share it, the stored candidates (fresh from the table) and any figure
+    already entered."""
+    history = history if history is not None else load_ad_history()
+    if live is None:
+        vehicles, _stamp = _load_snapshot()
+        live = {normalize_stock(v.get("stock_number")) for v in vehicles}
+    groups: dict[str, dict[str, Any]] = {}
+    for stock, e in sorted(history.items()):
+        if stock not in live or e.get("absent_since"):
+            continue
+        for it in e.get("research_needed") or []:
+            gid = it.get("key_id") or f"incomplete:{stock}:{it.get('kind')}"
+            g = groups.setdefault(gid, {**it, "stocks": [], "fact": None})
+            g["stocks"].append({"stock": stock, "ymm": e.get("year_make_model") or ""})
+    for gid, g in groups.items():
+        if g.get("key_id"):
+            kind, key = research.key_from_id(g["key_id"])
+            g["candidates"] = research.candidates(kind, key)
+            g["fact"] = research.get_fact(kind, key)
+        g["unit"] = research.UNITS.get(g.get("kind"), "")
+    return sorted(groups.values(), key=lambda g: (g["fact"] is not None, g.get("kind") or "", g.get("config_text") or ""))
+
+
+@app.get("/research")
+def research_page():
+    if not session.get("authed"):
+        return render_template("login.html", error=request.args.get("error"))
+    return render_template("research.html", groups=research_groups(), facts=research.all_facts(),
+                           reasons=research.REASONS, key_id=research.key_id, describe=research.describe,
+                           key_cols=research.KEY_COLS)
+
+
+@app.post("/research/fact")
+def research_save_fact():
+    """Save (or, with clear=1, remove) the figure for one configuration: figure, source URL and the quote that
+    states it. Used by every car of that configuration from the next build / Refresh text on."""
+    if not session.get("authed"):
+        return jsonify({"saved": False, "error": "Not signed in."}), 401
+    try:
+        kind, key = research.key_from_id(request.form.get("key_id") or "")
+    except (ValueError, TypeError, IndexError):
+        return jsonify({"saved": False, "error": "Unknown configuration."}), 400
+    if request.form.get("clear"):
+        removed = research.clear_fact(kind, key)
+        return jsonify({"saved": True, "cleared": removed})
+    try:
+        row = research.set_fact(kind, key, request.form.get("figure"), request.form.get("source_url"), request.form.get("quote"))
+    except ValueError as exc:
+        return jsonify({"saved": False, "error": str(exc)}), 400
+    return jsonify({"saved": True, "figure": row["figure"], "entered_date": row["entered_date"]})
+
+
+@app.post("/research/refresh/<stock_number>")
+def research_refresh_text(stock_number: str):
+    """Put the range / tow sentence into one stored ad with the no-model edit. dry=1 shows what would change."""
+    if not session.get("authed"):
+        return jsonify({"ok": False, "error": "Not signed in."}), 401
+    stock = normalize_stock(stock_number)
+    try:
+        if request.form.get("dry"):
+            plan = research.plan_refresh(stock)
+            applied = False
+        else:
+            plan = research.apply_refresh(stock)
+            applied = plan.get("applied", False)
+    except (LookupError, RuntimeError) as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 409
+    except Exception as exc:  # noqa: BLE001 - report, don't crash the page
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 500
+    changed = [k for k in plan["after"] if plan["after"][k] != plan["before"].get(k)]
+    return jsonify({"ok": True, "applied": applied, "changes": plan["changes"], "notes": plan["notes"],
+                    "removed": plan["removed"], "paragraphs": {k: plan["after"][k] for k in changed},
+                    "backup": plan.get("backup")})
 
 
 @app.post("/cache/<stock_number>/towing")

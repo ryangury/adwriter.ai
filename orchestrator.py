@@ -35,10 +35,12 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from ad_timeline import stamp_eligible
+import research
 from adwriter import (
     _format_ads_ready_email,
     _generate_from_package,
     format_per_ad_email,
+    set_research_needed,
     set_towing_review,
     _recon_has_includeable,
     _send_gmail,
@@ -351,6 +353,27 @@ def _carfax_leftovers() -> list[dict[str, Any]]:
     ]
 
 
+def _research_rows(ads_generated: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """[{stock, ymm, items}] for the built ads missing an electric range or a tow rating: from the build's own
+    package (powertrain / towing), else what the ad's history entry recorded (a reprice). Never raises."""
+    rows = []
+    history = None
+    for a in ads_generated:
+        try:
+            pkg = a.get("pkg") or {}
+            if pkg.get("powertrain") is not None or pkg.get("towing") is not None:
+                items = research.items_for(pkg.get("powertrain"), pkg.get("towing"))
+            else:
+                history = history if history is not None else load_ad_history()
+                items = (history.get(a["stock"]) or {}).get("research_needed") or []
+        except Exception as exc:  # noqa: BLE001 - the summary must still go out
+            items = [{"kind": "?", "missing": "range / tow", "reason": "other", "detail": f"could not be checked ({exc})",
+                      "config_text": "?", "candidates": []}]
+        if items:
+            rows.append({"stock": a["stock"], "ymm": (a.get("vehicle") or {}).get("year_make_model"), "items": items})
+    return rows
+
+
 def _format_build_summary(
     ads_generated: list[dict[str, Any]],
     not_rebuilt: list[dict[str, Any]],
@@ -370,6 +393,15 @@ def _format_build_summary(
             v = a.get("vehicle") or {}
             out.append(f"  {_BUILD_KIND[kind]:12s} {a['stock']}  {v.get('year_make_model') or ''}  "
                        f"{_fmt_price(v.get('advertised_price') or v.get('current_price'))}".rstrip())
+    research_rows = _research_rows(ads_generated)
+    n_items = sum(len(r["items"]) for r in research_rows)
+    out += ["", f"RESEARCH NEEDED ({n_items})", "=" * 60]
+    if not research_rows:
+        out.append("(none: every built ad had its electric range / tow rating, or needs none)")
+    else:
+        out.append("No live search runs for a range or tow rating; enter the figure on the site's Research page "
+                   "(/research), then Refresh text.")
+        out += research.summary_lines(research_rows)
     out += ["", f"DELETED FOR REBUILD, NO NEW AD ({len(not_rebuilt)})", "=" * 60]
     if not not_rebuilt:
         out.append("(none)")
@@ -1024,6 +1056,7 @@ def _run_inner(
         )
         if stock in ad_history:
             set_towing_review(ad_history[stock], pkg.get("towing"))
+            set_research_needed(ad_history[stock], pkg.get("powertrain"), pkg.get("towing"))
         # Persist per vehicle so a later crash can't erase completed work.
         save_ad_history(ad_history)
         print(f"[{tag}] {stock}: ad generated ({stage})")
