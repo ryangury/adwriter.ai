@@ -118,7 +118,7 @@ class RepriceGuardTests(unittest.TestCase):
         e["current_ad_text"] = "\n\n".join([e["paragraph_one"], e["paragraph_two"], e["paragraph_three"], e["paragraph_four"]])
         seen = []
 
-        def fake_completion(client, *, stock, label, system, user, size_text, floor):
+        def fake_completion(client, *, stock, label, system, user, size_text, floor, status_code=None):
             existing = user.split("EXISTING PARAGRAPH TWO:\n", 1)[1].split("\n\nNEW PRICING DATA:", 1)[0]
             seen.append(existing)
             return existing  # the "model" returns the paragraph unchanged

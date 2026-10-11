@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """model_config.py — which Claude model each call site uses, and what the model needs.
 
-One flag per call site, each defaulting to claude-sonnet-4-6 (today's model). Switching a site to Sonnet 5.5 is one
-line here; switching back is the same line. Nothing else in the code names a model for these calls.
+One flag per call site, and for the ad-writing calls one per inventory side: the Mercedes-Benz prompts (status 10 MB
+CPO and 16 Z stock) and the non-MB prompts (11 Hendrick Certified, 12 Hendrick Affordable, 13 As-Is). Switching a
+flag is one line here, and so is switching it back. Nothing else in the code names a model for these calls; the
+orchestrator and the website's manual generate / reprice read the same flags.
 
-    GENERATE_MODEL          adwriter.generate_ad without the search tool (purpose generate)
-    RESEARCH_SEARCH_MODEL   adwriter.generate_ad with the search tool (purpose research_search)
-    REPRICE_MODEL           the paragraph rewrites: reprice and recon update (adwriter._capped_completion)
-    TOW_LOOKUP_MODEL        towing.lookup (tow_refresh --lookup; builds make no tow lookup)
+    GENERATE_MODEL_MB / _NON_MB   adwriter.generate_ad without the search tool (purpose generate)
+    REPRICE_MODEL_MB / _NON_MB    the paragraph-two rewrite of a reprice (adwriter._capped_completion)
+    RESEARCH_SEARCH_MODEL         adwriter.generate_ad with the search tool (purpose research_search), any status
+    TOW_LOOKUP_MODEL              towing.lookup (tow_refresh --lookup; builds make no tow lookup)
+
+A recon update makes no model call. A status outside 11 / 12 / 13 (None included) uses the MB flag.
 
 Sonnet 5.5 requests carry thinking={"type": "between_tools"} and an effort level (output_config.effort, default
 medium). Never thinking.disabled, budget_tokens or tool_choice.
@@ -25,10 +29,15 @@ from typing import Any
 SONNET_46 = "claude-sonnet-4-6"
 SONNET_55 = "claude-sonnet-5-5"
 
-# ---- the flags (all off: today's model) ------------------------------------------------------------------------- #
-GENERATE_MODEL = SONNET_46
+# ---- the flags -------------------------------------------------------------------------------------------------- #
+MB_STATUSES = (10, 16)
+NON_MB_STATUSES = (11, 12, 13)
+
+GENERATE_MODEL_MB = SONNET_46
+GENERATE_MODEL_NON_MB = SONNET_55
+REPRICE_MODEL_MB = SONNET_46
+REPRICE_MODEL_NON_MB = SONNET_55
 RESEARCH_SEARCH_MODEL = SONNET_46
-REPRICE_MODEL = SONNET_46
 TOW_LOOKUP_MODEL = SONNET_46
 
 SONNET_55_EFFORT = "medium"          # low | medium | high
@@ -64,3 +73,28 @@ def output_cap(model: str, base_tokens: int) -> int:
 
 def guard_limits(model: str) -> dict[str, float]:
     return dict(GUARD_LIMITS.get(model, GUARD_LIMITS[SONNET_46]))
+
+
+def is_non_mb(status_code: int | None) -> bool:
+    return status_code in NON_MB_STATUSES
+
+
+def generate_model(status_code: int | None) -> str:
+    """The model for an ad written without the search tool."""
+    return GENERATE_MODEL_NON_MB if is_non_mb(status_code) else GENERATE_MODEL_MB
+
+
+def reprice_model(status_code: int | None) -> str:
+    return REPRICE_MODEL_NON_MB if is_non_mb(status_code) else REPRICE_MODEL_MB
+
+
+def tag(model: str) -> dict[str, Any]:
+    """ad_history's generated_with: the model and, for Sonnet 5.5, its effort level."""
+    return {"model": model, "effort": SONNET_55_EFFORT if model == SONNET_55 else None}
+
+
+def describe(tag_or_model: dict[str, Any] | str | None) -> str:
+    t = tag(tag_or_model) if isinstance(tag_or_model, str) else (tag_or_model or {})
+    if not t.get("model"):
+        return "unknown"
+    return t["model"] + (f" (effort {t['effort']})" if t.get("effort") else "")

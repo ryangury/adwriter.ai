@@ -51,6 +51,7 @@
       {{ ad_entry.lifecycle_stage or 'active' }}
       &middot; written {{ ad_entry.last_ad_date or '—' }}
       &middot; {{ ad_entry.ad_count or 1 }} generation{{ '' if (ad_entry.ad_count or 1) == 1 else 's' }}
+      &middot; written with {% if ad_entry.generated_with and ad_entry.generated_with.model %}{{ ad_entry.generated_with.model }}{% if ad_entry.generated_with.effort %} (effort {{ ad_entry.generated_with.effort }}){% endif %}{% else %}not recorded{% endif %}
       {% if ad_entry.last_price_at_write is number %}&middot; list price at write {{ '${:,.0f}'.format(ad_entry.last_price_at_write) }}{% endif %}
       {% if ad_entry.verification_verdict %}&middot; site check: {{ ad_entry.verification_verdict }}{% if ad_entry.match_score is not none %} ({{ ad_entry.match_score }}){% endif %}{% endif %}
       &middot; <a href="/?stock={{ vehicle.stock_number }}">Open in Ad Writer</a>

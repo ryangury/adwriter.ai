@@ -34,9 +34,16 @@ class Client:
 
 
 class Defaults(unittest.TestCase):
-    def test_every_site_defaults_to_4_6(self):
-        for name in ("GENERATE_MODEL", "RESEARCH_SEARCH_MODEL", "REPRICE_MODEL", "TOW_LOOKUP_MODEL"):
+    def test_flags_mb_on_4_6_non_mb_on_5_5(self):
+        for name in ("GENERATE_MODEL_MB", "REPRICE_MODEL_MB", "RESEARCH_SEARCH_MODEL", "TOW_LOOKUP_MODEL"):
             self.assertEqual(getattr(M, name), "claude-sonnet-4-6", name)
+        for name in ("GENERATE_MODEL_NON_MB", "REPRICE_MODEL_NON_MB"):
+            self.assertEqual(getattr(M, name), "claude-sonnet-5-5", name)
+        for status, want in ((10, M.SONNET_46), (16, M.SONNET_46), (None, M.SONNET_46), (99, M.SONNET_46),
+                             (11, M.SONNET_55), (12, M.SONNET_55), (13, M.SONNET_55)):
+            self.assertEqual((M.generate_model(status), M.reprice_model(status)), (want, want), status)
+        self.assertEqual(M.describe(M.tag(M.SONNET_55)), "claude-sonnet-5-5 (effort medium)")
+        self.assertEqual(M.tag(M.SONNET_46), {"model": "claude-sonnet-4-6", "effort": None})
         self.assertEqual(M.SONNET_55_EFFORT, "medium")
         self.assertEqual(M.request_kwargs(M.SONNET_46), {"model": "claude-sonnet-4-6"})
 
@@ -70,9 +77,17 @@ class Generate(unittest.TestCase):
 
     def gen(self, model):
         client = Client([message(self.AD)])
-        with mock.patch.object(M, "GENERATE_MODEL", model):
-            A.generate_ad(client, "data", "system", stock="S1")
+        with mock.patch.object(M, "GENERATE_MODEL_MB", model):
+            A.generate_ad(client, "data", "system", stock="S1", status_code=10)
         return client.calls[0]
+
+    def test_status_picks_the_flag_and_the_tag_follows(self):
+        for status, want in ((10, "claude-sonnet-4-6"), (16, "claude-sonnet-4-6"), (11, "claude-sonnet-5-5"),
+                             (12, "claude-sonnet-5-5"), (13, "claude-sonnet-5-5")):
+            client = Client([message(self.AD)])
+            A.generate_ad(client, "data", "system", stock="T1", status_code=status)
+            self.assertEqual(client.calls[0]["model"], want, status)
+            self.assertEqual(A.GENERATED_WITH["T1"]["model"], want)
 
     def test_4_6_request_is_unchanged(self):
         kw = self.gen(M.SONNET_46)
@@ -101,16 +116,16 @@ class Generate(unittest.TestCase):
 
     def test_the_truncation_guard_still_fails_a_cut_off_ad(self):
         client = Client([message("<ad>P1.\n\nP2 cut", stop="max_tokens")])
-        with mock.patch.object(M, "GENERATE_MODEL", M.SONNET_55), self.assertRaises(ValueError):
-            A.generate_ad(client, "data", "system", stock="S1")
+        with self.assertRaises(ValueError):
+            A.generate_ad(client, "data", "system", stock="S1", status_code=13)
 
 
 class Reprice(unittest.TestCase):
     def test_5_5_cap_retry_at_double_and_fields(self):
         client = Client([message("cut", stop="max_tokens"), message("New paragraph two.")])
-        with mock.patch.object(M, "REPRICE_MODEL", M.SONNET_55), mock.patch.object(A, "flag_generation_problem"):
+        with mock.patch.object(A, "flag_generation_problem"):
             out = A._capped_completion(client, stock="S1", label="reprice", system="s", user="u", size_text="old p2",
-                                       floor=A.REPRICE_MIN_TOKENS)
+                                       floor=A.REPRICE_MIN_TOKENS, status_code=12)
         self.assertEqual(out, "New paragraph two.")
         a, b = client.calls
         self.assertEqual(a["max_tokens"], 1800, "floor 1,500 x 1.2 beats 2 x 200 + 480")

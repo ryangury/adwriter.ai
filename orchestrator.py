@@ -35,6 +35,7 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from ad_timeline import stamp_eligible
+import model_config
 import research
 from adwriter import (
     _format_ads_ready_email,
@@ -402,6 +403,14 @@ def _format_build_summary(
         out.append("No live search runs for a range or tow rating; enter the figure on the site's Research page "
                    "(/research), then Refresh text.")
         out += research.summary_lines(research_rows)
+    uncovered = [(a, (a.get("pkg") or {}).get("package_coverage_missing") or []) for a in ads_generated]
+    uncovered = [(a, u) for a, u in uncovered if u]
+    out += ["", f"PACKAGES NOT NAMED IN PARAGRAPH TWO (warning only) ({len(uncovered)})", "=" * 60]
+    if not uncovered:
+        out.append("(none: every sticker package of $750 or more is named in its ad)")
+    for a, u in uncovered:
+        out.append(f"  [{a['stock']}]  {(a.get('vehicle') or {}).get('year_make_model') or ''}  —  "
+                   + "; ".join(f"{x['name']} (${x['price']:,.0f})" for x in u))
     out += ["", f"DELETED FOR REBUILD, NO NEW AD ({len(not_rebuilt)})", "=" * 60]
     if not not_rebuilt:
         out.append("(none)")
@@ -434,8 +443,12 @@ def _format_build_summary(
 def _stored_flags_feedback(stock: str) -> str | None:
     """TOOL FEEDBACK for an update with no model feedback of its own (recon
     top-up, reprice): the powertrain flags the update stored on the ad."""
-    flags = (load_ad_history().get(stock) or {}).get("powertrain_flags") or []
-    return ("POWERTRAIN_FLAGS:\n" + "\n".join(f"- {f}" for f in flags)) if flags else None
+    entry = load_ad_history().get(stock) or {}
+    flags = entry.get("powertrain_flags") or []
+    lines = ["POWERTRAIN_FLAGS:"] + [f"- {f}" for f in flags] if flags else []
+    if entry.get("generated_with"):
+        lines.append(f"MODEL: {model_config.describe(entry['generated_with'])}")
+    return "\n".join(lines) or None
 
 
 def _aggregate_failure(new_errors: list[dict[str, Any]]) -> str | None:
