@@ -122,9 +122,11 @@ class PackageCoverage(unittest.TestCase):
         with mock.patch.object(A, "_generate_once", side_effect=once), mock.patch.object(A, "_sticker_text_for", return_value=""), \
              mock.patch.object(A, "find_tool_output_leaks", return_value=[]), mock.patch.object(A, "find_banned_scarcity_phrases", return_value=[]), \
              mock.patch.object(A, "missing_required_sentences", return_value=[]), mock.patch.object(A, "check_claims", return_value=[]), \
-             mock.patch.object(A, "fact_check_problems", return_value=([], [])), mock.patch.object(A, "history_claim_problems", return_value=[]):
+             mock.patch.object(A, "fact_check_problems", return_value=([], [])), mock.patch.object(A, "history_claim_problems", return_value=[]), \
+             mock.patch.object(A, "package_price_missing", return_value=[]), mock.patch.object(A, "standard_equipment_missing", return_value=None):
+            # (a package named without its price is test_package_prices.py's: retried, then its price is inserted)
             out_ad, fb = A._generate_from_package(pkg)
-        self.assertEqual(out_ad.split("\n\n")[1], p2, "a warning never changes or blocks the ad")
+        self.assertEqual(out_ad.split("\n\n")[1], p2, "an unnamed package is a warning: it never changes or blocks the ad")
         self.assertIn("PACKAGE COVERAGE (warning only)", fb)
         self.assertIn("ASSIST STEPS ($950)", fb)
         self.assertTrue(fb.rstrip().endswith("MODEL: claude-sonnet-5-5 (effort medium)"))
