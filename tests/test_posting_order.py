@@ -193,6 +193,7 @@ class StepOrder(unittest.TestCase):
         self.assertIn("tow rating missing (not_looked_up)", summary)
         self.assertIn("PACKAGES NOT NAMED IN PARAGRAPH TWO (warning only) (1)", summary)
         self.assertIn("Z71 OFF-ROAD PACKAGE ($750)", summary)
+        self.assertIn("RECON REVIEW (archived work order, no latch; listed only, no action taken) (0)", summary)
 
     def assert_order(self, r):
         e = r.events

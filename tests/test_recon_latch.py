@@ -190,5 +190,40 @@ class LastKnownStatus(unittest.TestCase):
         self.assertTrue(out["recon_complete"], "a missing status falls back to the last known 'Closed/Ready For Sale'")
 
 
+class ReconReview(unittest.TestCase):
+    """An archived work order that reads incomplete for a car with no latch is listed (status, FQC text, row counts)
+    in the Build Summary's RECON REVIEW section, and nothing else is done: it is not treated as complete."""
+
+    def setUp(self):
+        wipe()
+        AG.RECON_REVIEW.clear()
+
+    def test_listed_with_its_details_and_not_treated_as_complete(self):
+        its = VENDOR_WORDING + [dict(DONE[0], kind="service", completed=True, completion_status="TASK COMPLETED",
+                                     description="A Service", section="Mechanical"),
+                                dict(DONE[0], kind="service", completed=False, completion_status="Completed by Vendor Add PO",
+                                     description="remove dents", section="Body")]
+        out = AG.check_recon("PX0001", rv=RV(its, header="Archived", wo="4053254", vin="VINR"), vin="VINR")
+        self.assertFalse(out["recon_complete"], "an archived order is NOT counted as complete")
+        self.assertFalse(VC.recon_latched("VINR", "PX0001"))
+        self.assertEqual(AG.RECON_REVIEW, [{"stock": "PX0001", "work_order": "4053254", "status": "Archived",
+                                            "fqc_text": "Completed by Vendor Add PO", "service_rows": 2,
+                                            "service_completed": 1, "service_not_completed": 1}])
+        AG.check_recon("PX0001", rv=RV(its, header="Archived", wo="4053254", vin="VINR"), vin="VINR")
+        self.assertEqual(len(AG.RECON_REVIEW), 1, "once per stock per run")
+        body = o._format_build_summary([], [], [], [])
+        self.assertIn("RECON REVIEW (archived work order, no latch; listed only, no action taken) (1)", body)
+        self.assertIn("[PX0001]  work order 4053254  status Archived", body)
+        self.assertIn("FQC 'Completed by Vendor Add PO'; service rows 1 TASK COMPLETED, 1 not (2 in all)", body)
+
+    def test_not_listed_when_complete_open_or_latched(self):
+        AG.check_recon("PX0002", rv=RV(REOPENED, header="Recon"), vin="VIN2X")                  # open, not archived
+        AG.check_recon("PX0003", rv=RV(DONE, header="Archived", vin="VIN3X"), vin="VIN3X")      # archived and complete
+        VC.save_recon("VIN4X", "PX0004", {"work_order_id": "1", "line_items": DONE}, True)
+        AG.check_recon("PX0004", rv=RV(VENDOR_WORDING, header="Archived", vin="VIN4X"), vin="VIN4X")   # latched: not read
+        self.assertEqual(AG.RECON_REVIEW, [])
+        self.assertIn("RECON REVIEW (archived work order, no latch; listed only, no action taken) (0)", o._format_build_summary([], [], [], []))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -53,7 +53,7 @@ from adwriter import (
     source_status,
     update_recon,
 )
-from aggregator import DEALER_DOC_FEE, ScraperError, aggregate, check_recon
+from aggregator import DEALER_DOC_FEE, RECON_REVIEW, ScraperError, aggregate, check_recon
 from vehicle_cache import get_vehicle_by_stock, recon_latched, reset_recon_latch
 from ctr_database import BENCHMARK_DEALERSHIPS, recorded_today
 from failure_streak import FailureStreak, failure_key
@@ -395,6 +395,12 @@ def _format_build_summary(
             v = a.get("vehicle") or {}
             out.append(f"  {_BUILD_KIND[kind]:12s} {a['stock']}  {v.get('year_make_model') or ''}  "
                        f"{_fmt_price(v.get('advertised_price') or v.get('current_price'))}".rstrip())
+    out += ["", f"RECON REVIEW (archived work order, no latch; listed only, no action taken) ({len(RECON_REVIEW)})", "=" * 60]
+    if not RECON_REVIEW:
+        out.append("(none)")
+    for r in RECON_REVIEW:
+        out.append(f"  [{r['stock']}]  work order {r['work_order']}  status {r['status']}  —  FQC {r['fqc_text']!r}; "
+                   f"service rows {r['service_completed']} TASK COMPLETED, {r['service_not_completed']} not ({r['service_rows']} in all)")
     research_rows = _research_rows(ads_generated)
     n_items = sum(len(r["items"]) for r in research_rows)
     out += ["", f"RESEARCH NEEDED ({n_items})", "=" * 60]
@@ -572,6 +578,7 @@ def _run_inner(
     step 8 sends only the Ads Ready summary (the per-reprice emails go out
     from step 4). --status / --limit still apply."""
     started = time.monotonic()
+    RECON_REVIEW.clear()          # archived, unlatched work orders seen this run (Build Summary: RECON REVIEW)
     if reprice_only:
         print("[orchestrator] --reprice-only: crawl + reprices only")
     today = date.today().isoformat()

@@ -3532,6 +3532,35 @@ RECON_ROW_DROP_FRACTION = 0.6   # fewer than this share of the cached rows = "dr
 RECON_GATE_STATE_PATH = Path(__file__).with_name("recon_gate_state.json")   # last parsed work-order status per stock
 RECON_LATCHED_NOTE = "recon latched complete (no ReconVision read)"
 
+# RECON REVIEW: a live read of an ARCHIVED work order that does not count as
+# complete, for a car with no latch. Listed in the Build Summary with its
+# status, FQC text and row counts; no other action (an archived order is NOT
+# treated as complete). The orchestrator clears this at the start of a run.
+RECON_REVIEW: list[dict[str, Any]] = []
+
+
+def note_archived_unlatched(stock: str, raw: dict[str, Any], d: dict[str, Any]) -> dict[str, Any] | None:
+    """Record (once per stock per run) an incomplete live read whose work order is Archived. Returns the entry."""
+    status = " ".join((d.get("header_status") or "").split())
+    if d.get("complete") or status.lower() != "archived":
+        return None
+    items = raw.get("line_items") or []
+    fqc = next((li for li in items if li.get("kind") == "task"
+                and re.sub(r"[^a-z]", "", (li.get("section") or "").lower()) == "finalqualitycontrol"), None)
+    service = [li for li in items if li.get("kind") == "service" and not li.get("rejected")]
+    entry = {
+        "stock": stock, "work_order": raw.get("work_order_id"), "status": status,
+        "fqc_text": (fqc or {}).get("completion_status") if fqc else None,
+        "service_rows": len(service), "service_completed": sum(1 for li in service if li.get("completed")),
+    }
+    entry["service_not_completed"] = entry["service_rows"] - entry["service_completed"]
+    if not any(e["stock"] == stock for e in RECON_REVIEW):
+        RECON_REVIEW.append(entry)
+        print(f"[recon-gate] {stock}: RECON REVIEW - archived work order {entry['work_order']} reads incomplete "
+              f"(FQC {entry['fqc_text']!r}; service rows {entry['service_completed']}/{entry['service_rows']} completed); "
+              "listed in the Build Summary, no other action", file=sys.stderr)
+    return entry
+
 
 def _recon_cached_info(stock: str) -> dict[str, Any]:
     """{vin, complete, rows} for the cached recon row of this stock, if any."""
@@ -4008,6 +4037,7 @@ def check_recon(
     complete = details["complete"]
     details["header_status_source"] = recon_raw.get("header_status_source")
     _remember_status(stock, details)
+    note_archived_unlatched(stock, recon_raw, details)
     scraped_vin = (recon_raw.get("vin") or "").strip().upper()
     if complete and vin and (not scraped_vin or scraped_vin == vin.strip().upper()):
         recon_raw.pop("recon_image_bytes", None)
@@ -4200,6 +4230,7 @@ def aggregate(
                 # vision overlay (see _apply_recon_vision()'s docstring).
                 items = recon_raw.get("line_items", [])
                 recon_complete_now = _recon_details_now["complete"]
+                note_archived_unlatched(stock, recon_raw, _recon_details_now)
                 recon_status = "scraped" if recon_complete_now else "failed"
 
                 if expected_vin:
