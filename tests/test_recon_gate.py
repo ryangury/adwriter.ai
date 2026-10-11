@@ -19,9 +19,10 @@ def vehicles(n):
 
 
 class Harness:
-    def __init__(self, n, logins, history=None, recon_open=()):
+    def __init__(self, n, logins, history=None, recon_open=(), latched=(), reprices=()):
         """logins: per new ReconVision session, 'ok', 'timeout' or 'enter_fail'."""
         self.sent, self.sleeps, self.rv_sessions, self.agg_calls = [], [], 0, []
+        self.recon_updates, self.reprices = [], []
         script = list(logins)
         h = self
 
@@ -44,7 +45,7 @@ class Harness:
                 if self.mode == "timeout":
                     raise TIMEOUT
 
-        def check_recon(stock, rv=None):
+        def check_recon(stock, rv=None, vin=None):
             assert rv is not None and rv.mode == "ok"
             return {"recon_complete": stock not in recon_open}
 
@@ -80,13 +81,16 @@ class Harness:
             mock.patch.object(o, "stamp_eligible", return_value=[]),
             mock.patch.object(o, "load_ad_history", side_effect=lambda: dict(history or {})),
             mock.patch.object(o, "save_ad_history"),
-            mock.patch.object(o, "detect_reprices_needed", return_value=[]),
+            mock.patch.object(o, "detect_reprices_needed", return_value=[
+                {"stock_number": s, "difference": -500, "old_price": 50000, "new_price": 49500} for s in reprices]),
             mock.patch.object(o, "_load_reprice_queue", return_value=[]),
             mock.patch.object(o, "_save_reprice_queue"),
             mock.patch.object(o, "ReconVisionScraper", FakeRV),
             mock.patch.object(o, "check_recon", self.check_recon),
+            mock.patch.object(o, "recon_latched", side_effect=lambda vin, stock: stock in latched),
             mock.patch.object(o, "aggregate", side_effect=aggregate),
-            mock.patch.object(o, "update_recon", side_effect=scraper.ScraperError("stub update_recon")),
+            mock.patch.object(o, "update_recon", side_effect=lambda stock, sc=None: h.recon_updates.append(stock) or (_ for _ in ()).throw(scraper.ScraperError("stub update_recon"))),
+            mock.patch.object(o, "fresh_pricing_data", side_effect=lambda stock: h.reprices.append(stock) or (_ for _ in ()).throw(scraper.ScraperError("stub reprice"))),
             mock.patch.object(o, "ACVMaxScraper", FakeACV),
             mock.patch.object(o, "recorded_today", side_effect=fake_recorded_today()),
             mock.patch.object(o, "run_watched", side_effect=fake_run_watched(ok_children)),
@@ -113,6 +117,33 @@ class Harness:
     def errors_section(self):
         body = self.email("Mercedes-Benz of Durham — Action Required")[0]
         return body[body.index("SCRAPER ERRORS"):]
+
+
+class LatchedReconTests(unittest.TestCase):
+    def test_latched_cars_never_wait_even_with_reconvision_down(self):
+        """S0 has no ad, S1 a pre-recon ad, S2 a live ad whose price changed; recon is latched for all three and has
+        since regressed in ReconVision, which is unreachable today. Nothing waits, nothing errors on recon, the
+        build / recon update / reprice all go ahead, and ReconVision is never opened."""
+        history = {"S1": {"current_ad_text": "A.", "recon_pending": True, "lifecycle_stage": "pre_recon"},
+                   "S2": {"current_ad_text": "A.", "recon_pending": False, "lifecycle_stage": "recon_updated"}}
+        h = Harness(3, ["timeout", "timeout", "timeout"], history=history, recon_open=("S0", "S1", "S2"),
+                    latched=("S0", "S1", "S2"), reprices=("S2",))
+        self.assertEqual(h.run(), 0)
+        self.assertEqual((h.rv_sessions, h.check_recon.call_count), (0, 0), "no ReconVision read at all")
+        self.assertEqual([s for s, _ in h.agg_calls], ["S0"], "the build goes ahead")
+        self.assertEqual(h.recon_updates, ["S1"], "the recon update goes ahead")
+        self.assertEqual(h.reprices, ["S2"], "the reprice goes ahead")
+        self.assertEqual(h.email("ReconVision unreachable"), [])
+        waiting = h.waiting_section()
+        for s in ("[S0]", "[S1]", "[S2]"):
+            self.assertNotIn(s, waiting)
+        self.assertNotIn("recon  —", h.errors_section())
+
+    def test_a_recon_updated_ad_is_never_recon_updated_again(self):
+        history = {"S0": {"current_ad_text": "A.", "recon_pending": True, "lifecycle_stage": "recon_updated"}}
+        h = Harness(1, ["ok"], history=history, latched=("S0",))
+        self.assertEqual(h.run(), 0)
+        self.assertEqual((h.recon_updates, h.check_recon.call_count), ([], 0))
 
 
 class ReconGateTests(unittest.TestCase):

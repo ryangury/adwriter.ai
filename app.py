@@ -1418,7 +1418,7 @@ def generate():
             flush=True,
         )
         vin = snap.get("vin") if snap else None
-        if vin and not needs_recon(vin):
+        if vin and not needs_recon(vin, stock_number.strip().lstrip("#").upper()):
             # We already have complete recon for this VIN cached from an
             # earlier run — retry and let aggregate() itself use the cache
             # (see aggregator.aggregate()'s expected_vin/needs_recon path)

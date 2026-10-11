@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -226,10 +227,51 @@ def needs_carfax(vin: str) -> bool:
     return get_carfax(vin) is None
 
 
-def needs_recon(vin: str) -> bool:
-    """True if there's no recon cached for this VIN, or the cached recon is
-    not yet complete (forces a re-scrape until Close RO shows TASK COMPLETED)."""
+def needs_recon(vin: str, stock_number: str | None = None) -> bool:
+    """True unless this VIN's recon is LATCHED complete (recon_latched): then the
+    cached recon is used and ReconVision is never read again for it. With no
+    stock number given, any complete row counts (older callers)."""
+    if stock_number is not None:
+        return not recon_latched(vin, stock_number)
     return get_recon(vin) is None
+
+
+def recon_latched(vin: str | None, stock_number: str | None) -> bool:
+    """Latched recon: once a VIN's recon has read complete (a live gate read, or
+    the cache already saying so), it stays complete for that VIN AND stock
+    number: no re-scrape, no completeness re-check, no downgrade. The latch is
+    the cached row's recon_complete flag, held only while the row's stock
+    number is this stock number and it holds real line items (never a stub)."""
+    if not vin or not stock_number:
+        return False
+    row = _get_row(vin)
+    if not row or not row["recon_complete"] or not row["recon_json"]:
+        return False
+    if (row["stock_number"] or "").strip().upper() != stock_number.strip().upper():
+        return False
+    try:
+        items = (json.loads(row["recon_json"]) or {}).get("line_items") or []
+    except (ValueError, TypeError):
+        return False
+    return bool(items)
+
+
+def reset_recon_latch(vin: str, reason: str) -> bool:
+    """Drop a VIN's latch and its stored recon (a new stock number for the VIN,
+    or the car went absent): the next gate reads ReconVision again, and items
+    from the old work order never reach a new ad. Returns True if a row changed."""
+    now = datetime.now().isoformat()
+    with _connect() as conn:
+        row = conn.execute("SELECT recon_complete, recon_json FROM vehicle_data WHERE vin = ?", (vin,)).fetchone()
+        if not row or (not row["recon_complete"] and not row["recon_json"]):
+            return False
+        conn.execute(
+            "UPDATE vehicle_data SET recon_complete = 0, recon_json = NULL, recon_date = NULL, last_updated = ? WHERE vin = ?",
+            (now, vin),
+        )
+        conn.commit()
+    print(f"[recon-latch] {vin}: latch reset ({reason})", file=sys.stderr)
+    return True
 
 
 def get_autoipacket_attempts(vin: str) -> int:
@@ -351,18 +393,29 @@ def save_recon(
     given, so a call that doesn't know about it never wipes out a path an
     earlier save already recorded.
 
-    recon_complete never downgrades from True to False: once a vehicle's
-    recon has been fully scraped, a later partial/incomplete scrape can still
-    update recon_json but must not flip recon_complete back to False.
+    The latch (recon_latched): recon_complete never goes back from True to
+    False for the same VIN and stock number. A different stock number for the
+    VIN (a returned trade-in) is a new car: the old latch does not carry over.
+    A read with no line items or no work order (a stub, empty or failed read)
+    never sets the latch.
     """
     now = datetime.now().isoformat()
     today = date.today().isoformat()
+    items = (recon_data or {}).get("line_items") or []
+    if recon_complete and not (items and (recon_data or {}).get("work_order_id")):
+        print(f"[recon-latch] {vin}: not latching from an empty / stub read ({len(items)} items, "
+              f"work order {(recon_data or {}).get('work_order_id')!r})", file=sys.stderr)
+        recon_complete = False
     with _connect() as conn:
-        _ensure_row(conn, vin, stock_number)
         existing = conn.execute(
-            "SELECT recon_complete FROM vehicle_data WHERE vin = ?", (vin,)
+            "SELECT recon_complete, stock_number FROM vehicle_data WHERE vin = ?", (vin,)
         ).fetchone()
-        already_complete = bool(existing["recon_complete"]) if existing else False
+        same_stock = bool(existing) and (existing["stock_number"] or "").strip().upper() == (stock_number or "").strip().upper()
+        already_complete = bool(existing["recon_complete"]) if (existing and same_stock) else False
+        if existing and existing["recon_complete"] and not same_stock:
+            print(f"[recon-latch] {vin}: stock number {existing['stock_number']!r} -> {stock_number!r}; "
+                  "the old latch does not carry over", file=sys.stderr)
+        _ensure_row(conn, vin, stock_number)
         final_complete = 1 if (recon_complete or already_complete) else 0
 
         conn.execute(
@@ -379,27 +432,6 @@ def save_recon(
             (stock_number, json.dumps(recon_data), today, final_complete, image_path, now, vin),
         )
         conn.commit()
-
-
-def downgrade_recon(vin: str) -> bool:
-    """Explicitly flip a cached recon row from complete to incomplete (so
-    needs_recon() forces a re-scrape). save_recon() never does this on its own;
-    the only caller is aggregator's recon gate, after Final Quality Control has
-    been seen explicitly not completed on consecutive checks. Returns True if a
-    complete row was downgraded."""
-    now = datetime.now().isoformat()
-    with _connect() as conn:
-        row = conn.execute(
-            "SELECT recon_complete FROM vehicle_data WHERE vin = ?", (vin,)
-        ).fetchone()
-        if not row or not row["recon_complete"]:
-            return False
-        conn.execute(
-            "UPDATE vehicle_data SET recon_complete = 0, last_updated = ? WHERE vin = ?",
-            (now, vin),
-        )
-        conn.commit()
-    return True
 
 
 def increment_autoipacket_attempts(vin: str) -> None:

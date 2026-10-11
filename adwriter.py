@@ -47,7 +47,7 @@ from carfax_history import carfax_history, claim_problems, scrub_claims
 from towing import tow_figures as _tow_figures_in
 from research import set_research_needed
 from towing import rating_source, towing_for, towing_sentence, unverified_tow_sentences
-from vehicle_cache import get_vehicle, get_window_sticker
+from vehicle_cache import get_recon, get_vehicle, get_window_sticker, recon_latched
 from powertrain import (
     MILD_HYBRID_SENTENCE,
     mild_wording_ok,
@@ -3397,7 +3397,8 @@ def update_recon(stock_number: str, status_code: int | None = None) -> str:
     entry = history.get(stock)
     if not entry:
         raise ValueError(f"No ad on record for {stock}; nothing to update.")
-    if not entry.get("recon_pending"):
+    if not entry.get("recon_pending") or entry.get("lifecycle_stage") == "recon_updated":
+        # A recon update runs once: never again for an ad that is already recon_updated.
         return entry.get("current_ad_text", "")
 
     p1 = _paragraph(entry, "paragraph_one")
@@ -3405,11 +3406,17 @@ def update_recon(stock_number: str, status_code: int | None = None) -> str:
     p3 = _paragraph(entry, "paragraph_three")
     p4 = _paragraph(entry, "paragraph_four")
 
-    with ReconVisionScraper(headless=True) as rv:
-        rv.login()
-        recon_raw = rv.scrape_work_order(stock)
-    recon_raw.pop("recon_image_bytes", None)
     snap = _snapshot_vehicle(stock)
+    if recon_latched(snap.get("vin"), stock):
+        # Latched recon: the cached, complete work order is the source; a work
+        # order reopened since then is never read and its items never reach the ad.
+        recon_raw = dict(get_recon(snap["vin"]) or {})
+        print(f"[update_recon] {stock}: recon latched complete - using the cached work order (no ReconVision read)")
+    else:
+        with ReconVisionScraper(headless=True) as rv:
+            rv.login()
+            recon_raw = rv.scrape_work_order(stock)
+    recon_raw.pop("recon_image_bytes", None)
     if status_code is None:
         status_code = snap.get("status_code")
     if status_code is None:

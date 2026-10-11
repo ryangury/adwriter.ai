@@ -75,6 +75,7 @@ class Harness:
             mock.patch.object(o, "_save_reprice_queue"),
             mock.patch.object(o, "ReconVisionScraper", FakeRV),
             mock.patch.object(o, "check_recon", side_effect=check_recon or (lambda *a, **k: {"recon_complete": True})),
+            mock.patch.object(o, "recon_latched", return_value=False),
             mock.patch.object(o, "aggregate", side_effect=aggregate),
             mock.patch.object(o, "ACVMaxScraper", FakeACV),
             mock.patch.object(o, "recorded_today", side_effect=fake_recorded_today()),
@@ -194,7 +195,7 @@ class StopTests(unittest.TestCase):
 
 
     def test_courtesy_vehicle_without_a_work_order_is_not_an_error(self):
-        def check_recon(stock, rv=None):
+        def check_recon(stock, rv=None, vin=None):
             raise scraper.WorkOrderNotFoundError(f"Stock #{stock}: no work order found. See x/ for a snapshot.")
 
         vehicles = [

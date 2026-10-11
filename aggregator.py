@@ -43,7 +43,6 @@ from scraper import (
 )
 from carfax_history import apply_text_history, carfax_history
 from vehicle_cache import (
-    downgrade_recon,
     get_vehicle,
     get_vehicle_by_stock,
     get_window_sticker,
@@ -58,6 +57,7 @@ from vehicle_cache import (
     needs_window_sticker,
     needs_carfax,
     needs_recon,
+    recon_latched,
 )
 from vision_parser import parse_carfax_image, parse_recon_image, parse_sticker_image
 
@@ -3513,16 +3513,24 @@ RECON_INCOMPLETE_NOTE = (
 )
 
 # --- recon gate safeguards ------------------------------------------------ #
-# A live scrape that says "incomplete" is double-checked before it is believed
-# when it contradicts the cache, lacks a Final Quality Control row, or returned
-# far fewer rows than the cached scrape (a partially loaded page looks exactly
-# like that). A cached "complete" row is downgraded only after Final Quality
-# Control is seen present-and-not-completed on consecutive gate checks.
+# LATCHED RECON (vehicle_cache.recon_latched): once a VIN's recon reads complete
+# (a live gate read, or the cache already saying so) it stays complete for that
+# VIN and stock number. The gate then answers "complete" without reading
+# ReconVision, aggregate() uses the cached items as they are, and a recon update
+# uses them too: a work order reopened or sent back later never produces an
+# error, a "waiting on recon" entry or an Action Required line, never blocks a
+# build, reprice or the website's Generate New Ad, and its items never reach an
+# ad. The latch is reset when the VIN gets a new stock number or the car goes
+# absent, and is never set from a stub, empty or failed read.
+#
+# Before a car is latched, a live scrape that says "incomplete" is
+# double-checked when it lacks a Final Quality Control row or returned far
+# fewer rows than the cached scrape (a partially loaded page looks exactly like
+# that).
 RECON_RETRY_WAIT_SECONDS = 20
 RECON_ROW_DROP_FRACTION = 0.6   # fewer than this share of the cached rows = "dropped sharply"
-RECON_DOWNGRADE_STREAK = 2
-RECON_STREAK_MIN_GAP_SECONDS = 600  # checks closer together than this count once
-RECON_GATE_STATE_PATH = Path(__file__).with_name("recon_gate_state.json")
+RECON_GATE_STATE_PATH = Path(__file__).with_name("recon_gate_state.json")   # last parsed work-order status per stock
+RECON_LATCHED_NOTE = "recon latched complete (no ReconVision read)"
 
 
 def _recon_cached_info(stock: str) -> dict[str, Any]:
@@ -3558,25 +3566,6 @@ def _log_recon_verdict(stock: str, d: dict[str, Any], note: str = "") -> None:
         f"rows={d['row_count']}, FQC row={fqc}, decided by {d['path']}{note}",
         file=sys.stderr,
     )
-
-
-def cached_recon_still_complete(
-    stock: str, items: list[dict[str, Any]], header_status: str | None = None
-) -> bool:
-    """Re-run the completeness rule on cached recon items (no scrape). A cached
-    row flagged complete can hold items that say otherwise (the flag is sticky:
-    save_recon() never lowers it). When the rule says incomplete this logs the
-    evidence and returns False; the stored flag is left alone."""
-    d = _recon_details(items, header_status)
-    if d["complete"]:
-        return True
-    print(
-        f"[recon-gate] {stock}: cached recon is flagged complete but its stored items are not - "
-        f"treating recon as incomplete for this call (no scrape, flag unchanged)",
-        file=sys.stderr,
-    )
-    _log_recon_verdict(stock, d, ", cache hit")
-    return False
 
 
 def scrape_recon_checked(
@@ -3664,66 +3653,24 @@ def _status_or_last_known(stock: str, raw: dict[str, Any]) -> str | None:
     return None
 
 
-def _track_recon_downgrade(
-    stock: str, vin: str | None, d: dict[str, Any], cached_complete: bool,
-    state_path: Path | None = None, now: float | None = None,
-) -> str | None:
-    """Count consecutive gate checks that saw Final Quality Control present and
-    explicitly not completed AND a work-order status that parsed live and
-    reads something other than "Closed/Ready For Sale"; on the second,
-    downgrade a cached "complete" row (vehicle_cache.downgrade_recon) and log
-    it. A missing or unparseable status (or one carried over from the last
-    known status) is never evidence: the streak is left as it is. A complete
-    verdict resets it. The last parsed status is kept per stock
-    (last_status / last_status_date). Returns "downgraded" / "streak N" /
-    "no status" / None, for logging and tests."""
+def _remember_status(stock: str, d: dict[str, Any], state_path: Path | None = None) -> None:
+    """Keep the last work-order status the gate parsed live for this stock
+    (last_status / last_status_date), the fallback when a later scrape shows
+    none. Nothing else is kept: there is no downgrade streak any more."""
     path = state_path or RECON_GATE_STATE_PATH
-    now = time.time() if now is None else now
+    live_status = d.get("header_status") if d.get("header_status_source", "live") == "live" else None
+    live_status = _parsed_status(live_status)
+    if live_status is None:
+        return
     try:
         state = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         state = {}
-    entry = state.get(stock) or {"streak": 0, "last_ts": 0}
-    live_status = d.get("header_status") if d.get("header_status_source", "live") == "live" else None
-    live_status = _parsed_status(live_status)
-    if live_status is not None:
-        entry["last_status"] = live_status
-        entry["last_status_date"] = date.today().isoformat()
-    explicit = (
-        (not d["complete"]) and d["fqc_present"] and not d["fqc_completed"]
-        and live_status is not None and live_status != RECON_DONE_HEADER_STATUS
-    )
-    result = None
-    if not d["complete"] and live_status is None:
-        result = "no status"  # never evidence: streak untouched
-        if entry.get("last_status") or entry.get("streak"):
-            state[stock] = entry
-    elif explicit:
-        if now - float(entry.get("last_ts") or 0) >= RECON_STREAK_MIN_GAP_SECONDS:
-            entry["streak"] = int(entry.get("streak") or 0) + 1
-        entry["last_ts"] = now
-        result = f"streak {entry['streak']}"
-        if entry["streak"] >= RECON_DOWNGRADE_STREAK and cached_complete and vin:
-            if downgrade_recon(vin):
-                print(
-                    f"[recon-gate] {stock}: DOWNGRADE cached recon complete -> incomplete "
-                    f"(Final Quality Control present and not completed on {entry['streak']} "
-                    f"consecutive checks; rows={d['row_count']}, status={d['fqc_status']})",
-                    file=sys.stderr,
-                )
-                result = "downgraded"
-        state[stock] = entry
-    else:
-        entry["streak"] = 0
-        if entry.get("last_status"):
-            state[stock] = entry
-        else:
-            state.pop(stock, None)
+    state[stock] = {"last_status": live_status, "last_status_date": date.today().isoformat()}
     try:
         path.write_text(json.dumps(state, indent=2), encoding="utf-8")
     except OSError:
         pass
-    return result
 
 # --------------------------------------------------------------------------- #
 # MB CPO data-completeness gate
@@ -4022,21 +3969,31 @@ def check_recon(
     rv: ReconVisionScraper | None = None,
     headless: bool = True,
     fresh_login: bool = False,
+    vin: str | None = None,
 ) -> dict[str, Any]:
     """Light ReconVision-only check (no ACV MAX / Carfax / AutoiPacket). Returns
-    {stock_number, recon_complete, work_order_id, note}.
+    {stock_number, recon_complete, work_order_id, note, latched}.
+
+    A LATCHED car (vehicle_cache.recon_latched for this VIN and stock number) is
+    complete without any ReconVision read. Otherwise the work order is read; a
+    complete read with line items latches the car (save_recon), an incomplete
+    or failed one never does.
 
     Pass an already-open `rv` (logged in) to reuse it across a per-vehicle loop
     instead of opening a new Chromium process and re-logging-in for every
     vehicle — see orchestrator.py's _run_inner()."""
     stock = stock_number.strip().lstrip("#").upper()
+    cached = _recon_cached_info(stock)
+    vin = vin or cached.get("vin")
+    if recon_latched(vin, stock):
+        return {"stock_number": stock, "recon_complete": True, "work_order_id": None,
+                "note": RECON_LATCHED_NOTE, "latched": True}
     owns_session = rv is None
     if owns_session:
         rv = ReconVisionScraper(headless=headless, use_saved_session=not fresh_login)
         rv.__enter__()
     try:
         rv.login(force=fresh_login)
-        cached = _recon_cached_info(stock)
         try:
             recon_raw, details = scrape_recon_checked(rv, stock, cached=cached)
         except WorkOrderLoadError:
@@ -4050,14 +4007,17 @@ def check_recon(
             rv.__exit__(None, None, None)
     complete = details["complete"]
     details["header_status_source"] = recon_raw.get("header_status_source")
-    _track_recon_downgrade(
-        stock, recon_raw.get("vin") or cached.get("vin"), details, cached["complete"]
-    )
+    _remember_status(stock, details)
+    scraped_vin = (recon_raw.get("vin") or "").strip().upper()
+    if complete and vin and (not scraped_vin or scraped_vin == vin.strip().upper()):
+        recon_raw.pop("recon_image_bytes", None)
+        save_recon(vin, stock, recon_raw, True, image_path=recon_raw.get("recon_image_path"))   # the latch
     return {
         "stock_number": stock,
         "recon_complete": complete,
         "work_order_id": recon_raw.get("work_order_id"),
         "note": None if complete else RECON_INCOMPLETE_NOTE,
+        "latched": bool(complete and recon_latched(vin, stock)),
     }
 
 
@@ -4207,25 +4167,16 @@ def aggregate(
         recon_raw: dict[str, Any] = {}
         items: list[dict[str, Any]] = []
         if not skip_recon:
-            if expected_vin and not needs_recon(expected_vin):
+            if expected_vin and recon_latched(expected_vin, stock):
+                # Latched: the cached, complete recon is used as it is. No
+                # ReconVision read and no completeness re-check, so a work order
+                # reopened since then never blocks this build and its items
+                # never reach the ad.
                 recon_raw = get_recon(expected_vin) or {}
                 items = recon_raw.get("line_items", [])
                 recon_status = "cache_hit"
-                if not cached_recon_still_complete(stock, items, _status_or_last_known(stock, recon_raw)):
-                    # The cached flag says complete but the stored items say
-                    # otherwise: treat recon as incomplete for this call (no
-                    # scrape, stored flag untouched - the gate's two-check
-                    # downgrade owns that).
-                    return {
-                        "recon_complete": False,
-                        "stock_number": stock,
-                        "stock_prefix": stock_prefix,
-                        "is_z_stock": is_z_stock,
-                        "work_order_id": recon_raw.get("work_order_id"),
-                        "note": RECON_INCOMPLETE_NOTE,
-                    }
                 print(
-                    f"[cache] recon hit for VIN {expected_vin} — recon complete, "
+                    f"[cache] recon latched for VIN {expected_vin} / {stock} — recon complete, "
                     f"skipping ReconVision",
                     file=sys.stderr,
                 )
@@ -4251,15 +4202,11 @@ def aggregate(
                 recon_complete_now = _recon_details_now["complete"]
                 recon_status = "scraped" if recon_complete_now else "failed"
 
-                if expected_vin and not recon_complete_now and cached_recon["complete"]:
-                    # Never replace a cached complete scrape's items with an
-                    # incomplete one: the gate's FQC streak decides any downgrade.
-                    print(
-                        f"[recon-gate] {stock}: keeping the cached complete recon row; "
-                        f"this scrape was incomplete",
-                        file=sys.stderr,
-                    )
-                elif expected_vin:
+                if expected_vin:
+                    # A complete read latches (save_recon refuses a stub); an
+                    # incomplete one is stored without latching. A cached complete
+                    # row under ANOTHER stock number (a returned trade-in) does not
+                    # carry over.
                     save_recon(
                         expected_vin,
                         stock,

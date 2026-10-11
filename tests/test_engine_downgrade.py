@@ -1,5 +1,5 @@
-"""Offline tests: sticker engine facts (stubbed generation) and the recon
-downgrade rule (stubbed ReconVision, temp gate state). Nothing saved, no API call."""
+"""Offline tests: sticker engine facts (stubbed generation). Nothing saved, no API call.
+(The recon downgrade checks that lived here moved to tests/test_recon_latch.py.)"""
 import json
 import shutil
 import sys
@@ -98,68 +98,7 @@ txt_r = adwriter._research_instructions([{"kind": "trim_knowledge", "year": 2024
                                           "trim": "RST", "powertrain": P.DIESEL, "sticker_engine": pt["engine"]["text"]}])
 check("trim research is told the sticker engine is authoritative", "DURAMAX 3.0L TURBO-DIESEL" in txt_r and "authoritative" in txt_r)
 
-print("\n=== recon downgrade ===")
-TMP = Path(tempfile.mkdtemp(prefix="gate_", dir=Path(__file__).parent))
-shutil.copy(str(_paths.DATA / "recon_gate_state.json"), TMP / "state.json")
-AG.RECON_GATE_STATE_PATH = TMP / "state.json"
-DOWN = []
-AG.downgrade_recon = lambda vin: DOWN.append(vin) or True
-AG.time.sleep = lambda s: None
-clock = [1_791_300_000.0]
-AG.time.time = lambda: clock[0]
-
-
-def items(rows):
-    return [S.ReconVisionScraper._normalize_line_item({"section": s, "kind": "task", "description": s,
-                                                      "completion_status": c, "rejected": False}) for s, c in rows]
-
-
-P29 = items([("Close RO", "INCOMPLETE"), ("Final Quality Control", "Completed by Vendor Add PO")])
-PM53 = items([("Close RO", "TASK COMPLETED"), ("Final Quality Control", "INCOMPLETE")])
-
-
-class RV:
-    def __init__(self, header, its):
-        self.header, self.its = header, its
-
-    def login(self, force=False):
-        pass
-
-    def scrape_work_order(self, stock):
-        return {"work_order_id": "1", "vin": "VIN" + stock, "header_status": self.header, "line_items": self.its}
-
-
-def gate(stock, header, its, cached_complete):
-    AG._recon_cached_info = lambda s: {"vin": "VIN" + s, "complete": cached_complete, "rows": len(its)}
-    out = AG.check_recon(stock, rv=RV(header, its))
-    clock[0] += 3600
-    return out, json.loads((TMP / "state.json").read_text()).get(stock)
-
-
-o1, s1 = gate("P29369", "Closed/Ready For Sale", P29, False)
-check("P29369 live status: complete, last status stored", o1["recon_complete"] and s1 and s1.get("last_status") == "Closed/Ready For Sale" and s1["streak"] == 0, s1)
-o2, s2 = gate("P29369", None, P29, True)
-o3, s3 = gate("P29369", "   ", P29, True)
-check("P29369 status text removed (twice): stays complete via the last known status",
-      o2["recon_complete"] and o3["recon_complete"], (o2, o3))
-check("P29369: no downgrade, streak 0", not DOWN and s3["streak"] == 0, s3)
-
-state = json.loads((TMP / "state.json").read_text())
-state.pop("P29369", None)
-(TMP / "state.json").write_text(json.dumps(state))
-o4, s4 = gate("P29369", None, P29, True)
-o5, s5 = gate("P29369", None, P29, True)
-check("no status and no last known status: incomplete verdict but never evidence (no streak, no downgrade)",
-      not o4["recon_complete"] and not DOWN and (s5 is None or s5.get("streak", 0) == 0), s5)
-
-state = json.loads((TMP / "state.json").read_text())
-state.pop("PM53873", None)
-(TMP / "state.json").write_text(json.dumps(state))
-a, sa = gate("PM53873", "Mechanical Repairs", PM53, True)
-b, sb = gate("PM53873", "Mechanical Repairs", PM53, True)
-check("PM53873 'Mechanical Repairs' twice: downgrades", not a["recon_complete"] and DOWN == ["VINPM53873"] and sb.get("last_status") == "Mechanical Repairs", (sa, sb, DOWN))
-
-shutil.rmtree(TMP, ignore_errors=True)
+# The recon two-check downgrade was removed on 2026-10-11 (latched recon): see tests/test_recon_latch.py.
 print()
 print("FAILED:" if FAIL else "ALL PASSED", FAIL if FAIL else "")
 sys.exit(1 if FAIL else 0)

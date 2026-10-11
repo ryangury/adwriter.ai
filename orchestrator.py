@@ -54,6 +54,7 @@ from adwriter import (
     update_recon,
 )
 from aggregator import DEALER_DOC_FEE, ScraperError, aggregate, check_recon
+from vehicle_cache import get_vehicle_by_stock, recon_latched, reset_recon_latch
 from ctr_database import BENCHMARK_DEALERSHIPS, recorded_today
 from failure_streak import FailureStreak, failure_key
 import list_not_rebuilt
@@ -637,6 +638,12 @@ def _run_inner(
         save_ad_history(absent_history)
         for s in newly_absent:
             print(f"[ad-history] {s}: absent from inventory ({absent_history[s]['absent_reason']}) — flagged, verification stops")
+            try:
+                gone = get_vehicle_by_stock(s) or {}
+                if gone.get("vin"):
+                    reset_recon_latch(gone["vin"], f"{s} absent from inventory")
+            except Exception as exc:  # noqa: BLE001 - a latch reset must never sink the crawl step
+                print(f"[recon-latch] {s}: could not reset the latch — {exc}", file=sys.stderr)
         for s in back_in_stock:
             print(f"[ad-history] {s}: back in inventory — absent flag cleared")
     # Save the full crawl, status-1 units included, as the snapshot: the same
@@ -876,13 +883,18 @@ def _run_inner(
                 if entry.get("absent_since"):
                     print(f"[gate] {stock}: absent since {entry['absent_since']} — skip")
                     continue
-                if entry.get("recon_pending"):
+                if entry.get("recon_pending") and entry.get("lifecycle_stage") == "recon_updated":
+                    print(f"[gate] {stock}: already recon_updated - the recon update never runs again")
+                elif entry.get("recon_pending") and recon_latched(v.get("vin"), stock):
+                    recon_update_queue.append(v)
+                    print(f"[gate] {stock}: recon latched complete -> recon update queue (no ReconVision read)")
+                elif entry.get("recon_pending"):
                     session, login_failed = _recon_session()
                     if session is None:
                         _recon_unavailable(v, login_failed)
                         continue
                     try:
-                        rc = check_recon(stock, rv=session)
+                        rc = check_recon(stock, rv=session, vin=v.get("vin"))
                     except PlaywrightTimeoutError as exc:
                         print(f"[orchestrator] ReconVision timeout on {stock} — skipping to next vehicle")
                         errors.append(
@@ -912,12 +924,16 @@ def _run_inner(
                 continue
 
             # No ad on record yet — decide full vs pre-recon on the recon gate.
+            if recon_latched(v.get("vin"), stock):
+                build_queue.append(v)
+                print(f"[gate] {stock}: no ad yet, recon latched complete -> build queue (no ReconVision read)")
+                continue
             session, login_failed = _recon_session()
             if session is None:
                 _recon_unavailable(v, login_failed)
                 continue
             try:
-                rc = check_recon(stock, rv=session)
+                rc = check_recon(stock, rv=session, vin=v.get("vin"))
             except PlaywrightTimeoutError as exc:
                 print(f"[orchestrator] ReconVision timeout on {stock} — skipping to next vehicle")
                 errors.append(
