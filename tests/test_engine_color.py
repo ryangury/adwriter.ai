@@ -19,10 +19,6 @@ DB = sqlite3.connect(str(_paths.DATA / "vehicle_cache.db"))
 SNAP = _paths.snapshot()        # live snapshot + tests/fixtures/pinned_vehicles.json (pinned wins)
 HIST = json.load(open(str(_paths.DATA / "ad_history.json"), encoding="utf-8"))
 
-# Cars the tests are pinned to that may be sold (and so leave the live snapshot)
-# are read from a saved copy of their snapshot rows instead.
-for _s, _v in json.load(open(str(_paths.ROOT / "tests" / "fixtures" / "pinned_vehicles.json"), encoding="utf-8")).items():
-    SNAP.setdefault(_s, _v)
 
 
 def sticker(stock):
