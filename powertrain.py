@@ -1094,7 +1094,12 @@ def vehicle_powertrain(
             fact = research.get_fact("range", cfg)
         except Exception as exc:  # noqa: BLE001 - the research table must never sink a build
             print(f"[powertrain] researched-range check failed: {exc}", file=sys.stderr)
-        if fact:
+        waived = research.get_waiver("range", cfg) if (cfg and not fact) else None
+        if waived:
+            # "No figure needed" (Research page): no range, no flag, no lookup.
+            rng = _range_info(None, None, None, None, None, True)
+            rng["waived"] = waived
+        elif fact:
             src = "epa" if re.search(r"\bEPA\b", fact["quote"]) else "manual"
             rng = _range_info(fact["figure"], src, f"researched: {fact['quote'][:120]}", fact["source_url"], None, True)
             rng["researched"] = True

@@ -2,94 +2,155 @@
 {% block title %}Research | Mercedes-Benz of Durham{% endblock %}
 {% block head %}
 <style>
-  .rs-group { border: 1px solid var(--line); border-radius: 10px; padding: 14px 18px; margin-bottom: 16px; background: var(--card); }
-  .rs-head { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
-  .rs-kind { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
-  .rs-config { font-weight: 650; }
-  .rs-reason { color: var(--muted); font-size: 0.88rem; margin: 4px 0 8px; }
+  .rs-counts { display: flex; gap: 10px; flex-wrap: wrap; margin: 12px 0 8px; }
+  .rs-count { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; background: var(--card); min-width: 150px; flex: 1 1 150px; }
+  .rs-count b { display: block; font-size: 1.35rem; }
+  .rs-count span { color: var(--muted); font-size: 0.82rem; }
+  .rs-top { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 8px 0 18px; }
+  .rs-section { margin-top: 26px; }
+  .rs-section h2 { margin-bottom: 4px; }
+  .rs-section .page-sub { margin-top: 0; }
+  .rs-group { border: 1px solid var(--line); border-radius: 10px; padding: 14px 18px; margin-bottom: 14px; background: var(--card); }
+  .rs-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+  .rs-config { font-weight: 650; overflow-wrap: anywhere; }
+  .rs-badge { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; padding: 2px 7px; border-radius: 999px;
+              border: 1px solid var(--line); color: var(--muted); }
+  .rs-badge.vin { border-color: var(--fail, #b91c1c); color: var(--fail, #b91c1c); }
+  .rs-reason { font-weight: 600; margin: 6px 0 2px; }
+  .rs-detail { color: var(--muted); font-size: 0.86rem; margin-bottom: 6px; overflow-wrap: anywhere; }
   .rs-done { color: var(--accent); font-weight: 650; }
   .rs-cands { margin: 8px 0; }
   .rs-cand { display: block; width: 100%; text-align: left; margin: 4px 0; padding: 6px 10px; border: 1px solid var(--line);
-             border-radius: 6px; background: transparent; cursor: pointer; font: inherit; }
+             border-radius: 6px; background: transparent; cursor: pointer; font: inherit; color: inherit; overflow-wrap: anywhere; }
   .rs-cand:hover { border-color: var(--accent); }
   .rs-cand .q { color: var(--muted); font-size: 0.85rem; }
-  .rs-form { display: grid; grid-template-columns: 140px 1fr; gap: 6px 10px; align-items: center; margin-top: 8px; max-width: 900px; }
-  .rs-form input, .rs-form textarea { font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; }
+  .rs-form { display: grid; grid-template-columns: 120px 1fr; gap: 6px 10px; align-items: center; margin-top: 8px; max-width: 900px; }
+  .rs-form input, .rs-form textarea, .rs-waive input { font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; min-width: 0; }
   .rs-form textarea { min-height: 3.2em; }
-  .rs-actions { margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; }
-  .rs-stocks { margin-top: 10px; font-size: 0.9rem; }
-  .rs-stock { display: flex; gap: 8px; align-items: center; margin: 3px 0; flex-wrap: wrap; }
+  .rs-actions { margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .rs-waive { display: none; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  .rs-waive.open { display: flex; }
+  .rs-waive input { flex: 1 1 260px; }
+  .rs-cars { margin-top: 10px; font-size: 0.9rem; }
+  .rs-car { display: flex; gap: 8px; align-items: center; margin: 4px 0; flex-wrap: wrap; }
+  .rs-car .said { color: var(--muted); font-size: 0.85rem; flex-basis: 100%; padding-left: 4px; overflow-wrap: anywhere; }
   .rs-msg { font-size: 0.88rem; margin-top: 6px; white-space: pre-wrap; }
   .rs-msg.err { color: var(--fail, #b91c1c); }
-  .rs-table td { vertical-align: top; }
+  .rs-table td { vertical-align: top; overflow-wrap: anywhere; }
+  .rs-scroll { overflow-x: auto; }
+  @media (max-width: 640px) { .rs-form { grid-template-columns: 1fr; } }
 </style>
 {% endblock %}
 {% block content %}
+{% set c = data.counts %}
 <div class="wrap-wide">
   <h1 class="page-title">Research</h1>
   <p class="page-sub">
-    Electric ranges and tow ratings the builds could not state. Builds make no live search: pass 0
-    (fueleconomy.gov), the caches, overrides and the figures entered here only. A figure entered here is used for
-    every car of the same configuration; a VIN override on the car's Database page still wins.
-    After saving, use <b>Refresh text</b> to put the sentence into a stored ad (no model call; the verifier re-checks it).
+    Tow ratings and electric ranges the ads can't state yet. Builds make no live search. A tow figure is stated only
+    from a VIN override or a figure entered here, and an entered figure covers every car of that configuration.
+    After saving, use <b>Refresh text</b> on each car (no model call; the verifier re-checks it). Sold and absent cars are hidden.
   </p>
 
-  {% if not groups %}
-  <p class="empty-note">Nothing is waiting for research.</p>
-  {% endif %}
+  <div class="rs-counts">
+    {% for s in sections %}
+    <div class="rs-count"><b>{{ c.rows[s] }}</b><span>{{ titles[s] }}: rows ({{ c.cars[s] }} car{{ '' if c.cars[s] == 1 else 's' }})</span></div>
+    {% endfor %}
+    <div class="rs-count"><b>{{ c.cars_total }}</b><span>cars affected</span></div>
+    <div class="rs-count"><b>{{ c.losing_tow_sentence }}</b><span>live ads lose a tow sentence at their next reprice</span></div>
+    <div class="rs-count"><b>{{ c.needs_vin_override }}</b><span>rows need a VIN override</span></div>
+  </div>
+  <div class="rs-top">
+    <button type="button" id="rs-epa" title="fueleconomy.gov only: no model call, no cost">Run free EPA check</button>
+    <span class="rs-msg" id="rs-epa-msg">Checks every electric-range row on fueleconomy.gov and saves exact matches.</span>
+  </div>
 
-  {% for g in groups %}
-  <div class="rs-group" data-key="{{ g.key_id or '' }}">
-    <div class="rs-head">
-      <span class="rs-kind">{{ g.missing }}</span>
-      <span class="rs-config">{{ g.config_text }}</span>
-      {% if g.fact %}<span class="rs-done">entered: {{ '{:,}'.format(g.fact.figure) }} {{ g.unit }} ({{ g.fact.entered_date }})</span>{% endif %}
-    </div>
-    <div class="rs-reason">{{ g.reason }} — {{ reasons.get(g.reason, '') }}{% if g.detail %}<br>{{ g.detail }}{% endif %}</div>
+  {% for s in sections %}
+  <section class="rs-section" id="rs-{{ s }}">
+    <h2>{{ titles[s] }} ({{ data.sections[s]|length }})</h2>
+    {% if s == 'tow_stated' %}
+    <p class="page-sub">These ads state a tow figure that came from neither a VIN override nor this page. Each loses that
+      sentence at its next reprice unless a figure is entered here (then Refresh text) or set as a VIN override.</p>
+    {% endif %}
+    {% if not data.sections[s] %}<p class="empty-note">Nothing here.</p>{% endif %}
 
-    {% if g.key_id %}
-    <div class="rs-cands">
-      {% if g.candidates %}
-        {% for c in g.candidates %}
-        <button type="button" class="rs-cand" data-figure="{{ c.figure }}" data-url="{{ c.source_url }}" data-quote="{{ c.quote }}">
-          <b>{{ '{:,}'.format(c.figure) }} {{ g.unit }}</b> · {{ c.origin }}{% if c.source_url %} · {{ c.source_url }}{% endif %}
-          {% if c.quote %}<br><span class="q">“{{ c.quote }}”</span>{% endif %}
+    {% for g in data.sections[s] %}
+    <div class="rs-group" data-key="{{ g.key_id or '' }}" data-kind="{{ g.kind }}" data-wid="{{ g.waiver_id }}" data-config="{{ g.config_text }}">
+      <div class="rs-head">
+        <span class="rs-config">{{ g.config_text }}</span>
+        {% if g.needs_vin_override %}<span class="rs-badge vin">Needs VIN override</span>{% endif %}
+        {% if g.fact %}<span class="rs-done">entered: {{ '{:,}'.format(g.fact.figure) }} {{ g.unit }} ({{ g.fact.entered_date }})</span>{% endif %}
+      </div>
+      <div class="rs-reason">{{ g.reason }}</div>
+      {% if g.needs_vin_override %}
+      <div class="rs-detail">The configuration is incomplete{% if g.missing_parts %} (no {{ g.missing_parts|join(', ') }}){% endif %}, so a figure can't be entered for it here. Set a VIN override on each car's Database page.</div>
+      {% elif g.detail %}<div class="rs-detail">{{ g.detail }}</div>{% endif %}
+
+      {% if g.key_id %}
+      <div class="rs-cands">
+        {% for cd in g.candidates %}
+        <button type="button" class="rs-cand" data-figure="{{ cd.figure }}" data-url="{{ cd.source_url }}" data-quote="{{ cd.quote }}">
+          <b>{{ '{:,}'.format(cd.figure) }} {{ g.unit }}</b> · {{ cd.origin }}{% if cd.source_url %} · {{ cd.source_url }}{% endif %}
+          {% if cd.quote %}<br><span class="q">“{{ cd.quote }}”</span>{% endif %}
         </button>
         {% endfor %}
-      {% else %}
-        <div class="rs-reason">No candidates found yet.</div>
-      {% endif %}
-    </div>
-    <form class="rs-form" onsubmit="return false;">
-      <label>Figure ({{ g.unit }})</label><input name="figure" value="{{ g.fact.figure if g.fact else '' }}" inputmode="numeric">
-      <label>Source URL</label><input name="source_url" value="{{ g.fact.source_url if g.fact else '' }}">
-      <label>Quote</label><textarea name="quote" placeholder="the sentence or table row that states it">{{ g.fact.quote if g.fact else '' }}</textarea>
-    </form>
-    <div class="rs-actions">
-      <button type="button" class="rs-find" title="One Haiku 4.5 web search, up to $0.25; the figures come back as candidates only">Find candidates</button>
-      <button type="button" class="rs-save">Save figure</button>
-      {% if g.fact %}<button type="button" class="rs-clear">Remove figure</button>{% endif %}
-    </div>
-    {% else %}
-    <div class="rs-reason">The configuration is incomplete, so a figure can't be keyed to it; set a VIN override on the car's Database page instead.</div>
-    {% endif %}
-    <div class="rs-msg"></div>
-
-    <div class="rs-stocks">
-      {% for s in g.stocks %}
-      <div class="rs-stock" data-stock="{{ s.stock }}">
-        <a href="/cache/{{ s.stock }}">{{ s.stock }}</a> {{ s.ymm }}
-        <button type="button" class="rs-preview">Preview</button>
-        <button type="button" class="rs-refresh">Refresh text</button>
-        <span class="rs-msg"></span>
       </div>
-      {% endfor %}
+      <form class="rs-form" onsubmit="return false;">
+        <label>Figure ({{ g.unit }})</label><input name="figure" value="{{ g.fact.figure if g.fact else '' }}" inputmode="numeric">
+        <label>Source URL</label><input name="source_url" value="{{ g.fact.source_url if g.fact else '' }}">
+        <label>Quote</label><textarea name="quote" placeholder="the sentence or table row that states it">{{ g.fact.quote if g.fact else '' }}</textarea>
+      </form>
+      {% endif %}
+      <div class="rs-actions">
+        {% if g.key_id %}
+        <button type="button" class="rs-find" title="One Haiku 4.5 web search, up to $0.25; the figures come back as candidates only">Find candidates</button>
+        <button type="button" class="rs-save">Save figure</button>
+        {% if g.fact %}<button type="button" class="rs-clear">Remove figure</button>{% endif %}
+        {% endif %}
+        <button type="button" class="rs-waive-open">No figure needed</button>
+      </div>
+      <div class="rs-waive">
+        <input name="reason" placeholder="Why no figure is needed (required)">
+        <button type="button" class="rs-waive-save">Confirm</button>
+      </div>
+      <div class="rs-msg"></div>
+
+      <div class="rs-cars">
+        {% for car in g.cars %}
+        <div class="rs-car" data-stock="{{ car.stock }}">
+          <a href="/cache/{{ car.stock }}">{{ car.stock }}</a> {{ car.ymm }}
+          {% if car.stated %}<b>states {{ car.stated|map('string')|join(', ') }} lbs</b>{% endif %}
+          <button type="button" class="rs-preview">Preview</button>
+          <button type="button" class="rs-refresh">Refresh text</button>
+          <span class="rs-msg"></span>
+          {% if car.source %}<span class="said">Source: {{ car.source }}</span>{% endif %}
+        </div>
+        {% endfor %}
+      </div>
     </div>
-  </div>
+    {% endfor %}
+  </section>
   {% endfor %}
+
+  <h2>No figure needed ({{ data.waived|length }})</h2>
+  {% if data.waived %}
+  <div class="rs-scroll">
+  <table class="inv-table rs-table">
+    <tr><th>Kind</th><th>Configuration</th><th>Reason</th><th>Date</th><th></th></tr>
+    {% for w in data.waived %}
+    <tr data-kind="{{ w.kind }}" data-wid="{{ w.waiver_id }}">
+      <td>{{ w.kind }}</td><td>{{ w.config_text }}</td><td>{{ w.reason }}</td><td>{{ w.entered_date }}</td>
+      <td><button type="button" class="rs-undo">Undo</button> <span class="rs-msg"></span></td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  {% else %}
+  <p class="empty-note">None.</p>
+  {% endif %}
 
   <h2>Entered figures ({{ facts|length }})</h2>
   {% if facts %}
+  <div class="rs-scroll">
   <table class="inv-table rs-table">
     <tr><th>Kind</th><th>Configuration</th><th>Figure</th><th>Source</th><th>Quote</th><th>Date</th></tr>
     {% for f in facts %}
@@ -101,6 +162,7 @@
     </tr>
     {% endfor %}
   </table>
+  </div>
   {% else %}
   <p class="empty-note">None yet.</p>
   {% endif %}
@@ -116,13 +178,26 @@
   }
   function show(el, text, err) { el.textContent = text; el.classList.toggle("err", !!err); }
 
+  const epa = document.getElementById("rs-epa"), epaMsg = document.getElementById("rs-epa-msg");
+  epa.addEventListener("click", function () {
+    epa.disabled = true;
+    show(epaMsg, "Checking fueleconomy.gov...");
+    post("/research/epa-check", {}).then(function (r) {
+      epa.disabled = false;
+      if (!r.j.ok) { show(epaMsg, r.j.error || "failed", true); return; }
+      show(epaMsg, "Checked " + r.j.checked + " range row(s): " + r.j.cleared + " cleared, " + r.j.remain +
+           " remain. Reload the page to see the list.");
+    });
+  });
+
   document.querySelectorAll(".rs-group").forEach(function (g) {
     const key = g.dataset.key, form = g.querySelector(".rs-form"), msg = g.querySelector(":scope > .rs-msg");
+    function fill(figure, url, quote) {
+      form.figure.value = figure; form.source_url.value = url; form.quote.value = quote;
+      show(msg, "Candidate copied into the form; check it against the page, then Save figure.");
+    }
     g.querySelectorAll(".rs-cand").forEach(function (b) {
-      b.addEventListener("click", function () {
-        form.figure.value = b.dataset.figure; form.source_url.value = b.dataset.url; form.quote.value = b.dataset.quote;
-        show(msg, "Candidate copied into the form; check the quote, then Save figure.");
-      });
+      b.addEventListener("click", function () { fill(b.dataset.figure, b.dataset.url, b.dataset.quote); });
     });
     const find = g.querySelector(".rs-find");
     if (find) find.addEventListener("click", function () {
@@ -136,16 +211,12 @@
         r.j.candidates.forEach(function (c) {
           const b = document.createElement("button");
           b.type = "button"; b.className = "rs-cand";
-          b.dataset.figure = c.figure; b.dataset.url = c.source_url; b.dataset.quote = c.quote;
           const head = document.createElement("b"); head.textContent = c.figure.toLocaleString() + " " + r.j.unit;
           b.appendChild(head);
           b.appendChild(document.createTextNode(" · " + c.origin + (c.source_url ? " · " + c.source_url : "")));
           if (c.quote) { const q = document.createElement("span"); q.className = "q"; q.textContent = "“" + c.quote + "”";
                          b.appendChild(document.createElement("br")); b.appendChild(q); }
-          b.addEventListener("click", function () {
-            form.figure.value = c.figure; form.source_url.value = c.source_url; form.quote.value = c.quote;
-            show(msg, "Candidate copied into the form; check it against the page, then Save figure.");
-          });
+          b.addEventListener("click", function () { fill(c.figure, c.source_url, c.quote); });
           box.appendChild(b);
         });
         show(msg, r.j.candidates.length + " candidate figure(s) found, $" + r.j.cost.toFixed(3) + ". None is entered until you Save figure.");
@@ -161,7 +232,19 @@
       if (!confirm("Remove the entered figure for this configuration?")) return;
       post("/research/fact", { key_id: key, clear: "1" }).then(function (r) { show(msg, r.j.saved ? "Removed." : r.j.error, !r.j.saved); });
     });
-    g.querySelectorAll(".rs-stock").forEach(function (row) {
+    const waive = g.querySelector(".rs-waive");
+    g.querySelector(".rs-waive-open").addEventListener("click", function () { waive.classList.toggle("open"); waive.querySelector("input").focus(); });
+    waive.querySelector(".rs-waive-save").addEventListener("click", function () {
+      const reason = waive.querySelector("input").value.trim();
+      if (!reason) { show(msg, "Give the reason no figure is needed.", true); return; }
+      post("/research/waive", { kind: g.dataset.kind, waiver_id: g.dataset.wid, config_text: g.dataset.config, reason: reason })
+        .then(function (r) {
+          if (!r.j.saved) { show(msg, r.j.error, true); return; }
+          show(msg, "Marked no figure needed. It leaves this list on reload; undo it under No figure needed below.");
+          waive.classList.remove("open");
+        });
+    });
+    g.querySelectorAll(".rs-car").forEach(function (row) {
       const stock = row.dataset.stock, m = row.querySelector(".rs-msg");
       function run(dry) {
         if (!dry && !confirm("Edit the stored ad for " + stock + "? ad_history.json is backed up first.")) return;
@@ -176,6 +259,15 @@
       }
       row.querySelector(".rs-preview").addEventListener("click", function () { run(true); });
       row.querySelector(".rs-refresh").addEventListener("click", function () { run(false); });
+    });
+  });
+
+  document.querySelectorAll(".rs-undo").forEach(function (b) {
+    const tr = b.closest("tr"), m = tr.querySelector(".rs-msg");
+    b.addEventListener("click", function () {
+      post("/research/waive", { kind: tr.dataset.kind, waiver_id: tr.dataset.wid, clear: "1" }).then(function (r) {
+        show(m, r.j.saved ? "Undone; the row returns on reload." : r.j.error, !r.j.saved);
+      });
     });
   });
 })();
