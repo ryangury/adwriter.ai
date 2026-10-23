@@ -60,10 +60,18 @@ class Decode(Base):
     def test_recorded_fields(self):
         d = V._results(recorded(RX))
         self.assertEqual((d["Trim"], d["DisplacementL"], d["EngineCylinders"]), ("450h Standard", "3.5", "6"))
-        self.assertEqual(V.engine(d)["text"], "3.5L V6, hybrid")
-        self.assertEqual(V.engine(d)["phrase"], "3.5L V6 hybrid")
+        self.assertEqual(V.engine(d)["text"], "3.5L 6-cylinder, hybrid")
+        self.assertEqual(V.engine(d)["phrase"], "3.5L 6-cylinder hybrid")
         self.assertEqual(V.decode_class(V._results(recorded(SPRINTER))), "diesel")
         self.assertIsNone(V.decode_class(V._results(recorded("4JGFB4FB0SB414497"))), "blank electrification: no signal")
+
+    def test_only_the_allowed_fields_are_read(self):
+        d = V._results(recorded(RX))
+        base = V.engine(d)
+        changed = dict(d, Trim="Other", DriveType="FWD", BodyClass="Pickup", CabType="Crew", BedLengthIN="78",
+                       EngineConfiguration="In-Line", EngineModel="X")
+        self.assertEqual(V.engine(changed), base, "trim, drive type, body, cab, bed and layout never change the result")
+        self.assertEqual(set(V.USED_FIELDS), {"DisplacementL", "EngineCylinders", "FuelTypePrimary", "ElectrificationLevel", "Series"})
 
     def test_decode_fills_the_key(self):
         calls = Calls()
@@ -72,9 +80,9 @@ class Decode(Base):
             self.assertEqual(before["config"]["missing"], ["engine"], "today's behaviour without a decode")
             after = rx_tow()
         cfg = after["config"]
-        self.assertEqual((cfg["engine"], cfg["engine_source"], cfg["missing"]), ("3.5L V6 hybrid", "VIN decode", []))
+        self.assertEqual((cfg["engine"], cfg["engine_source"], cfg["missing"]), ("3.5L 6-cylinder hybrid", "VIN decode", []))
         self.assertEqual(calls.n, 1)
-        self.assertIn("3.5L V6 hybrid", after["config_text"])
+        self.assertIn("3.5L 6-cylinder hybrid", after["config_text"])
         self.assertIsNotNone(R.key_of("tow", cfg), "a normal row now: entries and Find candidates")
         self.assertIsNone(P.engine_sentence(RX_STICKER), "never in ad copy: the engine sentence is the sticker's alone")
 
@@ -83,7 +91,7 @@ class Decode(Base):
             t = rx_tow(cls="gas")
         cfg = t["config"]
         self.assertEqual((cfg["engine"], cfg["missing"]), (None, ["engine"]), "neither is used")
-        self.assertIn("VIN decode says 3.5L V6, hybrid (hybrid); the sticker reads gas", cfg["vin_decode_conflict"])
+        self.assertIn("VIN decode says 3.5L 6-cylinder, hybrid (hybrid); the sticker reads gas", cfg["vin_decode_conflict"])
 
     def test_classifier_signal_is_flagged_on_disagreement(self):
         with mock.patch.object(V, "_http", Calls()):
@@ -116,7 +124,7 @@ class Decode(Base):
     def test_a_cache_hit_costs_no_call(self):
         V.get(RX, fetch=True, http=recorded)
         with mock.patch.object(V, "_http", side_effect=AssertionError("no call on a cache hit")):
-            self.assertEqual(V.engine(V.get(RX, fetch=True))["text"], "3.5L V6, hybrid")
+            self.assertEqual(V.engine(V.get(RX, fetch=True))["text"], "3.5L 6-cylinder, hybrid")
             self.assertEqual(rx_tow()["config"]["engine_source"], "VIN decode")
 
     def test_cache_only_callers_never_fetch(self):
@@ -134,7 +142,7 @@ class Decode(Base):
              mock.patch("tow_refresh._old_cache_rows", return_value=[]):
             (g,) = R.page_rows([{"stock_number": "T23316A", "vin": RX}], {})["sections"]["tow_missing"]
         self.assertFalse(g["needs_vin_override"])
-        self.assertEqual(g["engine_note"], "Engine from VIN decode: 3.5L V6, hybrid")
+        self.assertEqual(g["engine_note"], "Engine from VIN decode: 3.5L 6-cylinder, hybrid")
 
 
 if __name__ == "__main__":

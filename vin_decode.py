@@ -10,7 +10,8 @@ Where it may fetch: the Research page load and the nightly research job (rows wh
 and build-time key completion (towing_for with vin_decode="fetch"). Everywhere else reads the cache only. Its
 engine (displacement, cylinders, fuel, electrification) completes the configuration key's engine only when the
 sticker and ACV Max supply none, labelled "VIN decode"; it is never used in ad copy (engine sentences stay limited
-to the sticker's printed words). Its electrification level is one more powertrain signal, flagged on disagreement.
+to the sticker's printed words). Its electrification level is one more powertrain signal, flagged on disagreement. Only displacement, cylinders,
+fuel type, electrification and model series are read (USED_FIELDS): never trim, drive type, body, cab or bed.
 """
 from __future__ import annotations
 
@@ -164,10 +165,15 @@ def class_disagrees(signal: str | None, cls: str | None) -> bool:
     return signal != cls
 
 
+# The only vPIC fields used. Never Trim, DriveType, BodyClass, CabType, BedLength*, EngineConfiguration or anything else.
+USED_FIELDS = ("DisplacementL", "EngineCylinders", "FuelTypePrimary", "ElectrificationLevel", "Series")
+
+
 def engine(d: dict[str, Any] | None) -> dict[str, Any] | None:
-    """{"displacement", "cylinders", "layout", "fuel", "electrification", "phrase" (key form, e.g. "3.5L V6 hybrid"),
-    "text" (display, e.g. "3.5L V6, hybrid")} or None when the decode has no displacement."""
-    d = d or {}
+    """{"displacement", "cylinders", "fuel", "electrification", "series", "phrase" (key form, e.g. "3.5L 6-cylinder
+    hybrid"), "text" (display, e.g. "3.5L 6-cylinder, hybrid")} or None when the decode has no displacement. Built from
+    USED_FIELDS only."""
+    d = {k: (d or {}).get(k) for k in USED_FIELDS}
     try:
         disp = float(d.get("DisplacementL") or "")
     except ValueError:
@@ -175,10 +181,7 @@ def engine(d: dict[str, Any] | None) -> dict[str, Any] | None:
     if disp <= 0:
         return None
     cyl = (d.get("EngineCylinders") or "").strip()
-    conf = (d.get("EngineConfiguration") or "").lower()
-    layout = ("V" if conf.startswith("v") else "I-" if conf.startswith("in-line") or conf.startswith("inline") else
-              "H" if conf.startswith("horizontal") else "")
-    block = f"{layout}{cyl}" if cyl and layout else (f"{cyl}-cylinder" if cyl else "")
+    block = f"{cyl}-cylinder" if cyl.isdigit() else ""
     fuel = (d.get("FuelTypePrimary") or "").strip().lower()
     elec = electrification(d)
     kind = {"hybrid": "hybrid", "hybrid_any": "hybrid", "mild_hybrid": "mild hybrid", "phev": "plug-in hybrid"}.get(elec or "")
@@ -187,5 +190,5 @@ def engine(d: dict[str, Any] | None) -> dict[str, Any] | None:
     size = f"{disp:.1f}L"
     phrase = " ".join(p for p in (size, block, kind) if p)
     text = ", ".join(p for p in (" ".join(p for p in (size, block) if p), kind) if p)
-    return {"displacement": size, "cylinders": int(cyl) if cyl.isdigit() else None, "layout": layout or None,
-            "fuel": fuel or None, "electrification": elec, "phrase": phrase, "text": text}
+    return {"displacement": size, "cylinders": int(cyl) if cyl.isdigit() else None, "fuel": fuel or None,
+            "electrification": elec, "series": (d.get("Series") or "").strip() or None, "phrase": phrase, "text": text}
