@@ -46,7 +46,7 @@ CACHE_READ_MULT = 0.10
 WEB_SEARCH_USD = 0.01     # $10 per 1,000 searches
 
 PURPOSES = ("generate", "reprice", "recon_update", "tow_lookup", "range_lookup",
-            "research_search", "research_candidates", "vision", "sticker_warmup", "vision_processor", "test", "other")
+            "research_search", "research_candidates", "research_candidates_auto", "vision", "sticker_warmup", "vision_processor", "test", "other")
 
 # --------------------------------------------------------------------------- #
 # Spend limits

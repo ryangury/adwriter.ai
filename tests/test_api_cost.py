@@ -441,7 +441,9 @@ class KeyClass(DBCase):
 
         declared = sorted(p.name for p in Path(_paths.ROOT).glob("*.py")
                           if p.name != "api_cost.py" and "use_production_key(" in p.read_text(encoding="utf-8"))
-        self.assertEqual(declared, ["app.py", "orchestrator.py", "sticker_warmup.py", "vision_processor.py"])
+        self.assertEqual(declared, ["app.py", "orchestrator.py", "research.py", "sticker_warmup.py", "vision_processor.py"])
+        # research.py: only its nightly --auto-candidates job (AdWriter-ResearchCandidates), under its own label
+        self.assertIn('api_cost.use_production_key(purpose=AUTO_PURPOSE)', (Path(_paths.ROOT) / "research.py").read_text(encoding="utf-8"))
         for name in ("tow_refresh.py", "allowlist_trial.py"):
             self.assertIn("api_cost.use_dev_key()", (Path(_paths.ROOT) / name).read_text(encoding="utf-8"), name)
 

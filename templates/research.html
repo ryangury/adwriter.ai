@@ -39,6 +39,10 @@
   .rs-qcheck.good { color: var(--accent); }
   .rs-qcheck.warn { color: var(--warn, #b45309); }
   .rs-qcheck.bad { color: var(--fail, #b91c1c); }
+  .rs-tag { font-size: 0.72rem; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); margin-left: 4px; white-space: nowrap; }
+  .rs-tag.good { border-color: var(--accent); color: var(--accent); }
+  .rs-tag.weak { border-color: var(--warn, #b45309); color: var(--warn, #b45309); }
+  .rs-google { font-size: 0.85rem; }
   .rs-ov select { font: inherit; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; }
   .rs-msg { font-size: 0.88rem; margin-top: 6px; white-space: pre-wrap; }
   .rs-msg.err { color: var(--fail, #b91c1c); }
@@ -83,10 +87,13 @@
     <div class="rs-group" data-key="{{ g.key_id or '' }}" data-kind="{{ g.kind }}" data-wid="{{ g.waiver_id }}" data-config="{{ g.config_text }}">
       <div class="rs-head">
         <span class="rs-config">{{ g.config_text }}</span>
+        <a class="rs-google" href="https://www.google.com/search?q={{ g.google_q|urlencode }}" target="_blank" rel="noopener noreferrer">Check on Google</a>
         {% if g.needs_vin_override %}<span class="rs-badge vin">Needs VIN override</span>{% endif %}
         {% if g.fact %}<span class="rs-done">entered: {{ '{:,}'.format(g.fact.figure) }} {{ g.unit }} ({{ g.fact.entered_date }})</span>{% endif %}
       </div>
       <div class="rs-reason">{{ g.reason }}</div>
+      {% if g.engine_note %}<div class="rs-detail">{{ g.engine_note }}</div>{% endif %}
+      {% if g.vin_conflict %}<div class="rs-detail">{{ g.vin_conflict }}</div>{% endif %}
       {% if g.needs_vin_override %}
       <div class="rs-detail">{{ g.incomplete_text }}</div>
       {% elif g.detail %}<div class="rs-detail">{{ g.detail }}</div>{% endif %}
@@ -95,7 +102,13 @@
       <div class="rs-cands">
         {% for cd in g.candidates %}
         <button type="button" class="rs-cand" data-figure="{{ cd.figure }}" data-url="{{ cd.source_url }}" data-quote="{{ cd.quote }}">
-          <b>{{ '{:,}'.format(cd.figure) }} {{ g.unit }}</b> · {{ cd.origin }}{% if cd.source_url %} · {{ cd.source_url }}{% endif %}
+          <b>{{ '{:,}'.format(cd.figure) }} {{ g.unit }}</b>
+          {% if cd.n_sources and cd.n_sources > 1 %}<span class="rs-tag good">{{ cd.n_sources }} sources</span>{% endif %}
+          {% for m in cd.marks or [] %}<span class="rs-tag good">{{ m }}</span>{% endfor %}
+          {% for w in cd.weak or [] %}<span class="rs-tag weak">{{ w }}</span>{% endfor %}
+          {% if cd.tier_label %}<span class="rs-tag">{{ cd.tier_label }}</span>{% endif %}
+          <br><span class="q">{{ cd.origin }}{% if cd.source_url %} · {{ cd.domain or cd.source_url }}{% endif %}{% if cd.found_date %} · found {{ cd.found_date }}{% endif %}</span>
+          {% if cd.source_url %}<br><span class="q">{{ cd.source_url }}</span>{% endif %}
           {% if cd.quote %}<br><span class="q">“{{ cd.quote }}”</span>{% endif %}
         </button>
         {% endfor %}

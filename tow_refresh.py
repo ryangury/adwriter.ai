@@ -141,7 +141,7 @@ def _tow_units(text: str) -> list[str]:
     return [s for s in A._split_sentences(text or "") if T.tow_figures(s)]
 
 
-def _towing(stock: str, v: dict, allow_lookup: bool, refresh: bool = False) -> dict:
+def _towing(stock: str, v: dict, allow_lookup: bool, refresh: bool = False, vin_decode: str = "cache") -> dict:
     vin = v.get("vin")
     sticker = (get_window_sticker(vin) or {}) if vin else {}
     raw = sticker.get("raw_text") or ""
@@ -150,7 +150,7 @@ def _towing(stock: str, v: dict, allow_lookup: bool, refresh: bool = False) -> d
     pclass = classify(vin, v.get("year_make_model"), v.get("trim"), sticker_text=st, recon_text=rc)["class"]
     tow = T.towing_for(v.get("year_make_model"), v.get("trim"), v.get("body_style"), raw, names,
                        vin=vin, powertrain_class=pclass, allow_lookup=allow_lookup, force=True,
-                       refresh=refresh)
+                       refresh=refresh, vin_decode=vin_decode)
     tow["sticker_triggers"] = T.triggered(raw, names)
     return tow
 

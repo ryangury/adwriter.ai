@@ -565,7 +565,7 @@ class PageRows(unittest.TestCase):
                 "S3": {"current_ad_text": "P1.\n\nNo tow words.\n\nP3.\n\nP4."},
                 "GONE": {"current_ad_text": ad, "absent_since": "2026-10-01"}}
 
-    def towing(self, stock, v, allow_lookup, refresh=False):
+    def towing(self, stock, v, allow_lookup, refresh=False, vin_decode="cache"):
         return {"triggered": True, "rating": None, "config": GLS, "config_text": "2024 GLS 450", "note": "not looked up yet",
                 "sticker_triggers": True}
 
