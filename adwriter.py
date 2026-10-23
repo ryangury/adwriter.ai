@@ -1605,6 +1605,7 @@ def format_data_package(pkg: dict) -> tuple[str, list[dict]]:
     # whose MSRP came from the ACV Max options tab or is unavailable.
     if make and "mercedes" not in make.lower() and year and make and model:
         tk = get_trim_knowledge(year, make, model, trim, pt.get("class"))
+        pkg["_trim_knowledge_key"] = (year, make, model, trim, pt.get("class"))
         lines.append("")
         lines.append("=== TRIM KNOWLEDGE (pre-researched, use directly, do not search again) ===")
         if tk and tk.get("standard_equipment") and tk.get("engine_description"):
@@ -2327,7 +2328,11 @@ def _generate_from_package(pkg: dict) -> tuple[str, str | None]:
         )
         tow_bad, tire_bad = fact_check_problems(ad_copy, pkg)
         hist_bad = history_claim_problems(ad_copy, pkg)
-        if not leaks and not hits and not missing and not pt_bad and not tow_bad and not tire_bad and not hist_bad:
+        price_bad = package_price_missing(ad_copy, pkg)
+        std_bad = standard_equipment_missing(ad_copy, pkg)
+        if (not leaks and not hits and not missing and not pt_bad and not tow_bad and not tire_bad and not hist_bad
+                and not price_bad and not std_bad):
+            pkg.pop("_retry_note", None)
             return _done(ad_copy, feedback)
         problems = (
             ([f"tool output in the ad text {leaks[:2]}"] if leaks else [])
@@ -2337,10 +2342,15 @@ def _generate_from_package(pkg: dict) -> tuple[str, str | None]:
             + ([f"unverified tow figure: {tow_bad}"] if tow_bad else [])
             + ([f"tire size not on the sticker or in the data package: {tire_bad}"] if tire_bad else [])
             + ([f"Carfax claim the report doesn't support: {hist_bad}"] if hist_bad else [])
+            + ([f"package(s) named without their price: {[b['name'] for b in price_bad]}"] if price_bad else [])
+            + (["no standard-equipment sentence (TRIM KNOWLEDGE lists the trim's standard equipment)"] if std_bad else [])
         )
         if attempt == 1:
             print(f"[adwriter] {stock}: {'; '.join(problems)} - retrying once", file=sys.stderr)
+            if std_bad:
+                pkg["_retry_note"] = standard_equipment_retry_note(pkg, std_bad)
             continue
+        pkg.pop("_retry_note", None)
         if leaks:
             print(f"[adwriter] {stock}: tool output still in the ad text after retry - skipping this vehicle", file=sys.stderr)
             raise LeakedToolOutputError(f"tool-call markup in the ad text after retry: {leaks[:2]}")
@@ -2373,6 +2383,17 @@ def _generate_from_package(pkg: dict) -> tuple[str, str | None]:
         if hist_bad:
             ad_copy, notes = strip_unsupported_carfax_claims(ad_copy, pkg, stock=stock or "", label="adwriter")
             pt_flags.extend(notes)
+        price_bad = package_price_missing(ad_copy, pkg)   # re-read: a sentence above may have been removed
+        if price_bad:
+            ad_copy = insert_package_prices(ad_copy, price_bad)
+            for b in price_bad:
+                sentence = package_price_sentence(b)
+                print(f"[adwriter] {stock}: package price still missing after retry - inserted: {sentence}", file=sys.stderr)
+                pt_flags.append(f"PACKAGE PRICE inserted after retry: {sentence}")
+        if standard_equipment_missing(ad_copy, pkg):
+            print(f"[adwriter] {stock}: no standard-equipment sentence after retry - flagged", file=sys.stderr)
+            pt_flags.append("STANDARD EQUIPMENT (warning only): TRIM KNOWLEDGE lists the trim's standard equipment "
+                            "and paragraph two has no standard-equipment sentence after the retry")
     return _done(ad_copy, feedback)
 
 
@@ -2380,6 +2401,8 @@ def _generate_once(pkg: dict) -> tuple[str, str | None]:
     """(ad_copy, feedback_block) for one aggregated package."""
     formatted, needs_lookup = format_data_package(pkg)
     pkg["_data_package_text"] = formatted  # the tire-size check reads it
+    if pkg.get("_retry_note"):
+        formatted = formatted + "\n" + pkg["_retry_note"]
     v = pkg.get("vehicle") or {}
     system_prompt = _system_prompt_for(v.get("status_code"), pkg.get("stock_prefix"))
     if system_prompt == HENDRICK_AFFORDABLE_PROMPT:
@@ -2843,6 +2866,163 @@ def package_coverage_missing(ad_copy: str, pkg: dict) -> list[dict]:
         if price >= PACKAGE_COVERAGE_MIN_USD and words and not words <= have:
             out.append({"name": o.get("name"), "price": price})
     return out
+
+
+_PRICE_RE = re.compile(r"\$\s?(\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{2})?")
+
+
+def _prices_in(text: str) -> set[int]:
+    return {int(m.replace(",", "")) for m in _PRICE_RE.findall(text or "")}
+
+
+def package_prices_apply(pkg: dict) -> bool:
+    """Package prices are required only from a real factory sticker: not when the prices are approximate (ACV Max
+    options tab) or the sticker is AutoiPacket's predicted build (the prompts bar stating those prices)."""
+    pkg = pkg or {}
+    msrp = pkg.get("msrp_data") or {}
+    return not (pkg.get("sticker_prices_approximate") or pkg.get("sticker_is_predictive")
+                or msrp.get("source") == "acvmax_options_tab")
+
+
+def package_price_missing(ad_copy: str, pkg: dict) -> list[dict]:
+    """[{name, price, dealer_installed, sentence}] for each sticker package of PACKAGE_COVERAGE_MIN_USD or more that
+    paragraph two names (package_coverage_missing's word match, within one sentence) without its price in that
+    sentence or the next one. `sentence` is the first sentence naming it. Unnamed packages are package_coverage_missing's."""
+    if not package_prices_apply(pkg):
+        return []
+    sents = [u.strip() for u in _split_sentences(split_ad_paragraphs(ad_copy or "").get("paragraph_two") or "") if u.strip()]
+    toks = [_name_tokens(u) for u in sents]
+    out = []
+    for o in ((pkg or {}).get("msrp_data") or {}).get("option_packages") or []:
+        try:
+            price = float(o.get("price") or 0)
+        except (TypeError, ValueError):
+            continue
+        words = _name_tokens(o.get("name") or "")
+        if price < PACKAGE_COVERAGE_MIN_USD or not words:
+            continue
+        hits = [i for i, t in enumerate(toks) if words <= t]
+        if not hits or any(round(price) in _prices_in(" ".join(sents[i:i + 2])) for i in hits):
+            continue
+        out.append({"name": o.get("name"), "price": price, "dealer_installed": bool(o.get("dealer_installed")),
+                    "sentence": sents[hits[0]]})
+    return out
+
+
+def _package_display_name(name: str) -> str:
+    """'EQUIPMENT GROUP 401A' -> 'Equipment Group 401A'; 'ENG: DURAMAX 3.0L TURBO-DIESEL' -> 'Duramax 3.0L Turbo-Diesel'.
+    Mixed-case names are kept as printed."""
+    n = re.sub(r"^[A-Z]{2,4}:\s*", "", " ".join((name or "").split()))
+    n = re.sub(r"\bW/\s*", "with ", n, flags=re.IGNORECASE)
+    if n != n.upper():
+        return n
+
+    def word(w: str) -> str:
+        if w.lower() == "with":
+            return "with"
+        if any(ch.isdigit() for ch in w) or "&" in w:
+            return w
+        return "-".join(x[:1].upper() + x[1:].lower() for x in w.split("-"))
+    return " ".join(word(w) for w in n.split())
+
+
+def package_price_sentence(item: dict) -> str:
+    """The Python-built sentence for a named package whose price the model left out."""
+    name = _package_display_name(item["name"])
+    low = name.lower()
+    verb = "were" if low.endswith("s") and not low.endswith(("ss", "package", "group")) else "was"
+    kind = "dealer-installed option" if item.get("dealer_installed") else "factory option"
+    return f"The {name} {verb} a ${item['price']:,.0f} {kind}."
+
+
+def insert_package_prices(ad_copy: str, missing: list[dict]) -> str:
+    """Each package_price_sentence() right after the first paragraph-two sentence naming that package."""
+    p2 = split_ad_paragraphs(ad_copy or "").get("paragraph_two") or ""
+    if not p2 or p2 not in ad_copy:
+        return ad_copy
+    after: dict[str, list[str]] = {}
+    for m in missing:
+        after.setdefault(_ws(m["sentence"]), []).append(package_price_sentence(m))
+    out = []
+    for u in (u.strip() for u in _split_sentences(p2)):
+        if u:
+            out.append(u)
+            out.extend(after.pop(_ws(u), []))
+    return ad_copy.replace(p2, " ".join(out), 1)
+
+
+# Standard equipment (non-MB): when TRIM KNOWLEDGE (cached, or researched during this build) lists the trim's
+# standard equipment, paragraph two has a sentence that says "standard" and names at least this many of its items.
+STANDARD_EQUIPMENT_MIN_ITEMS = 2
+
+
+def _standard_equipment_items(text: str) -> list[set[str]]:
+    body = re.sub(r"\([^)]*\)", " ", text or "")
+    head, _, rest = body.partition(":")
+    body = rest if rest and "," not in head else body
+    return [t for t in (_name_tokens(x) for x in re.split(r",|;|\band\b", body)) if t]
+
+
+STANDARD_EQUIPMENT_RETRY_ITEMS = 3          # the retry asks for a sentence naming at least this many
+_NOT_EQUIPMENT_RE = re.compile(
+    r"\b\d\.\d\s?-?(?:L|liter)\b|\bV[68]\b|\bcylinder|\bturbo|\bhorsepower\b|\b\d+\s?hp\b|\blb-ft\b|\btorque\b|\bhybrid\b|"
+    r"\btow|\brange\b|\bEPA\b|\b\d[\d,]*\s?lbs?\b", re.I)
+
+
+def _top_level_items(text: str) -> list[str]:
+    """Comma / semicolon separated items, not splitting inside parentheses or a thousands comma."""
+    items, depth, cur = [], 0, ""
+    for i, ch in enumerate(text or ""):
+        depth += ch == "("
+        depth -= ch == ")"
+        if ch in ",;" and depth == 0 and not (ch == "," and i and text[i - 1].isdigit() and text[i + 1:i + 2].isdigit()):
+            items.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    items.append(cur)
+    return [" ".join(x.split()) for x in items if x.strip()]
+
+
+def standard_equipment_retry_note(pkg: dict, standard_equipment: str) -> str:
+    """The retry message for a missing standard-equipment sentence: names the gap, gives the trim's list from the cache
+    (engine, tow and range wording left out: those come only from their own sources) and asks for one sentence
+    beginning "Standard equipment on the <trim> also includes" with at least STANDARD_EQUIPMENT_RETRY_ITEMS items."""
+    key = (pkg or {}).get("_trim_knowledge_key") or (None, None, None, None, None)
+    trim = ((key[3] or "").split(" - ")[0].strip() or key[2] or "trim")
+    items = [i for i in _top_level_items(standard_equipment) if not _NOT_EQUIPMENT_RE.search(i)]
+    return "\n".join([
+        "",
+        "=== RETRY: STANDARD-EQUIPMENT SENTENCE MISSING ===",
+        "Your previous draft's paragraph two had no standard-equipment sentence, but TRIM KNOWLEDGE lists this trim's "
+        "standard equipment. Write the ad again, following every rule above, and put in paragraph two one sentence "
+        f'beginning "Standard equipment on the {trim} also includes" that names at least {STANDARD_EQUIPMENT_RETRY_ITEMS} '
+        "items from this list, worded as listed (add no engine, horsepower, towing or range wording):",
+        *[f"  - {i}" for i in items],
+    ])
+
+
+def standard_equipment_missing(ad_copy: str, pkg: dict) -> str | None:
+    """The trim's standard-equipment text when TRIM KNOWLEDGE has one and no paragraph-two sentence uses it (a sentence
+    with 'standard' naming STANDARD_EQUIPMENT_MIN_ITEMS of its items); None otherwise (MB builds have no TRIM KNOWLEDGE)."""
+    key = (pkg or {}).get("_trim_knowledge_key")
+    if not key:
+        return None
+    try:
+        tk = get_trim_knowledge(*key) or {}
+    except Exception:  # noqa: BLE001 - a cache read never sinks a build
+        return None
+    std = tk.get("standard_equipment")
+    if not std:
+        return None
+    items = _standard_equipment_items(std)
+    need = min(STANDARD_EQUIPMENT_MIN_ITEMS, len(items))
+    for u in _split_sentences(split_ad_paragraphs(ad_copy or "").get("paragraph_two") or ""):
+        if re.search(r"\bstandard\b", u, re.IGNORECASE):
+            have = _name_tokens(u)
+            if sum(1 for it in items if it <= have) >= need:
+                return None
+    return std
 
 
 REPRICE_MIN_TOKENS = 1500
