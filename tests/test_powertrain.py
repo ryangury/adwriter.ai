@@ -107,7 +107,7 @@ def no_search(*a, **k):
 # --------------------------------------------------------------------------- #
 # 1. classification of the seven named cars (real cached sticker / recon text)
 # --------------------------------------------------------------------------- #
-snap = {v["stock_number"]: v for v in json.load(open(str(_paths.DATA / "last_inventory_snapshot.json")))["vehicles"]}
+snap = _paths.snapshot()        # live snapshot + tests/fixtures/pinned_vehicles.json (pinned wins)
 expect = {
     "V23409A": P.PHEV,   # Volvo S60 Recharge
     "PM98154": P.PHEV,   # GLC 350e

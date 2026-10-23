@@ -110,7 +110,7 @@ MSRP DEPRECIATION: If the MSRP DEPRECIATION SENTENCE is present in the data pack
 
 PACKAGE PRICING
 
-Include packages and options in the selling story when the original price was $400 or more at time of sale. Always include the package name and what it does regardless of price. State the price for options $400 and above.
+Include packages and options in the selling story. State the original price of any package or option that was $750 or more at time of sale, as the OPTION PACKAGES data gives it (not when the prices are approximate or the sticker is predictive). Name smaller options without a price, and always say what a named package does regardless of its price.
 
 PEACOCK RULE
 

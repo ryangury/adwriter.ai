@@ -16,8 +16,9 @@ import powertrain as P  # noqa: E402
 from scraper import sticker_header_color  # noqa: E402
 
 DB = sqlite3.connect(str(_paths.DATA / "vehicle_cache.db"))
-SNAP = {v["stock_number"]: v for v in json.load(open(str(_paths.DATA / "last_inventory_snapshot.json"), encoding="utf-8"))["vehicles"]}
+SNAP = _paths.snapshot()        # live snapshot + tests/fixtures/pinned_vehicles.json (pinned wins)
 HIST = json.load(open(str(_paths.DATA / "ad_history.json"), encoding="utf-8"))
+
 
 
 def sticker(stock):

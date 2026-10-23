@@ -478,8 +478,10 @@ def apply_refresh(stock: str) -> dict[str, Any]:
     shutil.copy2(A.AD_HISTORY_PATH, backup)
     history = A.load_ad_history()
     e = history[stock]
+    old_text = e.get("current_ad_text")
     e.update(plan["after"])
     A.set_current_ad_text(e, "\n\n".join(p for p in plan["after"].values() if p))
+    A.note_expected_phrases(e, old_text)
     A.clear_verification(e)
     stale = list(e.get("stale_phrases") or [])
     e["stale_phrases"] = stale + [s for s in plan["removed"] if s not in stale]

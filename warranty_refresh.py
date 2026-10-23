@@ -166,8 +166,10 @@ def apply(changes: list[dict]) -> None:
     today = date.today().isoformat()
     for c in changes:
         e = history[c["stock"]]
+        old_text = e.get("current_ad_text")
         e.update(c["after"])
         A.set_current_ad_text(e, "\n\n".join(p for p in c["after"].values() if p))
+        A.note_expected_phrases(e, old_text)
         if c["new"]:
             e["warranty_sentence_date"] = today
         else:

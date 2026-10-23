@@ -15,7 +15,7 @@ import orchestrator as O  # noqa: E402
 import towing as T  # noqa: E402
 
 DB = sqlite3.connect(str(_paths.DATA / "vehicle_cache.db"))
-SNAP = {v["stock_number"]: v for v in json.load(open(str(_paths.DATA / "last_inventory_snapshot.json"), encoding="utf-8"))["vehicles"]}
+SNAP = _paths.snapshot()        # live snapshot + tests/fixtures/pinned_vehicles.json (pinned wins)
 HIST = json.load(open(str(_paths.DATA / "ad_history.json"), encoding="utf-8"))
 
 # Cars the tests are pinned to that may be sold (and so leave the live snapshot)
@@ -142,8 +142,14 @@ class CacheAndEntryTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.p = mock.patch.object(T, "DB_PATH", Path(self.tmp.name) / "fc.db")
         self.p.start()
+        # Research entries (research.get_fact) live in feature_cache.db too: point them at the same empty fixture
+        # database, so an entry saved on the live site (CT23308A's configuration has one) never changes these tests.
+        import feature_cache
+        self.fc = mock.patch.object(feature_cache, "DB_PATH", Path(self.tmp.name) / "fc.db")
+        self.fc.start()
 
     def tearDown(self):
+        self.fc.stop()
         self.p.stop()
         self.tmp.cleanup()
 

@@ -8,7 +8,7 @@ import sys
 import _paths  # noqa: F401  (repo root first on sys.path)
 import powertrain as P  # noqa: E402
 
-snap = {v["stock_number"]: v for v in json.load(open(str(_paths.DATA / "last_inventory_snapshot.json")))["vehicles"]}
+snap = _paths.snapshot()        # live snapshot + tests/fixtures/pinned_vehicles.json (pinned wins)
 hist = json.load(open(str(_paths.DATA / "ad_history.json"), encoding="utf-8"))
 
 

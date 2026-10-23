@@ -616,7 +616,8 @@ def inventory():
         else:
             posted_state = "grey"
         # A verifier note ("old text still live": removed sentences still on the
-        # page; "price missing live": our price sentence isn't): the listing was
+        # page; "price missing live": our price sentence isn't; "new text not
+        # live": a sentence a refresh inserted isn't there yet): the listing was
         # never reposted correctly, so it is not a current post even though our
         # proof-point or provenance text may also be there.
         if verification_note and verdict == "outdated":

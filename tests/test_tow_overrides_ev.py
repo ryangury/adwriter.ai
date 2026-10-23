@@ -17,7 +17,7 @@ import tow_refresh as R  # noqa: E402
 import towing as T  # noqa: E402
 
 DB = sqlite3.connect(str(_paths.DATA / "vehicle_cache.db"))
-SNAP = {v["stock_number"]: v for v in json.load(open(str(_paths.DATA / "last_inventory_snapshot.json"), encoding="utf-8"))["vehicles"]}
+SNAP = _paths.snapshot()        # live snapshot + tests/fixtures/pinned_vehicles.json (pinned wins)
 HIST = json.load(open(str(_paths.DATA / "ad_history.json"), encoding="utf-8"))
 # X58848 may be deleted for a rebuild: fall back to its archived entry.
 if "X58848" not in HIST:
@@ -123,7 +123,8 @@ class OverrideTests(TempStores):
         with client.session_transaction() as s:
             s["authed"] = True
         r = client.post("/cache/CT23308A/towing", data={"rating": "9,000", "source": "Chevrolet trailering guide"})
-        self.assertEqual(r.get_json(), {"saved": True, "override": True, "rating": 9000})
+        self.assertEqual(r.get_json(), {"saved": True, "override": True, "rating": 9000,
+                                        "sentence": "It is rated to tow up to 9,000 lbs."})
         page = client.get("/cache/CT23308A").get_data(as_text=True)
         self.assertIn("9,000 lbs", page)
         self.assertIn("set by override", page)
