@@ -660,5 +660,124 @@ class EpaCheck(unittest.TestCase):
         self.assertIn("fueleconomy.gov", row["source_url"])
 
 
+class VinOverride(unittest.TestCase):
+    """Rows whose configuration is incomplete: a figure per car (VIN override with source, quote, qualifier), a
+    "No figure needed" per VIN, and the qualifier carried into TOWING_SENTENCE."""
+
+    def setUp(self):
+        wipe()
+        self.ov = mock.patch.object(T, "TOW_OVERRIDES_PATH", TMP / "tow_overrides.json")
+        self.ov.start()
+        self.addCleanup(self.ov.stop)
+        (TMP / "tow_overrides.json").write_text("{}", encoding="utf-8")
+
+    def lexus(self, vin="2T2BGMCA7KC033405"):
+        return T.towing_for("2019 Lexus RX", "AWD", "SUV", "TOWING PREP PACKAGE", [], vin=vin, powertrain_class="hybrid",
+                            allow_lookup=False)
+
+    def test_the_qualifier_is_carried_into_the_tow_sentence(self):
+        self.assertEqual(T.towing_sentence(3500, "with the appropriate hitch"),
+                         "It is rated to tow up to 3,500 lbs with the appropriate hitch.")
+        self.assertEqual(T.towing_sentence(3500, " with the appropriate hitch. "),
+                         "It is rated to tow up to 3,500 lbs with the appropriate hitch.")
+        self.assertEqual(T.towing_sentence(3500), "It is rated to tow up to 3,500 lbs.")
+        miss = self.lexus()
+        self.assertEqual((miss["rating"], miss["config"]["missing"]), (None, ["engine"]))
+        e = T.set_tow_override("2T2BGMCA7KC033405", 3500, "https://pressroom.lexus.com/rx", source_url="https://pressroom.lexus.com/rx",
+                               quote="Towing capacity 3,500 lbs", qualifier="with the appropriate hitch")
+        self.assertEqual((e["quote"], e["qualifier"]), ("Towing capacity 3,500 lbs", "with the appropriate hitch"))
+        hit = self.lexus()
+        self.assertEqual(hit["sentence"], "It is rated to tow up to 3,500 lbs with the appropriate hitch.")
+        self.assertEqual(T.rating_source(hit), "override")
+
+    def test_kg_is_converted_to_whole_pounds(self):
+        e = T.set_tow_override("VINKG", 1588, "https://x.com/a", unit="kg")
+        self.assertEqual((e["rating"], e["entered_figure"], e["entered_unit"]), (3501, 1588, "kg"))
+        with self.assertRaises(ValueError):
+            T.set_tow_override("VINKG", 3500, "x", unit="tons")
+
+    def test_no_figure_needed_for_one_vin(self):
+        R.set_waiver("tow", R.vin_waiver_id("2T2BGMCA7KC033405"), "dealer: not marketed for towing", "T23316A")
+        w = self.lexus()
+        self.assertEqual((w["triggered"], w["sentence"]), (False, None))
+        self.assertIn("no figure needed", w["note"])
+        self.assertTrue(self.lexus(vin="OTHERVIN")["triggered"], "only that VIN")
+        self.assertTrue(R.clear_waiver("tow", R.vin_waiver_id("2T2BGMCA7KC033405")))
+        self.assertTrue(self.lexus()["triggered"], "undo")
+
+    def test_plain_wording(self):
+        self.assertEqual(R.incomplete_text({"missing": ["engine"]}),
+                         "This car's sticker doesn't print its engine, so a figure can't be shared with other cars. "
+                         "Enter a figure for this car.")
+        self.assertIn("doesn't print its bed length", R.incomplete_text({"missing": ["bed"]}))
+
+    def test_the_row_carries_the_cars_vin_and_a_vin_waiver_removes_it(self):
+        cfg = {"year": 2019, "make": "Lexus", "model": "RX", "engine": "", "missing": ["engine"]}
+        item = [{"kind": "tow", "missing": "tow rating", "reason": "config_incomplete", "detail": "", "key_id": None,
+                 "config_text": "2019 Lexus RX engine ? AWD", "candidates": [], "config": cfg}]
+        vehicles = [{"stock_number": "T1", "vin": "VINT1"}, {"stock_number": "T2", "vin": "VINT2"}]
+        rows = [{"stock": "T1", "ymm": "x", "items": item}, {"stock": "T2", "ymm": "x", "items": item}]
+        with mock.patch.object(R, "live_items", return_value=rows), mock.patch.object(TR, "_old_cache_rows", return_value=[]):
+            (g,) = R.page_rows(vehicles, {})["sections"]["tow_missing"]
+            self.assertTrue(g["needs_vin_override"])
+            self.assertIn("doesn't print its engine", g["incomplete_text"])
+            self.assertEqual([(c["stock"], c["vin_waiver_id"]) for c in g["cars"]], [("T1", "vin:VINT1"), ("T2", "vin:VINT2")])
+            R.set_waiver("tow", "vin:VINT1", "no towing", "T1")
+            (g,) = R.page_rows(vehicles, {})["sections"]["tow_missing"]
+            self.assertEqual([c["stock"] for c in g["cars"]], ["T2"])
+
+    def test_refresh_replaces_a_same_figure_sentence_with_the_qualified_one(self):
+        text = "P1.\n\nThe Towing Prep Package enables a rated towing capacity of 3,500 pounds. More.\n\nP3.\n\nP4."
+        e = dict(A.split_ad_paragraphs(text), current_ad_text=text)
+        tow = {"rating": 3500, "override": {"qualifier": "with the appropriate hitch"}, "triggered": True,
+               "sentence": "It is rated to tow up to 3,500 lbs with the appropriate hitch.", "config": {}, "config_text": ""}
+        with mock.patch.object(A, "load_ad_history", return_value={"S1": e}), mock.patch.object(R, "_vehicle", return_value={}), \
+             mock.patch.object(TR, "_towing", return_value=tow), \
+             mock.patch("powertrain.vehicle_powertrain", return_value={"class": "gas", "range": {}}):
+            plan = R.plan_refresh("S1")
+        self.assertIn("It is rated to tow up to 3,500 lbs with the appropriate hitch.", plan["after"]["paragraph_two"])
+        self.assertNotIn("3,500 pounds", plan["after"]["paragraph_two"])
+
+
+class VinOverrideRoutes(unittest.TestCase):
+    def setUp(self):
+        wipe()
+        import app as adapp
+
+        self.app = adapp
+        adapp.app.config["TESTING"] = True
+        self.client = adapp.app.test_client()
+        self.ov = mock.patch.object(T, "TOW_OVERRIDES_PATH", TMP / "tow_overrides.json")
+        self.ov.start()
+        self.addCleanup(self.ov.stop)
+        (TMP / "tow_overrides.json").write_text("{}", encoding="utf-8")
+        self.ref = mock.patch.object(adapp, "_cache_vehicle_ref", return_value=("VINT1", {}, {}))
+        self.ref.start()
+        self.addCleanup(self.ref.stop)
+
+    def login(self):
+        with self.client.session_transaction() as s:
+            s["authed"] = True
+
+    def test_source_url_and_quote_required_and_saved_through_the_database_pages_function(self):
+        form = {"rating": "3500", "unit": "lbs", "source_url": "https://pressroom.lexus.com/rx", "quote": "Tows 3,500 lbs",
+                "qualifier": "with the appropriate hitch"}
+        self.assertEqual(self.client.post("/research/override/T1", data=form).status_code, 401)
+        self.login()
+        self.assertEqual(self.client.post("/research/override/T1", data=dict(form, quote="")).status_code, 400)
+        self.assertEqual(self.client.post("/research/override/T1", data=dict(form, source_url="lexus site")).status_code, 400)
+        calls = []
+        real = T.set_tow_override
+        with mock.patch.object(self.app, "set_tow_override", side_effect=lambda *a, **k: calls.append(k) or real(*a, **k)):
+            j = self.client.post("/research/override/T1", data=form).get_json()
+            self.assertTrue(j["saved"])
+            self.assertEqual(j["sentence"], "It is rated to tow up to 3,500 lbs with the appropriate hitch.")
+            # the Database page's Towing section saves through the same function (source only, no quote needed)
+            db = self.client.post("/cache/T1/towing", data={"rating": "3600", "source": "owner manual"}).get_json()
+            self.assertTrue(db["saved"])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(T.load_tow_overrides()["VINT1"]["rating"], 3600)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

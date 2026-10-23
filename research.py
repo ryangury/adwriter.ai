@@ -408,7 +408,11 @@ def plan_refresh(stock: str) -> dict[str, Any]:
     rating = tow.get("rating")
     if rating:
         figs = sorted({f for u in TR._tow_units(entry["current_ad_text"]) for f in T.tow_figures(u)})
-        action = "keep" if figs and all(f == rating for f in figs) else ("replace" if figs else "add")
+        exact = tow.get("sentence") and any(" ".join(u.split()) == tow["sentence"] for u in TR._tow_units(entry["current_ad_text"]))
+        same = figs and all(f == rating for f in figs)
+        # keep only when the ad already states the figure in TOWING_SENTENCE's words (an override's qualifier included)
+        action = "keep" if same and (exact or len(figs) == 1 and not (tow.get("override") or {}).get("qualifier")) \
+            else ("replace" if figs else "add")
         if action != "keep":
             edit, rem = TR._edit({**entry, **after}, action, tow.get("sentence"))
             if edit["manual"]:
@@ -593,13 +597,22 @@ def clear_waiver(kind: str, wid: str) -> bool:
         return conn.execute("DELETE FROM config_waiver WHERE kind=? AND waiver_id=?", (kind, wid)).rowcount > 0
 
 
-def get_waiver(kind: str, cfg: dict[str, Any] | None, config_text: str | None = None) -> dict[str, Any] | None:
-    """The waiver for this configuration, or None. Never raises (a build must not sink on it)."""
+def vin_waiver_id(vin: str) -> str:
+    """A "No figure needed" for one car (a row whose configuration is incomplete can't be keyed by configuration)."""
+    return "vin:" + (vin or "").strip().upper()
+
+
+def get_waiver(kind: str, cfg: dict[str, Any] | None, config_text: str | None = None,
+               vin: str | None = None) -> dict[str, Any] | None:
+    """The waiver for this configuration, else for this VIN, or None. Never raises (a build must not sink on it)."""
     try:
-        wid = waiver_id(kind, cfg, config_text)
+        wids = [waiver_id(kind, cfg, config_text)] + ([vin_waiver_id(vin)] if vin else [])
         with _connect_waiver() as conn:
-            row = conn.execute("SELECT * FROM config_waiver WHERE kind=? AND waiver_id=?", (kind, wid)).fetchone()
-        return dict(row) if row else None
+            for wid in wids:
+                row = conn.execute("SELECT * FROM config_waiver WHERE kind=? AND waiver_id=?", (kind, wid)).fetchone()
+                if row:
+                    return dict(row)
+        return None
     except Exception as exc:  # noqa: BLE001
         print(f"[research] waiver check failed: {exc}", file=sys.stderr)
         return None
@@ -627,6 +640,18 @@ PLAIN = {
     "conflict": "Conflicting sources",
     "no_match": "Looked up; no figure for this exact configuration",
 }
+
+
+_PART_WORDS = {"engine": "its engine", "bed": "its bed length", "cab": "its cab style", "drivetrain": "its drivetrain",
+               "year": "its model year", "make": "its make", "model": "its model"}
+
+
+def incomplete_text(cfg: dict[str, Any] | None) -> str:
+    """The plain-English line on a row whose configuration is incomplete."""
+    parts = [_PART_WORDS.get(m, m) for m in ((cfg or {}).get("missing") or ["engine"])]
+    what = " or ".join(parts)
+    return (f"This car's sticker doesn't print {what}, so a figure can't be shared with other cars. "
+            "Enter a figure for this car.")
 
 
 def plain_reason(kind: str, key: dict[str, Any] | None, reason_code: str | None, cands: list[dict[str, Any]]) -> str:
@@ -681,13 +706,16 @@ def page_rows(vehicles: list[dict[str, Any]], history: dict[str, Any]) -> dict[s
         key = key_of(kind, cfg) if cfg and not cfg.get("missing") else None
         wid = waiver_id(kind, cfg, config_text)
         cands = [_cand(c) for c in candidates(kind, key)] if key else []
-        w = get_waiver(kind, cfg, config_text)
+        car = dict(car, vin=(snap.get(car["stock"]) or {}).get("vin"))
+        car["vin_waiver_id"] = vin_waiver_id(car["vin"]) if car["vin"] else None
+        w = get_waiver(kind, cfg, config_text, vin=car["vin"])
         target = waived.setdefault((kind, wid), {"kind": kind, "waiver_id": wid, "config_text": config_text, "waiver": w,
                                                   "section": section, "cars": []}) if w else \
             rows[section].setdefault(wid, {
                 "kind": kind, "section": section, "waiver_id": wid, "key_id": key_id(kind, key) if key else None,
                 "config_text": describe(kind, key) if key else config_text, "needs_vin_override": key is None,
-                "missing_parts": (cfg or {}).get("missing") or [], "reason": PLAIN[plain_reason(kind, key, reason_code, cands)],
+                "missing_parts": (cfg or {}).get("missing") or [], "incomplete_text": incomplete_text(cfg) if key is None else None,
+                "reason": PLAIN[plain_reason(kind, key, reason_code, cands)],
                 "reason_code": reason_code, "detail": detail, "candidates": cands, "fact": get_fact(kind, key) if key else None,
                 "unit": UNITS[kind], "cars": []})
         target["cars"].append(car)

@@ -61,7 +61,7 @@ from credentials import DEMO_PASSWORD
 from run_lock import ScraperBusyError
 from feature_cache import get_electric_range
 from powertrain import CLASS_LABELS, CLASSES, classify, load_overrides, range_phrase, set_override, split_ymm, texts_from_row
-from towing import set_tow_override, towing_for
+from towing import set_tow_override, towing_for, towing_sentence
 from towing import triggered as tow_triggered
 
 # Simple shared-password gate for the demo — no user accounts. Change this to
@@ -1126,17 +1126,46 @@ def cache_save_towing(stock_number: str):
     vin, _vehicle, _cached = _cache_vehicle_ref(stock)
     if not vin:
         return jsonify({"saved": False, "error": f"No VIN on record for {stock}."}), 404
-    raw = (request.form.get("rating") or "").replace(",", "").replace("lbs", "").strip()
+    return save_tow_override_form(vin)
+
+
+def save_tow_override_form(vin: str, *, require_quote: bool = False):
+    """The one place a tow override is saved from a form (the Database page's Towing section and the Research
+    page's per-car form): rating, unit (lbs / kg), source (a URL from the Research page), quote, qualifier."""
+    raw = (request.form.get("rating") or "").replace(",", "").replace("lbs", "").replace("kg", "").strip()
     if raw and not raw.isdigit():
-        return jsonify({"saved": False, "error": f"Rating must be a whole number of pounds, not {raw!r}."}), 400
-    source = (request.form.get("source") or "").strip()
+        return jsonify({"saved": False, "error": f"Rating must be a whole number, not {raw!r}."}), 400
+    source = (request.form.get("source") or request.form.get("source_url") or "").strip()
+    quote = " ".join((request.form.get("quote") or "").split())
     if raw and int(raw) and not source:
         return jsonify({"saved": False, "error": "Say where the rating comes from (source)."}), 400
+    if raw and int(raw) and require_quote:
+        if not re.match(r"https?://\S+$", source):
+            return jsonify({"saved": False, "error": "Give the source page's URL (http...)."}), 400
+        if not quote:
+            return jsonify({"saved": False, "error": "Paste the sentence or table row that states the figure (quote)."}), 400
     try:
-        entry = set_tow_override(vin, int(raw) if raw else None, source)
+        entry = set_tow_override(
+            vin, int(raw) if raw else None, source, unit=request.form.get("unit") or "lbs",
+            source_url=source if source.startswith("http") else None, quote=quote, qualifier=request.form.get("qualifier"),
+        )
     except ValueError as exc:
         return jsonify({"saved": False, "error": str(exc)}), 400
-    return jsonify({"saved": True, "override": bool(entry), "rating": entry["rating"] if entry else None})
+    return jsonify({"saved": True, "override": bool(entry), "rating": entry["rating"] if entry else None,
+                    "sentence": towing_sentence(entry["rating"], entry.get("qualifier")) if entry else None})
+
+
+@app.post("/research/override/<stock_number>")
+def research_save_override(stock_number: str):
+    """A tow figure for one car whose configuration is incomplete: a VIN override (tow_overrides.json), saved
+    through the Database page's own function. Source URL and quote required."""
+    if not session.get("authed"):
+        return jsonify({"saved": False, "error": "Not signed in."}), 401
+    stock = normalize_stock(stock_number)
+    vin, _vehicle, _cached = _cache_vehicle_ref(stock)
+    if not vin:
+        return jsonify({"saved": False, "error": f"No VIN on record for {stock}."}), 404
+    return save_tow_override_form(vin, require_quote=True)
 
 
 _MAX_STICKER_UPLOAD_BYTES = 10 * 1024 * 1024

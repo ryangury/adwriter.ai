@@ -553,7 +553,7 @@ def towing_for(
     ov = load_tow_overrides().get((vin or "").strip().upper()) if vin else None
     if ov:
         out.update(triggered=True, rating=ov["rating"], source_url=f"override: {ov.get('source') or ''}".strip(),
-                   override=ov, sentence=towing_sentence(ov["rating"]))
+                   override=ov, sentence=towing_sentence(ov["rating"], ov.get("qualifier")))
         return out
     if not out["triggered"]:
         return out
@@ -561,7 +561,7 @@ def towing_for(
     try:
         import research
 
-        waived = research.get_waiver("tow", cfg, out["config_text"])
+        waived = research.get_waiver("tow", cfg, out["config_text"], vin=vin)
     except Exception as exc:  # noqa: BLE001 - the research table must never sink a build
         print(f"[towing] waiver check failed: {exc}", file=sys.stderr)
         waived = None
@@ -628,9 +628,18 @@ def rating_source(tow: dict[str, Any] | None) -> str | None:
 
 # --- the sentence ------------------------------------------------------------------ #
 
-def towing_sentence(rating: int | None) -> str | None:
-    """TOWING_SENTENCE, built from a verified rating or an override, verbatim."""
-    return f"It is rated to tow up to {rating:,} lbs." if rating else None
+def _qualifier(text: str | None) -> str:
+    """An override's qualifier as it follows the figure: whitespace collapsed, no trailing punctuation."""
+    return " ".join((text or "").split()).rstrip(" .;,")
+
+
+def towing_sentence(rating: int | None, qualifier: str | None = None) -> str | None:
+    """TOWING_SENTENCE, built from a verified rating or an override, verbatim; an override's qualifier (e.g. "with
+    the appropriate hitch") follows the figure."""
+    if not rating:
+        return None
+    q = _qualifier(qualifier)
+    return f"It is rated to tow up to {rating:,} lbs{' ' + q if q else ''}."
 
 
 # --- overrides (tow_overrides.json, keyed by VIN) ----------------------------------- #
@@ -655,13 +664,25 @@ def load_tow_overrides(path: Path | None = None) -> dict[str, dict[str, Any]]:
     return out
 
 
+KG_TO_LBS = 2.20462
+
+
 def set_tow_override(
-    vin: str, rating: int | None, source: str | None = None, path: Path | None = None
+    vin: str, rating: int | None, source: str | None = None, path: Path | None = None, *,
+    unit: str = "lbs", source_url: str | None = None, quote: str | None = None, qualifier: str | None = None,
 ) -> dict[str, Any] | None:
     """Set (or, with rating None / 0, remove) one VIN's tow override. Returns the
-    stored entry, or None when removed. A rating must be 500-40,000 lbs."""
+    stored entry, or None when removed. A rating must be 500-40,000 lbs.
+    unit "kg": the figure is converted to whole pounds (the entered figure and unit are kept as well).
+    source_url / quote: where the figure is stated; qualifier: words that follow the figure in TOWING_SENTENCE."""
     path = path or TOW_OVERRIDES_PATH
     vin = vin.strip().upper()
+    unit = (unit or "lbs").strip().lower()
+    if unit not in ("lbs", "kg"):
+        raise ValueError(f"unit must be lbs or kg, not {unit!r}")
+    entered = rating
+    if rating and unit == "kg":
+        rating = int(round(int(rating) * KG_TO_LBS))
     if rating is not None and rating != 0 and not (500 <= int(rating) <= 40000):
         raise ValueError(f"tow rating {rating!r} lbs is out of range (500-40,000)")
     try:
@@ -671,6 +692,12 @@ def set_tow_override(
     entry = None
     if rating:
         entry = {"rating": int(rating), "source": (source or "").strip(), "date": date.today().isoformat()}
+        if unit == "kg":
+            entry.update(entered_figure=int(entered), entered_unit="kg")
+        for k, val in (("source_url", (source_url or "").strip()), ("quote", " ".join((quote or "").split())),
+                       ("qualifier", _qualifier(qualifier))):
+            if val:
+                entry[k] = val
         data[vin] = entry
     else:
         data.pop(vin, None)
