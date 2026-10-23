@@ -2660,6 +2660,36 @@ def set_current_ad_text(entry: dict, text: str) -> bool:
     return changed
 
 
+def _ws_norm(text: str | None) -> str:
+    """Whitespace-normalized text; curly quotes and dashes folded to plain ones (a web page may render either)."""
+    t = (text or "").translate(str.maketrans({"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"',
+                                              "\u2013": "-", "\u2014": "-", "\u00a0": " "}))
+    return " ".join(t.split())
+
+
+def added_sentences(old_text: str | None, new_text: str | None) -> list[str]:
+    """Sentences of `new_text` that `old_text` does not have (whitespace-normalized): what a refresh inserted or
+    rewrote, i.e. new text the live listing should show once it is re-posted."""
+    have = {_ws_norm(s) for s in _split_sentences(old_text or "")}
+    out: list[str] = []
+    for s in _split_sentences(new_text or ""):
+        n = _ws_norm(s)
+        if n and n not in have and n not in out:
+            out.append(n)
+    return out
+
+
+def note_expected_phrases(entry: dict, old_text: str | None) -> list[str]:
+    """After a refresh edit (Research page, tow / warranty / Carfax refresh): add the sentences it inserted to
+    entry["expected_phrases"]. The verifier reports "new text not live" while any is missing from the live page and
+    drops each once it is seen; a regeneration or reprice clears the list."""
+    new = added_sentences(old_text, entry.get("current_ad_text"))
+    if new:
+        have = list(entry.get("expected_phrases") or [])
+        entry["expected_phrases"] = have + [s for s in new if s not in have]
+    return new
+
+
 def record_ad(
     history: dict,
     stock: str,
@@ -2696,8 +2726,9 @@ def record_ad(
         entry["generated_with"] = GENERATED_WITH.pop(stock)
     # a fresh ad body has not been verified against hendrickcars.com yet
     clear_verification(entry)
-    # a regenerated ad starts clean: no removed-sentence tracking
+    # a regenerated ad starts clean: no removed-sentence or expected-sentence tracking
     entry.pop("stale_phrases", None)
+    entry.pop("expected_phrases", None)
     entry.pop("generation_flag", None)
     stamp_mild_sentence(entry, today)
     # warranty_sentence_date: the day this ad's factory-warranty sentence was built.
@@ -3221,6 +3252,7 @@ def reprice_ad(stock_number: str, new_pricing_data: dict) -> str:
     # a verdict from before this rewrite no longer describes anything: clear it
     # (the site shows "unverified") and let the next verifier run re-check.
     clear_verification(entry)    # a reprice always re-checks, even if the words came out the same
+    entry.pop("expected_phrases", None)   # the rewrite replaces whatever a refresh inserted
     entry.pop("generation_flag", None)    # a completed rewrite clears an earlier failure flag
     stamp_mild_sentence(entry)
     history[stock] = entry

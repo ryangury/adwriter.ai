@@ -110,8 +110,10 @@ def apply(rows: list[dict]) -> int:
     history = A.load_ad_history()
     for r in changing:
         e = history[r["stock"]]
+        old_text = e.get("current_ad_text")
         e.update(r["after"])
         A.set_current_ad_text(e, "\n\n".join(r["after"][k] for k in KEYS if r["after"][k]))
+        A.note_expected_phrases(e, old_text)
         A.clear_verification(e)    # the edit changed the text even if the join came out equal
         stale = list(e.get("stale_phrases") or [])
         e["stale_phrases"] = stale + [s for s in r["removed"] if s not in stale]
