@@ -390,7 +390,7 @@ def research_refresh_step(
 ) -> dict[str, Any]:
     """The run's research refresh (model_config.RESEARCH_AUTO_APPLY): research.auto_refresh for every live car with a
     Research-page entry, VIN override or "No figure needed", skipping the cars built, repriced or recon-updated this
-    run; one ad_history backup, at most 20 cars, a "Text Refresh" per-ad email per changed car, per-car errors into
+    run; one ad_history backup, at most RESEARCH_AUTO_APPLY_MAX_CARS cars, a "Text Refresh" per-ad email per changed car, per-car errors into
     `errors` (Action Required). Never raises."""
     import model_config
 
@@ -403,12 +403,14 @@ def research_refresh_step(
         return {"changed": [], "planned": [], "leftover": [], "errors": []}
     built = {(a.get("stock") or "").upper() for a in ads_generated}
     try:
-        res = research.auto_refresh(retail, ad_history, skip=built, dry_run=dry_run)
+        res = research.auto_refresh(retail, ad_history, skip=built, dry_run=dry_run,
+                                    limit=model_config.RESEARCH_AUTO_APPLY_MAX_CARS)
     except Exception as exc:  # noqa: BLE001 - the step must never sink the run
         print(f"[research-refresh] failed — {exc}", file=sys.stderr)
         errors.append({"stock": "-", "phase": "research_refresh", "error": f"{type(exc).__name__}: {exc}"})
         return {"changed": [], "planned": [], "leftover": [], "errors": []}
     errors.extend(res["errors"])
+    res["limit"] = model_config.RESEARCH_AUTO_APPLY_MAX_CARS
     print(f"[research-refresh] {len(res['planned'])} car(s) to refresh, {len(res['changed'])} refreshed"
           + (f", {len(res['leftover'])} left for the next run ({', '.join(res['leftover'])})" if res["leftover"] else "")
           + (f", {len(res['skipped'])} built this run" if res.get("skipped") else "")
@@ -456,7 +458,7 @@ def _format_build_summary(
         out.append(f"  [{item['stock']}]  {(item.get('vehicle') or {}).get('year_make_model') or ''}")
         out += [f"    {ln.strip()}" for ln in item["lines"]]
     if tr.get("leftover"):
-        out.append(f"  left for the next run (20 per run): {', '.join(tr['leftover'])}")
+        out.append(f"  left for the next run ({tr.get('limit') or 'cap'} per run): {', '.join(tr['leftover'])}")
     out += ["", f"RECON REVIEW (archived work order, no latch; listed only, no action taken) ({len(RECON_REVIEW)})", "=" * 60]
     if not RECON_REVIEW:
         out.append("(none)")

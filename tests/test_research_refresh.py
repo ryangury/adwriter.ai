@@ -64,6 +64,7 @@ class Step:
             hist[stock] = {"current_ad_text": kw.get("ad_text") or AD, "first_ad_date": "2026-10-23", "ad_count": 1}
 
         self.r.patches += [
+            mock.patch.object(model_config, "RESEARCH_AUTO_APPLY", True),     # off by default until approved
             mock.patch.object(o, "record_ad", side_effect=record),
             mock.patch.object(o, "crawl_inventory", return_value=CARS),
             mock.patch.object(research, "refresh_decisions", return_value=DECISION),
@@ -132,10 +133,24 @@ class FullRun(unittest.TestCase):
         self.assertEqual(len(s.r.sent_subject("Action Required")), 1)
         self.assertEqual(len(s.r.sent_subject("Text Refresh")), 1)
 
+    def test_first_week_cap_leaves_the_rest_for_the_next_run(self):
+        self.assertEqual(model_config.RESEARCH_AUTO_APPLY_MAX_CARS, 5)
+        extra = {f"R{i}": {"current_ad_text": AD, "first_ad_date": "2026-10-01"} for i in range(4, 11)}
+        global CARS
+        cars = CARS + [{"stock_number": s, "status_code": 10, "vin": "V" + s, "year_make_model": "2024 Mercedes-Benz GLS",
+                        "current_price": 68875.0} for s in extra]
+        s = Step(history(**extra))
+        s.r.patches.append(mock.patch.object(o, "crawl_inventory", return_value=cars))
+        s.run()
+        self.assertEqual(len(s.applied), 5)
+        self.assertEqual(len(s.r.sent_subject("Text Refresh")), 5)
+        self.assertIn("left for the next run (5 per run)", s.summary())
+
     def test_flag_off_skips_the_step(self):
+        self.assertFalse(model_config.RESEARCH_AUTO_APPLY, "off until approved")
         s = Step(history())
-        with mock.patch.object(model_config, "RESEARCH_AUTO_APPLY", False):
-            s.run()
+        s.r.patches.append(mock.patch.object(model_config, "RESEARCH_AUTO_APPLY", False))
+        s.run()
         self.assertEqual(s.applied, [])
         self.assertIn("(off: model_config.RESEARCH_AUTO_APPLY)", s.summary())
 

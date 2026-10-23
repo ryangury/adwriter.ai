@@ -108,4 +108,7 @@ def describe(tag_or_model: dict[str, Any] | str | None) -> str:
 
 # The morning run's "research refresh" step (orchestrator, after the builds): cars with a Research-page entry, a VIN
 # override or "No figure needed" get the no-model text edit (research.auto_refresh). False: the step is skipped.
-RESEARCH_AUTO_APPLY = True
+# Off until approved (Ryan, 2026-10-23: "don't go live until I say"); the dry run lists what it would change.
+RESEARCH_AUTO_APPLY = False
+# Cars refreshed per run: 5 for the first week live, then 20 (research.AUTO_REFRESH_LIMIT); the rest wait for the next run.
+RESEARCH_AUTO_APPLY_MAX_CARS = 5
