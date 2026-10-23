@@ -44,6 +44,23 @@ os.environ.setdefault("ADWRITER_COST_DB", str(Path(tempfile.mkdtemp(prefix="api_
 os.environ.setdefault("ADWRITER_COST_PURPOSE", "test")
 os.environ.setdefault("ADWRITER_KEY_CLASS", "dev")
 
+PINNED_PATH = ROOT / "tests" / "fixtures" / "pinned_vehicles.json"
+
+
+def snapshot() -> dict:
+    """{stock: snapshot row} for the tests: the live snapshot with every car the tests look up pinned on top
+    (tests/fixtures/pinned_vehicles.json wins), so a car being sold or repriced never changes what a test sees."""
+    import json
+
+    try:
+        live = json.loads((DATA / "last_inventory_snapshot.json").read_text(encoding="utf-8"))["vehicles"]
+    except (OSError, ValueError, KeyError):
+        live = []
+    out = {v["stock_number"]: v for v in live}
+    out.update(json.loads(PINNED_PATH.read_text(encoding="utf-8")))
+    return out
+
+
 if str(ROOT) not in sys.path[:1]:
     sys.path.insert(0, str(ROOT))
 if DATA != ROOT and str(DATA) not in sys.path:

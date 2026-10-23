@@ -22,7 +22,7 @@ def check(name, cond, detail=""):
         FAIL.append(name)
 
 
-snap = {v["stock_number"]: v for v in json.load(open(str(_paths.DATA / "last_inventory_snapshot.json")))["vehicles"]}
+snap = _paths.snapshot()        # live snapshot + tests/fixtures/pinned_vehicles.json (pinned wins)
 
 
 def pt_for(stock):

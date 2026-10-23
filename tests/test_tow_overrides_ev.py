@@ -17,7 +17,7 @@ import tow_refresh as R  # noqa: E402
 import towing as T  # noqa: E402
 
 DB = sqlite3.connect(str(_paths.DATA / "vehicle_cache.db"))
-SNAP = {v["stock_number"]: v for v in json.load(open(str(_paths.DATA / "last_inventory_snapshot.json"), encoding="utf-8"))["vehicles"]}
+SNAP = _paths.snapshot()        # live snapshot + tests/fixtures/pinned_vehicles.json (pinned wins)
 HIST = json.load(open(str(_paths.DATA / "ad_history.json"), encoding="utf-8"))
 # X58848 may be deleted for a rebuild: fall back to its archived entry.
 if "X58848" not in HIST:
