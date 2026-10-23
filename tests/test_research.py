@@ -779,5 +779,47 @@ class VinOverrideRoutes(unittest.TestCase):
         self.assertEqual(T.load_tow_overrides()["VINT1"]["rating"], 3600)
 
 
+class EntryQuoteCheck(unittest.TestCase):
+    """The Research page's save: a quote that only repeats a configuration label is rejected; a quote without the
+    figure and its unit saves with a "figure not in quote" warning."""
+
+    def setUp(self):
+        wipe()
+
+    def test_label_rejected(self):
+        with self.assertRaises(ValueError) as cm:
+            R.set_fact("tow", GLS, 7700, "https://www.mbusa.com/gls",
+                       "year: 2024 | make: Mercedes-Benz | model: GLS 450 4MATIC SUV | package: INCREASED TOWING")
+        self.assertIn("configuration label", str(cm.exception))
+        self.assertIsNone(R.get_fact("tow", GLS))
+
+    def test_figure_in_quote_or_a_warning(self):
+        ok = R.set_fact("tow", GLS, 7700, "https://www.mbusa.com/gls", "The GLS 450 tows up to 7,700 pounds.")
+        self.assertIsNone(ok["warning"])
+        warn = R.set_fact("tow", GLS, 7700, "https://www.mbusa.com/gls", "Towing: see the owner's manual")
+        self.assertEqual(warn["warning"], "figure not in quote")
+        self.assertEqual(R.get_fact("tow", GLS)["figure"], 7700, "saved anyway")
+        self.assertFalse(R.figure_in_quote("tow", 7700, "rated at 77,000 lbs"), "digits must match exactly")
+        self.assertFalse(R.figure_in_quote("tow", 11370, "5.7L V8 HEMI 3.92 6900 17,000 11,370"), "no unit")
+        self.assertTrue(R.figure_in_quote("range", 43, "up to 43 miles of all-electric driving"))
+
+    def test_site_returns_the_warning_and_the_form_checks_it(self):
+        import app as adapp
+
+        c = adapp.app.test_client()
+        with c.session_transaction() as s:
+            s["authed"] = True
+        kid = R.key_id("tow", R.key_of("tow", GLS))
+        j = c.post("/research/fact", data={"key_id": kid, "figure": "7700", "source_url": "https://www.mbusa.com/gls",
+                                           "quote": "See the towing guide"}).get_json()
+        self.assertEqual((j["saved"], j["warning"]), (True, "figure not in quote"))
+        bad = c.post("/research/fact", data={"key_id": kid, "figure": "7700", "source_url": "https://www.mbusa.com/gls",
+                                             "quote": "year: 2024 | make: Mercedes-Benz | model: GLS"})
+        self.assertEqual(bad.status_code, 400)
+        html = Path(_paths.ROOT, "templates", "research.html").read_text(encoding="utf-8")
+        self.assertIn("Figure not in quote: it will save with a warning.", html)
+        self.assertIn("Not accepted: this is only a configuration label", html)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

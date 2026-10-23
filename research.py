@@ -179,6 +179,28 @@ def get_fact(kind: str, cfg: dict[str, Any]) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+_LABEL_QUOTE_RE = re.compile(r"^\s*year:\s*\d{4}\s*\|.*\bmake:", re.I)
+_UNIT_WORDS = {"tow": r"(?:lbs?\.?|pounds?)", "range": r"(?:miles?|mi\.?)"}
+FIGURE_NOT_IN_QUOTE = "figure not in quote"
+
+
+def quote_problem(quote: str | None) -> str | None:
+    """A reason to reject the quote: it only repeats a configuration label (a lookup's "year: ... | make: ..." line)
+    instead of the page's own words."""
+    if _LABEL_QUOTE_RE.search(quote or ""):
+        return "the quote is only a configuration label (year | make | model ...), not the page's words that state the figure"
+    return None
+
+
+def figure_in_quote(kind: str, figure: int, quote: str | None) -> bool:
+    """True when the quote states the figure with its unit: 7,700 lbs / 7700 pounds / 43 miles (digits with or
+    without the thousands comma)."""
+    n = int(figure)
+    digits = f"(?:{n:,}|{n})".replace(",", "\\,") if n >= 1000 else str(n)
+    pat = rf"(?<![\d,.]){digits}(?![\d,])\s*(?:-\s*)?{_UNIT_WORDS.get(kind, '')}"
+    return re.search(pat, quote or "", re.I) is not None
+
+
 def validate(kind: str, figure: Any, source_url: str | None, quote: str | None) -> tuple[int, str, str]:
     """(figure, source_url, quote) or ValueError: a whole number in range, a URL, and the quote that states it."""
     raw = str(figure if figure is not None else "").replace(",", "").replace(UNITS[kind], "").strip()
@@ -194,6 +216,9 @@ def validate(kind: str, figure: Any, source_url: str | None, quote: str | None) 
     q = " ".join((quote or "").split())
     if not q:
         raise ValueError("paste the sentence or table row that states the figure (quote)")
+    why = quote_problem(q)
+    if why:
+        raise ValueError(why)
     return n, url, q
 
 
@@ -210,6 +235,7 @@ def set_fact(kind: str, cfg: dict[str, Any], figure: Any, source_url: str | None
             f"ON CONFLICT (kind, {', '.join(KEY_COLS)}) DO UPDATE SET figure=excluded.figure, "
             "source_url=excluded.source_url, quote=excluded.quote, entered_date=excluded.entered_date",
             tuple(row[c] for c in cols))
+    row["warning"] = None if figure_in_quote(kind, n, q) else FIGURE_NOT_IN_QUOTE
     return row
 
 

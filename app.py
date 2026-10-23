@@ -1070,7 +1070,7 @@ def research_save_fact():
         row = research.set_fact(kind, key, request.form.get("figure"), request.form.get("source_url"), request.form.get("quote"))
     except ValueError as exc:
         return jsonify({"saved": False, "error": str(exc)}), 400
-    return jsonify({"saved": True, "figure": row["figure"], "entered_date": row["entered_date"]})
+    return jsonify({"saved": True, "figure": row["figure"], "entered_date": row["entered_date"], "warning": row.get("warning")})
 
 
 @app.post("/research/candidates")
@@ -1145,6 +1145,9 @@ def save_tow_override_form(vin: str, *, require_quote: bool = False):
             return jsonify({"saved": False, "error": "Give the source page's URL (http...)."}), 400
         if not quote:
             return jsonify({"saved": False, "error": "Paste the sentence or table row that states the figure (quote)."}), 400
+        why = research.quote_problem(quote)
+        if why:
+            return jsonify({"saved": False, "error": why[:1].upper() + why[1:] + "."}), 400
     try:
         entry = set_tow_override(
             vin, int(raw) if raw else None, source, unit=request.form.get("unit") or "lbs",
@@ -1152,8 +1155,16 @@ def save_tow_override_form(vin: str, *, require_quote: bool = False):
         )
     except ValueError as exc:
         return jsonify({"saved": False, "error": str(exc)}), 400
+    warning = None
+    if entry and require_quote:
+        fig = entry.get("entered_figure") or entry["rating"]
+        unit_kind = "tow"
+        if not research.figure_in_quote(unit_kind, fig, quote) and not (
+                entry.get("entered_unit") == "kg" and re.search(rf"(?<![\d,]){fig:,}|(?<![\d,]){fig}\s*kg", quote)):
+            warning = research.FIGURE_NOT_IN_QUOTE
     return jsonify({"saved": True, "override": bool(entry), "rating": entry["rating"] if entry else None,
-                    "sentence": towing_sentence(entry["rating"], entry.get("qualifier")) if entry else None})
+                    "sentence": towing_sentence(entry["rating"], entry.get("qualifier")) if entry else None,
+                    "warning": warning})
 
 
 @app.post("/research/override/<stock_number>")
