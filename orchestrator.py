@@ -404,6 +404,10 @@ def _format_build_summary(
     research_rows = _research_rows(ads_generated)
     n_items = sum(len(r["items"]) for r in research_rows)
     out += ["", f"RESEARCH NEEDED ({n_items})", "=" * 60]
+    try:
+        out.append(research.auto_summary_line())      # the 9:30 AM auto Find candidates run's last result
+    except Exception as exc:  # noqa: BLE001 - never sink the summary
+        out.append(f"Research candidates found last night: unavailable ({exc})")
     if not research_rows:
         out.append("(none: every built ad had its electric range / tow rating, or needs none)")
     else:

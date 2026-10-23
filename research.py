@@ -37,6 +37,7 @@ from typing import Any
 
 import feature_cache
 
+BUSY_TIMEOUT_S = 30
 KINDS = ("range", "tow")
 KEY_COLS = ("year", "make", "model", "engine", "drivetrain", "cab", "bed", "tow_package")
 LABELS = {"range": "electric range", "tow": "tow rating"}
@@ -98,7 +99,8 @@ CREATE TABLE IF NOT EXISTS config_candidate (
 
 @contextlib.contextmanager
 def _connect():
-    conn = sqlite3.connect(str(feature_cache.DB_PATH))       # read at call time (the tests point it at a temp file)
+    # read at call time (the tests point it at a temp file); wait out a writer instead of failing at once
+    conn = sqlite3.connect(str(feature_cache.DB_PATH), timeout=BUSY_TIMEOUT_S)
     conn.row_factory = sqlite3.Row
     try:
         conn.executescript(_SCHEMA)
@@ -333,7 +335,7 @@ def items_for(pt: dict[str, Any] | None, tow: dict[str, Any] | None) -> list[dic
 
 
 def _cand(c: dict[str, Any]) -> dict[str, Any]:
-    return {k: c.get(k) for k in ("figure", "source_url", "quote", "origin")}
+    return {k: c.get(k) for k in ("figure", "source_url", "quote", "origin", "found_date")}
 
 
 def set_research_needed(entry: dict[str, Any], pt: dict[str, Any] | None, tow: dict[str, Any] | None) -> None:
@@ -705,7 +707,7 @@ def page_rows(vehicles: list[dict[str, Any]], history: dict[str, Any]) -> dict[s
             detail: str, car: dict[str, Any]) -> None:
         key = key_of(kind, cfg) if cfg and not cfg.get("missing") else None
         wid = waiver_id(kind, cfg, config_text)
-        cands = [_cand(c) for c in candidates(kind, key)] if key else []
+        cands = rank_candidates(kind, key, [_cand(c) for c in candidates(kind, key)]) if key else []
         car = dict(car, vin=(snap.get(car["stock"]) or {}).get("vin"))
         car["vin_waiver_id"] = vin_waiver_id(car["vin"]) if car["vin"] else None
         w = get_waiver(kind, cfg, config_text, vin=car["vin"])
@@ -717,6 +719,7 @@ def page_rows(vehicles: list[dict[str, Any]], history: dict[str, Any]) -> dict[s
                 "missing_parts": (cfg or {}).get("missing") or [], "incomplete_text": incomplete_text(cfg) if key is None else None,
                 "reason": PLAIN[plain_reason(kind, key, reason_code, cands)],
                 "reason_code": reason_code, "detail": detail, "candidates": cands, "fact": get_fact(kind, key) if key else None,
+                "google_q": google_query(kind, describe(kind, key) if key else config_text),
                 "unit": UNITS[kind], "cars": []})
         target["cars"].append(car)
 
@@ -844,7 +847,8 @@ def figures_in(kind: str, text: str) -> list[int]:
     return out
 
 
-def find_candidates(kind: str, key: dict[str, Any], *, client: Any = None, run: Any = None) -> dict[str, Any]:
+def find_candidates(kind: str, key: dict[str, Any], *, client: Any = None, run: Any = None,
+                    purpose: str = None, origin: str = "Find candidates") -> dict[str, Any]:
     """One Haiku 4.5 search (basic tool, a loose reply) for this configuration, capped at FIND_CAP_USD and logged
     under purpose research_candidates. Returns {"candidates": [{figure, source_url, quote, origin}], "cost", "reply",
     "error"}. Figures come from the citations (the quoted page text) and, marked as such, from the reply itself.
@@ -860,7 +864,7 @@ def find_candidates(kind: str, key: dict[str, Any], *, client: Any = None, run: 
         resp = run(client, kwargs={"model": FIND_MODEL, "max_tokens": 1500,
                                    "tools": [{"type": FIND_TOOL, "name": "web_search", "max_uses": FIND_MAX_USES}]},
                    messages=[{"role": "user", "content": _find_ask(kind, key)}], label=f"find candidates {describe(kind, key)}",
-                   purpose=FIND_PURPOSE, max_cost_usd=FIND_CAP_USD)
+                   purpose=purpose or FIND_PURPOSE, max_cost_usd=FIND_CAP_USD)
     except bounded_search.SearchUnavailable as exc:
         out["error"] = f"{exc.reason}: {exc}"
         out["cost"] = round(_logged_cost() - before, 4)
@@ -878,16 +882,16 @@ def find_candidates(kind: str, key: dict[str, Any], *, client: Any = None, run: 
             for n in figures_in(kind, quote):
                 if (n, url) not in seen:
                     seen.add((n, url))
-                    out["candidates"].append({"figure": n, "source_url": url, "quote": quote[:400], "origin": "Find candidates (quoted page)"})
+                    out["candidates"].append({"figure": n, "source_url": url, "quote": quote[:400], "origin": f"{origin} (quoted page)"})
     out["reply"] = text.strip()[:1500]
     urls = re.findall(r"https?://[^\s<>\")\]]+", text)
     for n in figures_in(kind, text):
         if not any(c["figure"] == n for c in out["candidates"]):
             out["candidates"].append({"figure": n, "source_url": urls[0].rstrip(".,;") if urls else "",
-                                      "quote": "", "origin": "Find candidates (model's reply, no quote)"})
+                                      "quote": "", "origin": f"{origin} (model's reply, no quote)"})
     if out["candidates"]:
         add_candidates(kind, key, [{"figure": c["figure"], "url": c["source_url"], "quote": c["quote"], "origin": c["origin"]}
-                                   for c in out["candidates"]], "Find candidates")
+                                   for c in out["candidates"]], origin)
     return out
 
 
@@ -900,3 +904,332 @@ def _logged_cost() -> float:
             return float(c.execute("SELECT COALESCE(SUM(cost_usd), 0) FROM api_cost_log").fetchone()[0])
     except sqlite3.Error:
         return 0.0
+
+
+# --------------------------------------------------------------------------- #
+# Candidate ranking for the Research page (Python only, no model call)
+# --------------------------------------------------------------------------- #
+EPA_DOMAINS = ("fueleconomy.gov", "epa.gov")
+MEDIA_DOMAINS = ("caranddriver.com", "motortrend.com", "edmunds.com", "kbb.com", "cars.com", "autoblog.com",
+                 "roadandtrack.com", "consumerreports.org", "autotrader.com", "thecarconnection.com", "motor1.com",
+                 "cnet.com", "insideevs.com", "electrek.co", "greencarreports.com", "jdpower.com", "autoweek.com",
+                 "carscoops.com", "topgear.com", "autocar.co.uk", "usnews.com", "truecar.com", "carfax.com")
+_NON_US_PATH = re.compile(r"/(?!us/)(?:[a-z]{2}|en-(?!us/)[a-z]{2}|[a-z]{2}-[a-z]{2})/", re.I)
+_WEAK_WORDS = re.compile(r"\breal[- ]world\b|\btested\b|\bour test\b", re.I)
+_YEAR_RE = re.compile(r"\b(19[89]\d|20[0-4]\d)\b")
+_GENERIC = {"engine", "awd", "rwd", "fwd", "4wd", "crew", "cab", "bed", "battery", "electric", "trim", "box", "short",
+            "long", "standard"}
+
+
+def _domain(url: str | None) -> str:
+    m = re.match(r"https?://([^/]+)", url or "")
+    return (m.group(1).lower().removeprefix("www.") if m else "")
+
+
+def _manufacturer_domains(make: str | None) -> tuple[str, ...]:
+    out: list[str] = []
+    try:
+        import towing
+        out += list(towing.allowed_domains(make) or [])
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from powertrain import MANUFACTURER_DOMAINS
+        out += list(MANUFACTURER_DOMAINS.get((make or "").lower()) or [])
+    except Exception:  # noqa: BLE001
+        pass
+    return tuple(d.lower().removeprefix("www.") for d in out)
+
+
+def _on(domain: str, domains: tuple[str, ...]) -> bool:
+    return any(domain == d or domain.endswith("." + d) for d in domains)
+
+
+def rank_candidates(kind: str, key: dict[str, Any] | None, cands: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The candidates, best first, each with display fields: "domain", "marks" (manufacturer / EPA / media),
+    "weak" (non-US path, real-world / tested wording, another model year in the quote), "n_sources" (distinct
+    domains stating the same figure) and "tier": a quoted page naming the right year and trim, then other quoted
+    pages, then reply-only figures, then other configurations' cached figures. No model call."""
+    key = key or {}
+    mfr = _manufacturer_domains(key.get("make"))
+    year = str(key.get("year") or "")
+    tokens = {t for t in re.findall(r"[a-z0-9.]+", f"{key.get('model') or ''} {key.get('engine') or ''}".lower())
+              if len(t) >= 2 and t not in _GENERIC}
+    by_figure: dict[int, set[str]] = {}
+    for c in cands:
+        d = _domain(c.get("source_url"))
+        if d and "OTHER configuration" not in (c.get("origin") or ""):
+            by_figure.setdefault(c.get("figure"), set()).add(d)
+    out = []
+    for c in cands:
+        c = dict(c)
+        d = _domain(c.get("source_url"))
+        quote = c.get("quote") or ""
+        origin = c.get("origin") or ""
+        c["domain"] = d
+        c["marks"] = ([("manufacturer")] if d and _on(d, mfr) else []) + (["EPA"] if d and _on(d, EPA_DOMAINS) else []) \
+            + (["media"] if d and _on(d, MEDIA_DOMAINS) else [])
+        weak = []
+        if _NON_US_PATH.search(re.sub(r"^https?://[^/]+", "", c.get("source_url") or "")):
+            weak.append("non-US page")
+        if _WEAK_WORDS.search(quote):
+            weak.append("real-world / tested figure")
+        other_years = sorted({y for y in _YEAR_RE.findall(quote) if year and y != year})
+        if other_years:
+            weak.append(f"quote names {', '.join(other_years)}")
+        c["weak"] = weak
+        c["n_sources"] = len(by_figure.get(c.get("figure"), set()))
+        q = quote.lower()
+        right = bool(quote) and year in quote and (not tokens or any(t in q for t in tokens))
+        if "OTHER configuration" in origin:
+            tier = 4
+        elif not quote or "reply" in origin:
+            tier = 3
+        elif right:
+            tier = 1
+        else:
+            tier = 2
+        c["tier"] = tier
+        c["tier_label"] = {1: "quoted page, right year and trim", 2: "quoted page", 3: "reply only, no quote",
+                           4: "another configuration"}[tier]
+        out.append(c)
+    out.sort(key=lambda c: (c["tier"], -c["n_sources"], -len(c["marks"]), len(c["weak"]), -(int(str(c.get("found_date") or "0")[:4] or 0))))
+    return out
+
+
+def google_query(kind: str, config_text: str | None) -> str:
+    """The "Check on Google" search text: the configuration plus what is wanted (no fetch, just a link)."""
+    t = re.sub(r"\[[^\]]*\]", " ", config_text or "")
+    t = " ".join(w for w in t.split() if w not in ("?", "engine", "drivetrain") or w.isdigit())
+    return f"{t} {'EPA electric range' if kind == 'range' else 'towing capacity'}".strip()
+
+
+# --------------------------------------------------------------------------- #
+# Auto Find candidates (python research.py --auto-candidates [--dry-run])
+# --------------------------------------------------------------------------- #
+# Daily (AdWriter-ResearchCandidates, 9:30 AM): one Find candidates search per configuration on the Research page
+# that has no entry, isn't "No figure needed", has a live car, isn't config_incomplete and had no auto search in the
+# last AUTO_RECHECK_DAYS days. Priority: live ads stating a tow figure with no allowed source, then hitch / tow
+# package with no figure, then range rows with no EPA entry. Candidates only: never ad_history, never an entry.
+AUTO_PURPOSE = "research_candidates_auto"
+AUTO_ORIGIN = "Auto search"
+AUTO_MAX_SEARCHES = 12
+AUTO_MAX_COST_USD = 2.00
+AUTO_RECHECK_DAYS = 30
+AUTO_LOCK_WAIT_S = 90 * 60
+AUTO_EST_COST_USD = 0.075     # mean logged cost of a Find candidates search so far (basic tool, 3 uses)
+_AUTO_SCHEMA = """
+CREATE TABLE IF NOT EXISTS config_search (
+    kind          TEXT NOT NULL,
+    key_id        TEXT NOT NULL,
+    config_text   TEXT NOT NULL DEFAULT '',
+    searched_date TEXT NOT NULL,
+    result        TEXT NOT NULL,          -- found | none | error
+    n_candidates  INTEGER NOT NULL DEFAULT 0,
+    cost_usd      REAL NOT NULL DEFAULT 0,
+    error         TEXT,
+    UNIQUE (kind, key_id)
+);
+CREATE TABLE IF NOT EXISTS config_search_run (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_date      TEXT NOT NULL,
+    started       TEXT NOT NULL,
+    finished      TEXT NOT NULL,
+    planned       INTEGER NOT NULL,
+    searched      INTEGER NOT NULL,
+    found         INTEGER NOT NULL,
+    cost_usd      REAL NOT NULL,
+    stopped       TEXT
+);
+"""
+
+
+@contextlib.contextmanager
+def _connect_auto():
+    with _connect() as conn:
+        conn.executescript(_AUTO_SCHEMA)
+        yield conn
+
+
+def last_auto_search(kind: str, kid: str) -> dict[str, Any] | None:
+    with _connect_auto() as conn:
+        row = conn.execute("SELECT * FROM config_search WHERE kind=? AND key_id=?", (kind, kid)).fetchone()
+    return dict(row) if row else None
+
+
+def _record_search(kind: str, kid: str, config_text: str, result: str, n: int, cost: float, error: str | None,
+                   today: str) -> None:
+    with _connect_auto() as conn:
+        conn.execute("INSERT INTO config_search (kind, key_id, config_text, searched_date, result, n_candidates, cost_usd, error) "
+                     "VALUES (?,?,?,?,?,?,?,?) ON CONFLICT (kind, key_id) DO UPDATE SET config_text=excluded.config_text, "
+                     "searched_date=excluded.searched_date, result=excluded.result, n_candidates=excluded.n_candidates, "
+                     "cost_usd=excluded.cost_usd, error=excluded.error",
+                     (kind, kid, config_text, today, result, n, round(cost, 4), error))
+
+
+def last_auto_run() -> dict[str, Any] | None:
+    try:
+        with _connect_auto() as conn:
+            row = conn.execute("SELECT * FROM config_search_run ORDER BY id DESC LIMIT 1").fetchone()
+        return dict(row) if row else None
+    except sqlite3.Error:
+        return None
+
+
+def auto_summary_line() -> str:
+    """The Build Summary line, from the auto run's last result."""
+    r = last_auto_run()
+    if not r:
+        return "Research candidates found last night: no auto run yet"
+    return (f"Research candidates found last night: {r['found']} configuration{'' if r['found'] == 1 else 's'}, "
+            f"${r['cost_usd']:.2f} ({r['run_date']}; {r['searched']} searched"
+            + (f"; stopped: {r['stopped']}" if r.get("stopped") else "") + ")")
+
+
+AUTO_SECTIONS = ("tow_stated", "tow_missing", "range")
+
+
+def auto_plan(vehicles: list[dict[str, Any]], history: dict[str, Any], *, today: date | None = None
+              ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """(rows to search in priority order, rows skipped with the reason). Read-only."""
+    today = today or date.today()
+    data = page_rows(vehicles, history)
+    snap = {v.get("stock_number"): v for v in vehicles}
+    todo, skipped = [], []
+    for section in AUTO_SECTIONS:
+        for g in data["sections"][section]:
+            row = {"section": section, "kind": g["kind"], "key_id": g.get("key_id"), "config_text": g["config_text"],
+                   "stocks": [c["stock"] for c in g["cars"]], "reason": g.get("reason")}
+            live = [s for s in row["stocks"] if snap.get(s) and _live(s, snap[s], history)]
+            last = last_auto_search(g["kind"], g["key_id"]) if g.get("key_id") else None
+            why = None
+            if not g.get("key_id"):
+                why = "configuration incomplete"
+            elif g.get("fact"):
+                why = "entry exists"
+            elif not live:
+                why = "no live car"
+            elif section == "range" and g.get("reason_code") != "epa_no_entry":
+                why = "range row without a 'no EPA entry' result (run the free EPA check first)"
+            elif last:
+                try:
+                    age = (today - date.fromisoformat(last["searched_date"])).days
+                except ValueError:
+                    age = AUTO_RECHECK_DAYS + 1
+                if age < AUTO_RECHECK_DAYS:
+                    why = f"auto search {age} day(s) ago ({last['result']})"
+            (skipped if why else todo).append(dict(row, skip=why) if why else row)
+    return todo, skipped
+
+
+def _lock_held(lock_path: Path | None = None) -> bool:
+    from run_lock import ORCHESTRATOR_LOCK_PATH, lock_blocks_edit
+
+    return lock_blocks_edit(lock_path or ORCHESTRATOR_LOCK_PATH) is not None
+
+
+def run_auto_candidates(vehicles: list[dict[str, Any]], history: dict[str, Any], *, dry_run: bool = False,
+                        find: Any = None, lock_held: Any = None, sleep: Any = None, clock: Any = None,
+                        spent: Any = None, today: date | None = None, log: Any = print) -> dict[str, Any]:
+    """Run (or with dry_run, only list) the auto searches. Limits per run: AUTO_MAX_SEARCHES searches and
+    AUTO_MAX_COST_USD of actual logged cost (a search is not started when spent + FIND_CAP_USD would pass it). Before
+    each search's cache write it waits for orchestrator.lock to clear (up to AUTO_LOCK_WAIT_S from the start). It
+    takes no lock itself and never writes ad_history. Returns the run's summary."""
+    import time
+
+    find = find or find_candidates
+    lock_held = lock_held or _lock_held
+    sleep = sleep or time.sleep
+    clock = clock or time.monotonic
+    spent = spent or _logged_cost
+    today = today or date.today()
+    todo, skipped = auto_plan(vehicles, history, today=today)
+    summary: dict[str, Any] = {"planned": len(todo), "skipped": skipped, "todo": todo, "searched": 0, "found": 0,
+                               "cost": 0.0, "stopped": None, "results": [],
+                               "estimate": round(len(todo[:AUTO_MAX_SEARCHES]) * AUTO_EST_COST_USD, 2),
+                               "worst_case": round(min(len(todo[:AUTO_MAX_SEARCHES]) * FIND_CAP_USD, AUTO_MAX_COST_USD), 2)}
+    if dry_run:
+        return summary
+    started_wall = datetime.now().isoformat(timespec="seconds")
+    start, base = clock(), spent()
+    for row in todo:
+        cost_so_far = round(spent() - base, 4)
+        if summary["searched"] >= AUTO_MAX_SEARCHES:
+            summary["stopped"] = f"{AUTO_MAX_SEARCHES}-search limit reached"
+            break
+        if cost_so_far + FIND_CAP_USD > AUTO_MAX_COST_USD:
+            summary["stopped"] = f"${AUTO_MAX_COST_USD:.2f} cap reached (${cost_so_far:.2f} logged)"
+            break
+        waited = False
+        while lock_held():
+            if clock() - start >= AUTO_LOCK_WAIT_S:
+                summary["stopped"] = "orchestrator.lock still held after 90 minutes"
+                break
+            if not waited:
+                log("[auto-candidates] orchestrator.lock is held - waiting before writing the cache")
+                waited = True
+            sleep(30)
+        if summary["stopped"]:
+            break
+        kind, key = key_from_id(row["key_id"])
+        before = spent()
+        try:
+            res = find(kind, key, purpose=AUTO_PURPOSE, origin=AUTO_ORIGIN)
+            err = res.get("error")
+        except Exception as exc:  # noqa: BLE001 - one search must not stop the run
+            res, err = {"candidates": []}, f"{type(exc).__name__}: {exc}"
+        cost = round(spent() - before, 4)
+        result = "error" if err else ("found" if res.get("candidates") else "none")
+        _record_search(kind, row["key_id"], row["config_text"], result, len(res.get("candidates") or []), cost, err,
+                       today.isoformat())
+        summary["searched"] += 1
+        summary["found"] += result == "found"
+        summary["results"].append(dict(row, result=result, n=len(res.get("candidates") or []), cost=cost, error=err))
+        log(f"[auto-candidates] {row['config_text']}: {result} ({len(res.get('candidates') or [])} candidate(s), ${cost:.3f})"
+            + (f" - {err}" if err else ""))
+    summary["cost"] = round(spent() - base, 4)
+    if not summary["stopped"] and len(todo) > summary["searched"]:
+        summary["stopped"] = "stopped early"
+    with _connect_auto() as conn:
+        conn.execute("INSERT INTO config_search_run (run_date, started, finished, planned, searched, found, cost_usd, stopped) "
+                     "VALUES (?,?,?,?,?,?,?,?)", (today.isoformat(), started_wall, datetime.now().isoformat(timespec="seconds"),
+                                                  len(todo), summary["searched"], summary["found"], summary["cost"],
+                                                  summary["stopped"]))
+    return summary
+
+
+def _main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    ap = argparse.ArgumentParser(description="Research tools")
+    ap.add_argument("--auto-candidates", action="store_true", help="search for candidates on the Research page's rows")
+    ap.add_argument("--dry-run", action="store_true", help="list the rows it would search and the estimated cost")
+    args = ap.parse_args(argv)
+    if not args.auto_candidates:
+        ap.print_help()
+        return 2
+    here = Path(__file__).with_name("last_inventory_snapshot.json")
+    vehicles = json.loads(here.read_text(encoding="utf-8"))["vehicles"]
+    history = json.loads(here.with_name("ad_history.json").read_text(encoding="utf-8"))      # read only
+    if not args.dry_run:
+        import api_cost
+
+        api_cost.use_production_key(purpose=AUTO_PURPOSE)       # a production job (prints the key class, never a key)
+    s = run_auto_candidates(vehicles, history, dry_run=args.dry_run)
+    print(f"\n[auto-candidates] {'DRY RUN - ' if args.dry_run else ''}{s['planned']} row(s) to search "
+          f"(limit {AUTO_MAX_SEARCHES} per run, ${AUTO_MAX_COST_USD:.2f}); {len(s['skipped'])} skipped")
+    for r in s["todo"]:
+        print(f"  {'SEARCH' if args.dry_run else 'row'}  [{r['section']}] {r['config_text']}  ({', '.join(r['stocks'])}) - {r['reason']}")
+    for r in s["skipped"]:
+        print(f"  skip    [{r['section']}] {r['config_text']}  ({', '.join(r['stocks'])}) - {r['skip']}")
+    if args.dry_run:
+        n = min(s["planned"], AUTO_MAX_SEARCHES)
+        print(f"  estimated cost: ${s['estimate']:.2f} for {n} search(es) at ~${AUTO_EST_COST_USD:.3f} each "
+              f"(worst case ${s['worst_case']:.2f} at the ${FIND_CAP_USD:.2f} cap)")
+    else:
+        print(f"  searched {s['searched']}, found {s['found']}, ${s['cost']:.2f}" + (f"; stopped: {s['stopped']}" if s["stopped"] else ""))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())

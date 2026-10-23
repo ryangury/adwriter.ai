@@ -214,6 +214,12 @@ Register-AdWriterTask -Name "AdWriter-StickerWarmup" `
     -TimeLimitHours 3 `
     -Description "Daily non-MB window sticker warmup (sticker_warmup.py --skip-predictive), 2:10pm. Replaces ACV Max options-tab approximations with real OEM stickers: Carfax sticker link first, then AutoiPacket with every rate limit enforced (never bypassed). 2:10pm sits inside the AutoiPacket non-MB window (Mon-Sat 11am-6pm) with ~3h50m of runway; 10 pulls at 5 min spacing plus 45-90s waits is about 65-70 min. Slot chosen to avoid the 2:00pm verifier (done by ~2:05), the 1:15pm recon warmup (done by ~1:20) and the 4:00pm verifier; the warmup holds orchestrator.lock for its whole run, so no verifier run should be skipped. Sundays the window is closed, so only the Carfax-link path can do anything. Logs to C:\adwriter\sticker_logs."
 
+Register-AdWriterTask -Name "AdWriter-ResearchCandidates" `
+    -Execute "C:dwriterun_research_candidates.bat" `
+    -At (Get-Date "09:30") `
+    -TimeLimitHours 2 `
+    -Description "Daily auto Find candidates (research.py --auto-candidates), 9:30am: one capped Haiku 4.5 search (basic web search, 3 uses, `$0.25) per Research-page configuration with no entry, no 'No figure needed', a live car, a complete configuration and no auto search in 30 days; at most 12 searches and `$2.00 logged per run, purpose research_candidates_auto, production key. Candidates only: never writes ad_history or an entry. Takes no lock (no browser, no ACV Max); waits up to 90 min for orchestrator.lock to clear before writing feature_cache.db. 9:30 sits after the morning orchestrator (typically done by ~7:30) and ends well before the 10:00 verifier (12 searches run ~5-10 min; the verifier never touches feature_cache.db anyway) and the 1:15pm recon warmup. Logs to C:dwriteresearch_logs."
+
 Register-AdWriterTask -Name "AdWriter-CarfaxWarmup" `
     -ScriptPath "C:\adwriter\carfax_warmup.py" `
     -At (Get-Date "22:30") `
