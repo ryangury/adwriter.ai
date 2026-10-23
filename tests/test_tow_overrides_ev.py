@@ -123,7 +123,8 @@ class OverrideTests(TempStores):
         with client.session_transaction() as s:
             s["authed"] = True
         r = client.post("/cache/CT23308A/towing", data={"rating": "9,000", "source": "Chevrolet trailering guide"})
-        self.assertEqual(r.get_json(), {"saved": True, "override": True, "rating": 9000})
+        self.assertEqual(r.get_json(), {"saved": True, "override": True, "rating": 9000,
+                                        "sentence": "It is rated to tow up to 9,000 lbs."})
         page = client.get("/cache/CT23308A").get_data(as_text=True)
         self.assertIn("9,000 lbs", page)
         self.assertIn("set by override", page)
