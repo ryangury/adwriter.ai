@@ -533,7 +533,7 @@ def live_items(vehicles: list[dict[str, Any]]) -> list[dict[str, Any]]:
             sticker = (get_window_sticker(vin) or {}) if vin else {}
             names = [o.get("name") or "" for o in (sticker.get("option_packages") or []) + (sticker.get("added_options_all") or [])]
             tow = towing_for(ymm, trim, body, sticker.get("raw_text") or "", names, vin=vin, powertrain_class=cls,
-                             allow_lookup=False)
+                             allow_lookup=False, vin_decode="fetch")   # the page / nightly job: complete a missing engine
             items = items_for(pt, tow)
             for it in items:
                 it["config"] = (pt.get("range") or {}).get("config") if it["kind"] == "range" else tow.get("config")
@@ -722,6 +722,9 @@ def page_rows(vehicles: list[dict[str, Any]], history: dict[str, Any]) -> dict[s
                 "reason": PLAIN[plain_reason(kind, key, reason_code, cands)],
                 "reason_code": reason_code, "detail": detail, "candidates": cands, "fact": get_fact(kind, key) if key else None,
                 "google_q": google_query(kind, describe(kind, key) if key else config_text),
+                "engine_note": (f"Engine from VIN decode: {cfg.get('vin_engine_text')}"
+                                if (cfg or {}).get("engine_source") == "VIN decode" else None),
+                "vin_conflict": (cfg or {}).get("vin_decode_conflict"),
                 "unit": UNITS[kind], "cars": []})
         target["cars"].append(car)
 
@@ -733,7 +736,7 @@ def page_rows(vehicles: list[dict[str, Any]], history: dict[str, Any]) -> dict[s
         figs = sorted({f for u in units for f in T.tow_figures(u)})
         if not figs:
             continue
-        tow = TR._towing(stock, v, allow_lookup=False)
+        tow = TR._towing(stock, v, allow_lookup=False, vin_decode="fetch")   # the page / nightly job
         allowed = tow.get("rating") if T.rating_source(tow) else None
         if allowed and all(f == allowed for f in figs):
             continue

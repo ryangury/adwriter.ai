@@ -214,8 +214,13 @@ def vehicle_config(
     body_style: str | None,
     sticker_text: str | None,
     powertrain_class: str | None = None,
+    vin_engine: dict[str, Any] | None = None,
+    vin_class: str | None = None,
 ) -> dict[str, Any]:
     """The configuration a tow rating must match, from printed data only.
+    vin_engine (vin_decode.engine) completes a missing engine, labelled "VIN decode" (engine_source), unless the
+    decode's powertrain signal (vin_class) contradicts the sticker-derived class: then neither is used, the engine
+    stays missing and "vin_decode_conflict" says why.
     "missing" lists any part that could not be read (no rating can match then).
     A battery-electric car has no engine: its key is the powertrain class plus
     the trim (stored in the engine column as "battery-electric <trim>")."""
@@ -231,6 +236,16 @@ def vehicle_config(
         # the trim ("GLE 450") names the engine variant.
         m = re.search(r"\b([A-Z]{1,4}[- ]?\d{2,3}[a-z]?)\b", trim or "")
         engine = m.group(1).replace("-", " ") if m else None
+    engine_source = "sticker" if engine else None
+    conflict = None
+    if not ev and not engine and vin_engine and vin_engine.get("phrase"):
+        import vin_decode
+
+        if vin_decode.class_disagrees(vin_class, powertrain_class):
+            conflict = (f"VIN decode says {vin_engine['text']} ({vin_class}); the sticker reads {powertrain_class}: "
+                        "neither used")
+        else:
+            engine, engine_source = vin_engine["phrase"], vin_decode.SOURCE_LABEL
     drive = normalize_drive(trim) or normalize_drive(sticker_text)
     truck = is_truck(model, body_style)
     cab = normalize_cab(sticker_text, sticker=True) if truck else ""
@@ -245,6 +260,8 @@ def vehicle_config(
         "cab": cab, "bed": bed, "truck": truck, "tow_package": tow_equipment(sticker_text),
         "ev": ev, "body": (body_style or "").strip(),
         "implied_cab_bed": implied[2] if implied else None,
+        "engine_source": engine_source, "vin_engine_text": (vin_engine or {}).get("text") if engine_source == "VIN decode" else None,
+        "vin_decode_conflict": conflict,
     }
     cfg["missing"] = [k for k in ("year", "make", "model", "engine", "drivetrain") if not cfg[k]] + (
         [k for k in ("cab", "bed") if truck and not cfg[k]]
@@ -535,6 +552,7 @@ def towing_for(
     allow_lookup: bool = True,
     force: bool = False,
     refresh: bool = False,
+    vin_decode: str | None = None,
 ) -> dict[str, Any]:
     """refresh: ignore a cached result and look the configuration up again
     (tow_refresh --relookup).
@@ -557,6 +575,18 @@ def towing_for(
         return out
     if not out["triggered"]:
         return out
+    # A car that needs a figure and whose sticker / record names no engine: the VIN decode may complete the key.
+    if vin and vin_decode and "engine" in cfg["missing"]:
+        try:
+            import vin_decode as VD
+
+            d = VD.get(vin, fetch=(vin_decode == "fetch"))
+            if d:
+                cfg = vehicle_config(year_make_model, trim, body_style, sticker_text, powertrain_class,
+                                     vin_engine=VD.engine(d), vin_class=VD.decode_class(d))
+        except Exception as exc:  # noqa: BLE001 - a decode never blocks a build
+            print(f"[towing] VIN decode skipped: {exc}", file=sys.stderr)
+        out.update(config=cfg, config_text=describe(cfg))
     # "No figure needed" (Research page) for this configuration: nothing to state and nothing to review.
     try:
         import research

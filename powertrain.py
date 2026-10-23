@@ -1115,6 +1115,18 @@ def vehicle_powertrain(
                     print(f"[powertrain] could not store range candidates: {exc}", file=sys.stderr)
         rng["config"] = cfg
     info["range"] = rng
+    try:
+        import vin_decode
+
+        d = vin_decode.get(vin)                       # cache only: never a call here
+        sig = vin_decode.decode_class(d)
+        info["vin_decode_class"] = sig
+        if vin_decode.class_disagrees(sig, info["class"]):
+            info["vin_decode_disagrees"] = True
+            info["flag"] = "; ".join(f for f in (info.get("flag"), f"VIN decode says {sig}, the classifier says {info['class']} "
+                                                                      "(class kept; check the car)") if f)
+    except Exception as exc:  # noqa: BLE001 - a signal never sinks a build
+        print(f"[powertrain] VIN decode signal skipped: {exc}", file=sys.stderr)
     info["mild_sentence"] = mild_sentence_for(info, make)
     info["engine_sentence"] = engine_sentence(sticker_text)
     info["flags"] = [f for f in (info.get("flag"), rng.get("flag")) if f]

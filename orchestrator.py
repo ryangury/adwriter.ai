@@ -395,6 +395,16 @@ def _format_build_summary(
             v = a.get("vehicle") or {}
             out.append(f"  {_BUILD_KIND[kind]:12s} {a['stock']}  {v.get('year_make_model') or ''}  "
                        f"{_fmt_price(v.get('advertised_price') or v.get('current_price'))}".rstrip())
+    vin_rows = []
+    for a in ads_generated:
+        pkg = a.get("pkg") or {}
+        pt = pkg.get("powertrain") or {}
+        cfg = (pkg.get("towing") or {}).get("config") or {}
+        why = cfg.get("vin_decode_conflict") or (pt.get("flag") if pt.get("vin_decode_disagrees") else None)
+        if why:
+            vin_rows.append(f"  [{a['stock']}]  {(a.get('vehicle') or {}).get('year_make_model') or ''}  —  {why}")
+    out += ["", f"VIN DECODE DISAGREES WITH THE STICKER (flagged; neither used) ({len(vin_rows)})", "=" * 60]
+    out += vin_rows or ["(none)"]
     out += ["", f"RECON REVIEW (archived work order, no latch; listed only, no action taken) ({len(RECON_REVIEW)})", "=" * 60]
     if not RECON_REVIEW:
         out.append("(none)")

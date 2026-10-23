@@ -901,6 +901,7 @@ def towing_for_package(pkg: dict) -> dict:
         return tow_policy(towing_for(
             ymm, trim, snap.get("body_style"), raw, names,
             vin=vin, powertrain_class=pclass, force=bool(pkg.get("_tow_force")), allow_lookup=False,
+            vin_decode="fetch",         # build-time key completion (only when the engine is missing)
         ))
     except Exception as exc:  # noqa: BLE001 - a tow lookup must never sink a build
         print(f"[towing] {stock}: lookup failed — {exc}", file=sys.stderr)

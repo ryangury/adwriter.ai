@@ -88,6 +88,8 @@
         {% if g.fact %}<span class="rs-done">entered: {{ '{:,}'.format(g.fact.figure) }} {{ g.unit }} ({{ g.fact.entered_date }})</span>{% endif %}
       </div>
       <div class="rs-reason">{{ g.reason }}</div>
+      {% if g.engine_note %}<div class="rs-detail">{{ g.engine_note }}</div>{% endif %}
+      {% if g.vin_conflict %}<div class="rs-detail">{{ g.vin_conflict }}</div>{% endif %}
       {% if g.needs_vin_override %}
       <div class="rs-detail">{{ g.incomplete_text }}</div>
       {% elif g.detail %}<div class="rs-detail">{{ g.detail }}</div>{% endif %}
