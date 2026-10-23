@@ -34,6 +34,8 @@
   .rs-cars { margin-top: 10px; font-size: 0.9rem; }
   .rs-car { display: flex; gap: 8px; align-items: center; margin: 4px 0; flex-wrap: wrap; }
   .rs-car .said { color: var(--muted); font-size: 0.85rem; flex-basis: 100%; padding-left: 4px; overflow-wrap: anywhere; }
+  .rs-ov, .rs-ov-msg { flex-basis: 100%; }
+  .rs-ov select { font: inherit; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; }
   .rs-msg { font-size: 0.88rem; margin-top: 6px; white-space: pre-wrap; }
   .rs-msg.err { color: var(--fail, #b91c1c); }
   .rs-table td { vertical-align: top; overflow-wrap: anywhere; }
@@ -82,7 +84,7 @@
       </div>
       <div class="rs-reason">{{ g.reason }}</div>
       {% if g.needs_vin_override %}
-      <div class="rs-detail">The configuration is incomplete{% if g.missing_parts %} (no {{ g.missing_parts|join(', ') }}){% endif %}, so a figure can't be entered for it here. Set a VIN override on each car's Database page.</div>
+      <div class="rs-detail">{{ g.incomplete_text }}</div>
       {% elif g.detail %}<div class="rs-detail">{{ g.detail }}</div>{% endif %}
 
       {% if g.key_id %}
@@ -106,7 +108,7 @@
         <button type="button" class="rs-save">Save figure</button>
         {% if g.fact %}<button type="button" class="rs-clear">Remove figure</button>{% endif %}
         {% endif %}
-        <button type="button" class="rs-waive-open">No figure needed</button>
+        {% if not g.needs_vin_override %}<button type="button" class="rs-waive-open">No figure needed</button>{% endif %}
       </div>
       <div class="rs-waive">
         <input name="reason" placeholder="Why no figure is needed (required)">
@@ -123,6 +125,22 @@
           <button type="button" class="rs-refresh">Refresh text</button>
           <span class="rs-msg"></span>
           {% if car.source %}<span class="said">Source: {{ car.source }}</span>{% endif %}
+          {% if g.needs_vin_override %}
+          <form class="rs-form rs-ov" onsubmit="return false;" data-stock="{{ car.stock }}" data-vin="{{ car.vin or '' }}" data-wid="{{ car.vin_waiver_id or '' }}">
+            <label>Figure</label>
+            <span><input name="rating" inputmode="numeric" size="8"> <select name="unit"><option>lbs</option><option>kg</option></select></span>
+            <label>Source URL</label><input name="source_url" placeholder="https://... (required)">
+            <label>Quote</label><textarea name="quote" placeholder="the sentence or table row that states it (required)"></textarea>
+            <label>Qualifier</label><input name="qualifier" placeholder='optional, e.g. "with the appropriate hitch"'>
+            <span></span>
+            <span class="rs-actions">
+              <button type="button" class="rs-ov-save">Save figure for {{ car.stock }}</button>
+              <input name="reason" placeholder="Reason no figure is needed" style="flex:1 1 200px">
+              <button type="button" class="rs-ov-waive">No figure needed for this VIN</button>
+            </span>
+          </form>
+          <span class="rs-msg rs-ov-msg"></span>
+          {% endif %}
         </div>
         {% endfor %}
       </div>
@@ -259,6 +277,23 @@
       }
       row.querySelector(".rs-preview").addEventListener("click", function () { run(true); });
       row.querySelector(".rs-refresh").addEventListener("click", function () { run(false); });
+    });
+  });
+
+  document.querySelectorAll(".rs-ov").forEach(function (f) {
+    const m = f.nextElementSibling;
+    f.querySelector(".rs-ov-save").addEventListener("click", function () {
+      post("/research/override/" + encodeURIComponent(f.dataset.stock), {
+        rating: f.rating.value, unit: f.unit.value, source_url: f.source_url.value, quote: f.quote.value, qualifier: f.qualifier.value
+      }).then(function (r) {
+        show(m, r.j.saved ? "Saved for " + f.dataset.stock + ": " + r.j.sentence + " Use Preview / Refresh text above." : r.j.error, !r.j.saved);
+      });
+    });
+    f.querySelector(".rs-ov-waive").addEventListener("click", function () {
+      const reason = f.reason.value.trim();
+      if (!reason) { show(m, "Give the reason no figure is needed.", true); return; }
+      post("/research/waive", { kind: "tow", waiver_id: f.dataset.wid, config_text: f.dataset.stock + " (VIN " + f.dataset.vin + ")", reason: reason })
+        .then(function (r) { show(m, r.j.saved ? "Marked no figure needed for this VIN; undo it under No figure needed below." : r.j.error, !r.j.saved); });
     });
   });
 
