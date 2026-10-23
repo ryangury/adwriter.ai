@@ -182,6 +182,8 @@ def _lifecycle_subject(
         return f"Recon Update — {stock} — {ymm} — {_fmt_price(price)}"
     if stage == "pre_recon":
         return f"Pre-Recon Ad — {stock} — {ymm} — {_fmt_price(price)}"
+    if stage == "text_refreshed":
+        return f"Text Refresh — {stock} — {ymm} — {_fmt_price(price)}"
     return f"Ad Ready — {stock} — {ymm} — {_fmt_price(price)}"
 
 
@@ -376,11 +378,61 @@ def _research_rows(ads_generated: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return rows
 
 
+def research_refresh_step(
+    retail: list[dict[str, Any]],
+    ad_history: dict[str, Any],
+    ads_generated: list[dict[str, Any]],
+    errors: list[dict[str, Any]],
+    *,
+    reprice_only: bool = False,
+    dry_run: bool = False,
+    send: Any = None,
+) -> dict[str, Any]:
+    """The run's research refresh (model_config.RESEARCH_AUTO_APPLY): research.auto_refresh for every live car with a
+    Research-page entry, VIN override or "No figure needed", skipping the cars built, repriced or recon-updated this
+    run; one ad_history backup, at most 20 cars, a "Text Refresh" per-ad email per changed car, per-car errors into
+    `errors` (Action Required). Never raises."""
+    import model_config
+
+    print("\n=== RESEARCH REFRESH ===")
+    if not model_config.RESEARCH_AUTO_APPLY:
+        print("[research-refresh] off (model_config.RESEARCH_AUTO_APPLY)")
+        return {"changed": [], "planned": [], "leftover": [], "errors": [], "off": True}
+    if reprice_only:
+        print("[research-refresh] skipped (--reprice-only)")
+        return {"changed": [], "planned": [], "leftover": [], "errors": []}
+    built = {(a.get("stock") or "").upper() for a in ads_generated}
+    try:
+        res = research.auto_refresh(retail, ad_history, skip=built, dry_run=dry_run)
+    except Exception as exc:  # noqa: BLE001 - the step must never sink the run
+        print(f"[research-refresh] failed — {exc}", file=sys.stderr)
+        errors.append({"stock": "-", "phase": "research_refresh", "error": f"{type(exc).__name__}: {exc}"})
+        return {"changed": [], "planned": [], "leftover": [], "errors": []}
+    errors.extend(res["errors"])
+    print(f"[research-refresh] {len(res['planned'])} car(s) to refresh, {len(res['changed'])} refreshed"
+          + (f", {len(res['leftover'])} left for the next run ({', '.join(res['leftover'])})" if res["leftover"] else "")
+          + (f", {len(res['skipped'])} built this run" if res.get("skipped") else "")
+          + (f"; backup {res['backup']}" if res.get("backup") else ""))
+    if not dry_run:
+        stored = load_ad_history()
+        for item in res["changed"]:
+            v = item["vehicle"]
+            e = stored.get(item["stock"]) or {}
+            body = "\n".join(["What changed:"] + item["lines"])
+            (send or (lambda *a: None))(
+                _lifecycle_subject("text_refreshed", item["stock"], v.get("year_make_model"), _advertised(v.get("current_price"))),
+                format_per_ad_email({"stock": item["stock"], "vehicle": v, "ad_copy": e.get("current_ad_text") or "",
+                                     "feedback": None, "lifecycle_stage": "text_refreshed", "change_note": body}),
+            )
+    return res
+
+
 def _format_build_summary(
     ads_generated: list[dict[str, Any]],
     not_rebuilt: list[dict[str, Any]],
     errors: list[dict[str, Any]],
     carfax_leftovers: list[dict[str, Any]] | None,
+    text_refreshed: dict[str, Any] | None = None,
 ) -> str:
     """The early email sent right after the build step (before CTR, the
     benchmark and verification), so the day's ads are known even if a later
@@ -395,6 +447,16 @@ def _format_build_summary(
             v = a.get("vehicle") or {}
             out.append(f"  {_BUILD_KIND[kind]:12s} {a['stock']}  {v.get('year_make_model') or ''}  "
                        f"{_fmt_price(v.get('advertised_price') or v.get('current_price'))}".rstrip())
+    tr = text_refreshed or {}
+    out += ["", f"TEXT REFRESHED (Research entries, VIN overrides, No figure needed; no model call) ({len(tr.get('changed') or [])})",
+            "=" * 60]
+    if not tr.get("changed"):
+        out.append("(none)" if not tr.get("off") else "(off: model_config.RESEARCH_AUTO_APPLY)")
+    for item in tr.get("changed") or []:
+        out.append(f"  [{item['stock']}]  {(item.get('vehicle') or {}).get('year_make_model') or ''}")
+        out += [f"    {ln.strip()}" for ln in item["lines"]]
+    if tr.get("leftover"):
+        out.append(f"  left for the next run (20 per run): {', '.join(tr['leftover'])}")
     out += ["", f"RECON REVIEW (archived work order, no latch; listed only, no action taken) ({len(RECON_REVIEW)})", "=" * 60]
     if not RECON_REVIEW:
         out.append("(none)")
@@ -1245,6 +1307,12 @@ def _run_inner(
     # refresh the in-memory copy after update_recon / reprice_ad writes
     ad_history = load_ad_history()
 
+    # --- RESEARCH REFRESH: Research-page entries / VIN overrides / "No figure needed" into live ads (no model) --- #
+    text_refreshed = research_refresh_step(retail, ad_history, ads_generated, errors, reprice_only=reprice_only,
+                                           send=_safe_send)
+    if text_refreshed.get("changed"):
+        ad_history = load_ad_history()
+
     # Deleted-for-rebuild stocks that got no new ad this run, with the reason
     # read from this run's own log. Printed here, before CTR, and listed in the
     # Action Required email. Never fatal.
@@ -1266,7 +1334,7 @@ def _run_inner(
             leftovers = None
         _safe_send(
             f"Mercedes-Benz of Durham — Build Summary {today}",
-            _format_build_summary(ads_generated, not_rebuilt, errors, leftovers),
+            _format_build_summary(ads_generated, not_rebuilt, errors, leftovers, text_refreshed=text_refreshed),
         )
     except Exception as exc:  # noqa: BLE001 - the early email must not sink the run
         print(f"[email] Build Summary failed — {exc}", file=sys.stderr)

@@ -104,3 +104,8 @@ def describe(tag_or_model: dict[str, Any] | str | None) -> str:
     if not t.get("model"):
         return "unknown"
     return t["model"] + (f" (effort {t['effort']})" if t.get("effort") else "")
+
+
+# The morning run's "research refresh" step (orchestrator, after the builds): cars with a Research-page entry, a VIN
+# override or "No figure needed" get the no-model text edit (research.auto_refresh). False: the step is skipped.
+RESEARCH_AUTO_APPLY = True

@@ -383,11 +383,13 @@ def _vehicle(stock: str) -> dict[str, Any]:
     return v
 
 
-def plan_refresh(stock: str) -> dict[str, Any]:
+def plan_refresh(stock: str, *, kinds: tuple[str, ...] = KINDS, lookup_range: bool = True) -> dict[str, Any]:
     """What 'Refresh text' would do to one stored ad (nothing written): the tow edit (tow_refresh's deterministic
     edit: replace a differing tow figure or add TOWING_SENTENCE after the engine sentence) and the range edit
     (a range claim that differs is replaced by the range sentence, else the sentence is added after the engine
-    sentence). With no figure for a kind, that kind is left alone."""
+    sentence). With no figure for a kind, that kind is left alone, except "No figure needed": then a stated tow /
+    range figure is removed. `kinds`: only these kinds are touched (the morning step passes the kinds the car has a
+    decision for). lookup_range False: cached range data only (no pass 0 call)."""
     import adwriter as A
     import tow_refresh as TR
     import towing as T
@@ -406,7 +408,18 @@ def plan_refresh(stock: str) -> dict[str, Any]:
 
     tow = TR._towing(stock, v, allow_lookup=False)
     rating = tow.get("rating")
-    if rating:
+    tow_figs = sorted({f for u in TR._tow_units(entry["current_ad_text"]) for f in T.tow_figures(u)})
+    if "tow" not in kinds:
+        pass
+    elif not rating and tow.get("waived") and tow_figs:
+        # "No figure needed": the unverified tow sentence comes out (kept in stale_phrases by the apply)
+        edit, rem = TR._edit({**entry, **after}, "remove", None)
+        if edit["manual"]:
+            notes.append(f"tow: no clean edit, hand edit needed ({'; '.join(edit['manual'])[:160]})")
+        else:
+            after, removed = dict(edit["after"]), removed + rem
+            notes.append("tow: remove (no figure needed)")
+    elif rating:
         figs = sorted({f for u in TR._tow_units(entry["current_ad_text"]) for f in T.tow_figures(u)})
         exact = tow.get("sentence") and any(" ".join(u.split()) == tow["sentence"] for u in TR._tow_units(entry["current_ad_text"]))
         same = figs and all(f == rating for f in figs)
@@ -425,9 +438,19 @@ def plan_refresh(stock: str) -> dict[str, Any]:
     else:
         notes.append("tow: no rating on file, left alone")
 
-    pt = vehicle_powertrain(v.get("vin"), v.get("year_make_model"), v.get("trim"), body_style=v.get("body_style"))
+    pt = vehicle_powertrain(v.get("vin"), v.get("year_make_model"), v.get("trim"), body_style=v.get("body_style"),
+                            lookup_range=lookup_range)
     rng = pt.get("range") or {}
-    if rng.get("miles"):
+    if "range" not in kinds:
+        pass
+    elif rng.get("waived"):
+        stated = [u.strip() for k in keys for u in A._split_sentences(after[k]) if range_claim_numbers(u)]
+        if stated:
+            for k in keys:
+                after[k] = " ".join(x.strip() for x in A._split_sentences(after[k]) if x.strip() not in stated)
+            removed += stated
+            notes.append("range: remove (no figure needed)")
+    elif rng.get("miles"):
         sentence = range_sentence(rng["miles"], rng.get("source"))
         stated = [(k, u) for k in keys for u in A._split_sentences(after[k]) if range_claim_numbers(u)]
         wrong = [(k, u) for k, u in stated if any(abs(n - rng["miles"]) > 1 for n in range_claim_numbers(u))]
@@ -460,20 +483,26 @@ def plan_refresh(stock: str) -> dict[str, Any]:
             "changes": after != before, "tow": tow, "pt": pt}
 
 
-def apply_refresh(stock: str) -> dict[str, Any]:
-    """Write plan_refresh's edit: back up ad_history.json (timestamped), store the text, clear the verification
-    fields (the verifier re-checks), add removed sentences to stale_phrases, update towing_review and
-    research_needed. Refuses while orchestrator.lock exists."""
+def apply_refresh(stock: str, *, plan: dict[str, Any] | None = None, backup: bool = True) -> dict[str, Any]:
+    """Write plan_refresh's edit: back up ad_history.json (timestamped; the morning step backs up once per run and
+    passes backup=False), store the text, clear the verification fields (the verifier re-checks), add removed
+    sentences to stale_phrases, record inserted ones in expected_phrases, update towing_review and research_needed.
+    Refuses while ANOTHER process holds orchestrator.lock (the website's button during a run); the orchestrator,
+    which holds it itself, may apply (run_lock.lock_blocks_edit: own PID / ADWRITER_LOCK_HOLDER)."""
     import adwriter as A
-    from run_lock import ORCHESTRATOR_LOCK_PATH
+    from run_lock import ORCHESTRATOR_LOCK_PATH, lock_blocks_edit
 
-    if ORCHESTRATOR_LOCK_PATH.exists():
-        raise RuntimeError("orchestrator.lock is present — a run may be in progress; not editing ads now")
-    plan = plan_refresh(stock)
+    holder = lock_blocks_edit(ORCHESTRATOR_LOCK_PATH)
+    if holder is not None:
+        raise RuntimeError(f"orchestrator.lock is held by PID {holder} — a run may be in progress; not editing ads now")
+    plan = plan or plan_refresh(stock)
     if not plan["changes"]:
         return dict(plan, applied=False)
-    backup = A.AD_HISTORY_PATH.with_name(f"ad_history.json.backup-{datetime.now().strftime('%Y-%m-%d-%H%M%S')}-research-{stock}")
-    shutil.copy2(A.AD_HISTORY_PATH, backup)
+    backup_name = None
+    if backup:
+        b = A.AD_HISTORY_PATH.with_name(f"ad_history.json.backup-{datetime.now().strftime('%Y-%m-%d-%H%M%S')}-research-{stock}")
+        shutil.copy2(A.AD_HISTORY_PATH, b)
+        backup_name = b.name
     history = A.load_ad_history()
     e = history[stock]
     old_text = e.get("current_ad_text")
@@ -487,8 +516,126 @@ def apply_refresh(stock: str) -> dict[str, Any]:
     A.set_towing_review(e, plan["tow"])
     set_research_needed(e, plan["pt"], plan["tow"])
     A.save_ad_history(history)
-    print(f"[research] {stock}: text refreshed ({'; '.join(plan['notes'])}); backup {backup.name}", file=sys.stderr)
-    return dict(plan, applied=True, backup=backup.name)
+    print(f"[research] {stock}: text refreshed ({'; '.join(plan['notes'])})" + (f"; backup {backup_name}" if backup_name else ""),
+          file=sys.stderr)
+    return dict(plan, applied=True, backup=backup_name)
+
+
+# --------------------------------------------------------------------------- #
+# The morning run's "research refresh" step (orchestrator; model_config.RESEARCH_AUTO_APPLY)
+# --------------------------------------------------------------------------- #
+AUTO_REFRESH_LIMIT = 20
+
+
+def refresh_decisions(stock: str, v: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """{kind: decision} for the kinds this car has a decision for: a Research-page entry or a VIN override (tow), a
+    Research-page entry (range), or "No figure needed" (either). Cached data only, no lookup."""
+    import tow_refresh as TR
+    import towing as T
+    from powertrain import vehicle_powertrain
+
+    out: dict[str, dict[str, Any]] = {}
+    tow = TR._towing(stock, v, allow_lookup=False)
+    src = T.rating_source(tow)
+    if src == "override":
+        ov = tow["override"]
+        out["tow"] = {"how": "VIN override", "figure": ov["rating"], "source_url": ov.get("source_url") or ov.get("source"),
+                      "date": ov.get("date"), "config_text": tow.get("config_text")}
+    elif src == "research":
+        f = tow["researched"]
+        out["tow"] = {"how": "Research entry", "figure": f["figure"], "source_url": f["source_url"], "date": f["entered_date"],
+                      "config_text": tow.get("config_text")}
+    elif tow.get("waived"):
+        w = tow["waived"]
+        out["tow"] = {"how": "No figure needed", "reason": w.get("reason"), "date": w.get("entered_date"),
+                      "config_text": tow.get("config_text")}
+    pt = vehicle_powertrain(v.get("vin"), v.get("year_make_model"), v.get("trim"), body_style=v.get("body_style"),
+                            lookup_range=False)
+    rng = pt.get("range") or {}
+    cfg = rng.get("config") or {}
+    if rng.get("researched"):
+        f = get_fact("range", cfg) or {}
+        out["range"] = {"how": "Research entry", "figure": rng.get("miles"), "source_url": f.get("source_url") or rng.get("url"),
+                        "date": f.get("entered_date"), "config_text": describe("range", key_of("range", cfg)) if key_of("range", cfg) else ""}
+    elif rng.get("waived"):
+        w = rng["waived"]
+        out["range"] = {"how": "No figure needed", "reason": w.get("reason"), "date": w.get("entered_date"),
+                        "config_text": describe("range", key_of("range", cfg)) if key_of("range", cfg) else ""}
+    return out
+
+
+def describe_change(plan: dict[str, Any], decisions: dict[str, dict[str, Any]]) -> list[str]:
+    """Lines saying what a refresh changed: sentences added, replaced or removed, and the decision behind each kind."""
+    import adwriter as A
+
+    keys = ("paragraph_one", "paragraph_two", "paragraph_three", "paragraph_four")
+    before = "\n\n".join(plan["before"][k] for k in keys if plan["before"].get(k))
+    after = "\n\n".join(plan["after"][k] for k in keys if plan["after"].get(k))
+    added = A.added_sentences(before, after)
+    removed = list(plan.get("removed") or [])
+    lines = []
+    if added and removed:
+        lines += [f"  replaced: \"{r}\"" for r in removed] + [f"      with: \"{a}\"" for a in added]
+    else:
+        lines += [f"  added:    \"{a}\"" for a in added] + [f"  removed:  \"{r}\"" for r in removed]
+    for kind, d in decisions.items():
+        what = (f"{d['figure']:,} {UNITS[kind]}" if d.get("figure") else f"reason: {d.get('reason')}")
+        lines.append(f"  {LABELS[kind]}: {d['how']} ({what}"
+                     + (f", source {d['source_url']}" if d.get("source_url") else "")
+                     + (f", entered {d['date']}" if d.get("date") else "") + ")"
+                     + (f"; configuration: {d['config_text']}" if d.get("config_text") else ""))
+    return lines
+
+
+def auto_refresh(vehicles: list[dict[str, Any]], history: dict[str, Any], *, skip: set[str] | None = None,
+                 dry_run: bool = False, limit: int = AUTO_REFRESH_LIMIT, log: Any = print) -> dict[str, Any]:
+    """Plan (and unless dry_run, apply) the no-model refresh for every live car with a decision. Skips `skip` (cars
+    built, repriced or recon-updated this run). One ad_history backup per run; at most `limit` cars; per-car errors
+    are collected, never raised. Returns {"planned", "changed", "leftover", "errors", "backup"}; each changed /
+    planned item carries the stock, vehicle, plan, decisions and the change lines."""
+    import adwriter as A
+
+    skip = {s.upper() for s in (skip or set())}
+    out: dict[str, Any] = {"planned": [], "changed": [], "leftover": [], "errors": [], "backup": None, "skipped": []}
+    snap = {v.get("stock_number"): v for v in vehicles}
+    for stock in sorted(history):
+        e = history[stock]
+        v = snap.get(stock)
+        if not v or not _live(stock, v, history) or not e.get("current_ad_text"):
+            continue
+        try:
+            decisions = refresh_decisions(stock, v)
+            if not decisions:
+                continue
+            if stock.upper() in skip:
+                out["skipped"].append(stock)
+                continue
+            plan = plan_refresh(stock, kinds=tuple(decisions), lookup_range=False)
+        except Exception as exc:  # noqa: BLE001 - one car never stops the step
+            out["errors"].append({"stock": stock, "phase": "research_refresh", "error": f"{type(exc).__name__}: {exc}"})
+            log(f"[research-refresh] {stock}: plan failed - {exc}")
+            continue
+        if plan["changes"]:
+            out["planned"].append({"stock": stock, "vehicle": v, "plan": plan, "decisions": decisions,
+                                   "lines": describe_change(plan, decisions)})
+    if dry_run or not out["planned"]:
+        out["leftover"] = [p["stock"] for p in out["planned"][limit:]]
+        return out
+    b = A.AD_HISTORY_PATH.with_name(f"ad_history.json.backup-{datetime.now().strftime('%Y-%m-%d-%H%M%S')}-research-refresh")
+    shutil.copy2(A.AD_HISTORY_PATH, b)
+    out["backup"] = b.name
+    for item in out["planned"][:limit]:
+        try:
+            res = apply_refresh(item["stock"], plan=item["plan"], backup=False)
+        except Exception as exc:  # noqa: BLE001
+            out["errors"].append({"stock": item["stock"], "phase": "research_refresh", "error": f"{type(exc).__name__}: {exc}"})
+            log(f"[research-refresh] {item['stock']}: apply failed - {exc}")
+            continue
+        if res.get("applied"):
+            out["changed"].append(item)
+            log(f"[research-refresh] {item['stock']}: refreshed ({'; '.join(item['plan']['notes'])})")
+    out["leftover"] = [p["stock"] for p in out["planned"][limit:]]
+    return out
 
 
 # --------------------------------------------------------------------------- #
