@@ -413,6 +413,7 @@ def expected_advertised_price(entry: dict[str, Any]) -> float | None:
 
 
 STALE_NOTE = "old text still live"
+EXPECTED_NOTE = "new text not live"
 PRICE_MISSING_NOTE = "price missing live"
 _STALE_MIN_CHARS = 25  # a shorter normalized fragment could match by accident
 
@@ -431,11 +432,28 @@ def _stale_phrases_found(stale_phrases: list[str] | None, live_norm: str) -> tup
     return found, gone
 
 
+def _ws_live(text: str | None) -> str:
+    t = (text or "").translate(str.maketrans({"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"',
+                                              "\u2013": "-", "\u2014": "-", "\u00a0": " "}))
+    return " ".join(t.split())
+
+
+def _expected_phrases_found(expected: list[str] | None, live_text: str) -> tuple[list[str], list[str]]:
+    """(expected phrases on the live page, ones that are not), whitespace-normalized (curly quotes / dashes folded)."""
+    live = _ws_live(live_text)
+    found: list[str] = []
+    missing: list[str] = []
+    for p in expected or []:
+        (found if _ws_live(p) in live else missing).append(p)
+    return found, missing
+
+
 def compare_ad(
     stored_ad_text: str,
     live_description_text: str | None,
     expected_price: float | None = None,
     stale_phrases: list[str] | None = None,
+    expected_phrases: list[str] | None = None,
 ) -> dict[str, Any]:
     """Fuzzy-compare the stored ad against the live VDP description.
 
@@ -458,6 +476,10 @@ def compare_ad(
     reposted - whatever the phrase score. `stale_found` / `stale_gone` report
     which phrases were / were not seen, for the caller to prune; neither is
     reported when the page wasn't read.
+
+    Expected phrases: sentences a refresh inserted into the stored ad (ad_history `expected_phrases`). If any is
+    not on the live page (whitespace-normalized) the verdict is "outdated" with note "new text not live", whatever
+    the phrase score. `expected_found` / `expected_missing` report which, for the caller to prune.
 
     Missing price: when the stored ad has a "Current asking price is $X"
     sentence and the live text has none, the verdict is "outdated" with note
@@ -515,6 +537,13 @@ def compare_ad(
         if stale_found:
             result["verdict"] = "outdated"
             result["note"] = STALE_NOTE
+    if expected_phrases:
+        exp_found, exp_missing = _expected_phrases_found(expected_phrases, live)
+        result["expected_found"] = exp_found
+        result["expected_missing"] = exp_missing
+        if exp_missing:
+            result["verdict"] = "outdated"
+            result["note"] = "; ".join(n for n in (result.get("note"), EXPECTED_NOTE) if n)
 
     m = _LIVE_PRICE_RE.search(live)
     if m is None and _LIVE_PRICE_RE.search(stored_ad_text or ""):
@@ -716,6 +745,7 @@ def run_verification(
             live_text,
             expected_advertised_price(entry),
             stale_phrases=entry.get("stale_phrases"),
+            expected_phrases=entry.get("expected_phrases"),
         )
         if cmp.get("price_mismatch"):
             print(
@@ -734,6 +764,14 @@ def run_verification(
             else:
                 entry.pop("stale_phrases", None)
                 print(f"[verify] {stock}: removed text is no longer live - stale_phrases cleared")
+        if "expected_missing" in cmp:
+            # Page was read: an expected sentence seen live is done; keep the ones still missing.
+            if cmp["expected_missing"]:
+                entry["expected_phrases"] = cmp["expected_missing"]
+                print(f"[verify] {stock}: new text not live ({len(cmp['expected_missing'])} inserted sentence(s) missing)")
+            else:
+                entry.pop("expected_phrases", None)
+                print(f"[verify] {stock}: inserted text is live - expected_phrases cleared")
         entry["match_score"] = cmp["match_score"]
         entry["identity_confirmed"] = cmp.get("identity_confirmed", False)
         if entry["identity_confirmed"]:
