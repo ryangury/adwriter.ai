@@ -63,6 +63,18 @@ from feature_cache import get_electric_range
 from powertrain import CLASS_LABELS, CLASSES, classify, load_overrides, range_phrase, set_override, split_ymm, texts_from_row
 from towing import set_tow_override, towing_for, towing_sentence
 from towing import triggered as tow_triggered
+import importlib
+import site_version
+
+# Import every module some code path loads lazily NOW, so this process never mixes old modules with new ones a
+# merge put on disk later (site_version.EAGER_MODULES; a failure is logged, never fatal).
+for _mod in site_version.EAGER_MODULES:
+    try:
+        importlib.import_module(_mod)
+    except Exception as _exc:  # noqa: BLE001
+        print(f"[startup] could not import {_mod}: {type(_exc).__name__}: {_exc}", file=sys.stderr)
+print(f"[startup] website started {site_version.START_TIME:.0f} on commit {(site_version.RUNNING_COMMIT or '?')[:12]}",
+      file=sys.stderr)
 
 # Simple shared-password gate for the demo — no user accounts. Change this to
 # rotate the password; every existing session is invalidated the next time the
@@ -486,7 +498,26 @@ def _asset_helpers() -> dict[str, Any]:
         except OSError:
             return 0
 
-    return {"asset_v": asset_v}
+    return {"asset_v": asset_v, "site_stale": _site_stale()}
+
+
+def _site_stale() -> dict[str, Any] | None:
+    """The "restart needed" banner's facts (site_version.staleness) for a signed-in page, else None."""
+    if not session.get("authed"):
+        return None
+    try:
+        s = site_version.staleness()
+    except Exception:  # noqa: BLE001 - the banner never breaks a page
+        return None
+    return s if s["stale"] else None
+
+
+@app.get("/version")
+def site_version_info():
+    """The running website's commit and start time, and whether it is stale (signed in only)."""
+    if not session.get("authed"):
+        return jsonify({"error": "Not signed in."}), 401
+    return jsonify(site_version.staleness(use_cache=False))
 
 
 def _load_snapshot() -> tuple[list[dict[str, Any]], str | None]:

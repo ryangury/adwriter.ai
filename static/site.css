@@ -285,3 +285,9 @@
   text-decoration: none;
 }
 .cache-image-link:hover { text-decoration: underline; }
+
+/* "Restart needed": the running website is older than the code on disk (site_version.staleness) */
+.restart-banner { margin: 0 0 16px; padding: 10px 14px; border-radius: 8px; background: #fef3c7; color: #78350f;
+  border: 1px solid #f59e0b; font-size: 0.9rem; }
+.restart-banner code { background: rgba(0, 0, 0, 0.06); padding: 1px 4px; border-radius: 4px; }
+@media (prefers-color-scheme: dark) { .restart-banner { background: #451a03; color: #fde68a; border-color: #b45309; } }

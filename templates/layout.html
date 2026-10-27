@@ -22,6 +22,11 @@
     <a class="nav-signout" href="/logout">Sign out</a>
   </nav>
   <main class="content">
+{% if site_stale %}
+  <div class="restart-banner" role="alert"><b>Restart needed:</b> {{ site_stale.reasons|join('; ') }}.
+    The website is running {{ (site_stale.running_commit or '?')[:7] }}, started {{ site_stale.started }}.
+    Restart with <code>schtasks /run /tn "AdWriter-Restart"</code> (not during a run or within 10 minutes of a verifier pass).</div>
+{% endif %}
 {% block content %}{% endblock %}
   </main>
 </div>
